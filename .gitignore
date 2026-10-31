@@ -1,0 +1,8 @@
+node_modules
+dist
+.ego
+src-tauri/target
+src-tauri/gen
+.DS_Store
+*.local
+*.tsbuildinfo
