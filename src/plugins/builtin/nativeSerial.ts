@@ -22,8 +22,15 @@ export function createNativeSerialPlugin(backend = desktopBackend, supported = i
       enabled = true;
       api.register("transports", {
         id: "native-serial", name: "Native Serial", unavailable: supported ? undefined : "请在 Tauri 桌面端使用原生串口；浏览器不提供此能力。",
+        endpoint: { label: "端口路径", placeholder: "COM3 / /dev/ttyUSB0 / /dev/cu.usbserial…" },
+        parameters: [{ key: "baudRate", label: "波特率", type: "number", initial: "115200", min: 1 }],
+        description: "8 data bits · no parity · 1 stop bit · no flow control。也可手动填写未枚举到的端口路径。打开端口不识别开发板或固件。",
+        sendHint: "TX 在串口写入成功后记录，不代表设备已执行命令。",
         list: async () => { if (!supported) throw new Error("原生串口仅支持桌面端"); return backend.list(); },
-        connect: async ({ path, baudRate }, handlers) => {
+        connect: async ({ address, parameters }, handlers, signal) => {
+          const path = address;
+          const baudRate = Number(parameters.baudRate);
+          if (!Number.isInteger(baudRate) || baudRate <= 0) throw new Error("请输入有效的波特率");
           if (!enabled || !supported) throw new Error("桌面串口插件不可用");
           if (active) throw new Error("串口正在使用或关闭中，请稍后重试");
           let closed = false;
@@ -31,15 +38,19 @@ export function createNativeSerialPlugin(backend = desktopBackend, supported = i
           let closing: Promise<void> | undefined;
           const opened = backend.open(path, baudRate);
           const connection: TransportConnection = {
+            label: path + " · " + baudRate + " baud",
             write: async (bytes) => { if (closed) throw new Error("串口连接已关闭"); await backend.write(await opened, Array.from(bytes)); },
             close: () => {
               if (closing) return closing;
               closed = true; clearTimeout(timer);
-              closing = opened.then((id) => backend.close(id), () => {}).finally(() => { if (active === connection) active = undefined; });
+              closing = opened.then((id) => backend.close(id), () => {}).finally(() => { signal?.removeEventListener("abort", abort); if (active === connection) active = undefined; });
               return closing;
             },
           };
+          const abort = () => { void connection.close().catch((error) => api.host.log("关闭串口失败：" + String(error))); };
           active = connection;
+          if (signal?.aborted) abort();
+          else signal?.addEventListener("abort", abort, { once: true });
           let id: number;
           try { id = await opened; }
           catch (error) { if (active === connection) active = undefined; throw error; }

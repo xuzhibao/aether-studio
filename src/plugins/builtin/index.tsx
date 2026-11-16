@@ -9,6 +9,7 @@ import { micropythonPlugin } from "./micropython";
 import { demoPlugin } from "./demo";
 import { projectToolsPlugin } from "./projectTools";
 import { projectFilesPlugin } from "./projectFiles";
+import { websocketPlugin } from "./websocket";
 import { nativeSerialPlugin } from "./nativeSerial";
 import { providerPlugin } from "./provider";
 const boardPlugin: StudioPlugin = {
@@ -42,4 +43,4 @@ const templatePlugin: StudioPlugin = {
     api.register("commands", { id: "esp32.example", name: "ESP32-S3: 创建环境监测示例", run: () => api.host.createProject("esp32-s3", "Environment monitor") });
   },
 };
-export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin, nativeSerialPlugin];
+export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin, nativeSerialPlugin, websocketPlugin];

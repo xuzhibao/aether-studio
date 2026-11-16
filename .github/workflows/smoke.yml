@@ -19,6 +19,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run smoke
+      - run: npm run smoke:network
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run smoke:ui
@@ -66,6 +67,7 @@ jobs:
               import -window root smoke-results/tauri-window.png
               timeout 120 bash scripts/smoke-desktop-files.sh
               timeout 90 bash scripts/smoke-desktop-serial.sh
+              timeout 90 bash scripts/smoke-desktop-network.sh
               echo 'PASS Tauri: native window opened and remained alive'
               exit 0
             fi

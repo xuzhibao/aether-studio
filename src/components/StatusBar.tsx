@@ -46,7 +46,7 @@ export function StatusBar() {
       </button>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => setTab("serial")}>
-        <Usb size={10} className="text-[#7C838B]" /> {io.status === "connected" ? "Serial · " + io.path : "Demo output · 无端口连接"}
+        <Usb size={10} className="text-[#7C838B]" /> {io.status === "connected" ? "Transport · " + io.address : "Demo output · 无设备连接"}
       </button>
 
       <span className="flex-1" />

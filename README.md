@@ -15,7 +15,7 @@ Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发
 - 保存工程后，可切换工程、刷新页面或重启应用再打开，恢复电路、代码和能力绑定。
 - 导出和导入 `.aether` 工程文件，在不同浏览器、设备和桌面端之间迁移代码、电路和能力绑定。
 - 保存面板布局、分屏比例、编辑器字号和减少动画设置。
-- 桌面串口插件支持枚举端口、手动输入路径、配置波特率、连接、UTF-8 文本收发和断开。设备数据与演示日志分开显示。
+- 桌面串口插件支持端口枚举与文本收发；WebSocket 插件支持浏览器和桌面网络通信。两者使用同一连接管理和监视器，设备数据与演示日志分开显示。
 - AI 面板可调用用户配置的 OpenAI Compatible Chat Completions API。支持问答与工程工具调用；文件修改先预览，再由用户应用，不自动执行硬件操作。
 
 **Demo Simulation 使用生成数据，不执行 Python、不验证电气接线、不连接真实硬件。修改 Python 代码不会改变演示数据。**
@@ -34,9 +34,12 @@ npm run dev
 ```bash
 npm run typecheck
 npm run smoke
+npm run smoke:network
 npm run build
 npm run preview -- --host 127.0.0.1
 ```
+
+`smoke:network` 启动本地 WebSocket 服务，验证实际网络收发、关闭、取消连接和插件生命周期，不需要外部服务或硬件。
 
 `smoke` 使用一个小脚本检查插件生命周期、依赖、工程编辑和持久化、演示输出，以及 AI 适配器的 HTTP 请求格式和错误处理。AI 检查使用测试响应，不验证真实模型服务。
 
@@ -73,7 +76,7 @@ npm run tauri -- dev
 npm run tauri -- build
 ```
 
-GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原生窗口启动，以及通过原生对话框保存、打开和再次导出工程。测试截图和日志保存在工作流产物中。
+GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原生窗口启动，通过原生对话框保存、打开和再次导出工程，以及系统虚拟串口和本地 WebSocket 服务的界面收发。测试截图和日志保存在工作流产物中。
 
 ## 运行示例工程
 
@@ -112,6 +115,7 @@ GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原�
 | `aether.project-files` | workspace | `.aether` 工程导入导出、原生文件对话框、命令和菜单 |
 | `aether.project-tools` | tool | 文件读取、电路定义检查与文件修改建议 |
 | `aether.serial.native` | transport | 桌面原生串口枚举、打开、收发字节和关闭 |
+| `aether.transport.websocket` | transport | 浏览器与桌面端 WebSocket 文本和二进制帧通信 |
 
 停用被其他已启用插件依赖的插件时，界面会提示先停用依赖者。重新启用插件会加载依赖。停用不会删除工程内容；对应能力会停止提供，画布或编辑器显示不可用提示。
 
@@ -181,7 +185,7 @@ export const helloPlugin: StudioPlugin = {
 
 ## 桌面串口
 
-在 Tauri 桌面端打开 **Devices**，选择 **Native Serial**，从端口列表选择或手动填写 `COM3`、`/dev/ttyUSB0`、`/dev/cu.usbserial…` 等路径。设置波特率后点击 **连接端口**。当前参数为 8N1、无流控；更改参数需先断开再连接。
+在 Tauri 桌面端打开 **Devices**，选择 **Native Serial**，从端口列表选择或手动填写 `COM3`、`/dev/ttyUSB0`、`/dev/cu.usbserial…` 等路径。设置波特率后点击 **建立连接**。当前参数为 8N1、无流控；更改参数需先断开再连接。
 
 打开 **Serial Monitor**，选择 **Device transport** 查看设备数据。底部输入框发送 UTF-8 文本，可选择不附加换行、LF 或 CRLF。`RX` 表示收到的字节，`TX` 在写入成功后记录，不代表设备已执行命令。暂停显示不会暂停接收；记录保留最近 500 项，支持筛选和清空。底部调试区的 Serial Monitor 也可切换数据来源。
 
@@ -189,10 +193,24 @@ export const helloPlugin: StudioPlugin = {
 
 浏览器中原生串口入口会显示不可用，当前没有 Web Serial 适配器。Linux 用户需要端口访问权限；被其他程序占用的端口需先释放。CI 使用操作系统虚拟串口检查收发与关闭，不替代开发板验证。
 
-开发通信插件时，注册 `transports` 能力，提供 `list()` 和 `connect(options, handlers)`；连接返回 `write(bytes)`、`close()`，接收字节与连接错误通过 handlers 回传。原生串口代码位于 `src-tauri/src/plugins/serial.rs`，通过 Tauri 插件注册并声明对应命令权限。
+## WebSocket 通信
+
+浏览器和桌面端均可在 **Devices** 选择 **WebSocket**，输入 `ws://` 或 `wss://` 地址，点击 **建立连接**。连接成功后打开 **Serial Monitor**，切换 **Device transport** 收发文本。串口和 WebSocket 共用监视器，目前一次只连接一个服务或端口。
+
+接收的文本帧转为 UTF-8 字节，二进制帧按字节接收；监视器以 UTF-8 显示。发送文本时，将包含所选换行符的 UTF-8 字节放入二进制帧。服务端需要支持二进制帧；当前不提供文本帧发送模式、自定义握手头、自动重连或硬件协议适配。
+
+WebSocket 的 `TX` 表示数据已交给浏览器/WebView 发送队列，不代表已送达或被设备执行。正常的远端关闭会断开，异常关闭显示关闭码和原因。建立连接期间可点击 **断开连接** 取消；停用插件或切换工程也会关闭连接。地址和连接状态不写入工程文件或持久配置。HTTPS 页面应连接 `wss://`；证书与浏览器网络策略仍由浏览器/WebView 检查。
+
+## 开发通信插件
+
+注册 `transports` 能力，为 `endpoint` 提供地址标签和提示，在 `parameters` 中声明协议参数字段。宿主按插件声明生成连接表单：串口提供波特率，WebSocket 没有波特率。可选的 `list()` 为地址输入框提供候选项。
+
+`connect({ address, parameters }, handlers, signal)` 返回带有 `label`、`write(bytes)` 和 `close()` 的连接。接收字节通过 `handlers.data` 回传，正常远端关闭调用 `handlers.closed`，错误调用 `handlers.error`。插件应响应取消信号，在停用时关闭自身连接，并用 `sendHint` 说明写入成功的具体含义。
+
+原生串口代码位于 `src-tauri/src/plugins/serial.rs`，通过 Tauri 插件注册并声明对应命令权限；WebSocket 实现在 `src/plugins/builtin/websocket.ts`。
 
 ## 尚未实现
 
-真实 MicroPython 执行器、编译器集成、物理电路仿真、通用 USB 协议、真实烧录、网络协议、终端命令工具、无需审阅的自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
+真实 MicroPython 执行器、编译器集成、物理电路仿真、通用 USB 协议、真实烧录、MQTT/HTTP 等其他通信协议、终端命令工具、无需审阅的自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
 
 外部插件安装、市场、版本依赖解析、跨进程 RPC、沙箱与完整权限系统当前尚未提供。

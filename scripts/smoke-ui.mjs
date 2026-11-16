@@ -1,3 +1,4 @@
+import { startWebSocketPeer } from "./websocket-peer.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
@@ -7,6 +8,7 @@ const server = spawn("npm", ["run", "preview", "--", "--host", "127.0.0.1", "--p
 let serverLog = "";
 server.stdout.on("data", (chunk) => { serverLog += chunk; });
 server.stderr.on("data", (chunk) => { serverLog += chunk; });
+let networkPeer;
 let browser;
 let page;
 const errors = [];
@@ -18,6 +20,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   assert.ok(ready, `Preview did not start: ${serverLog}`);
+  networkPeer = await startWebSocketPeer();
   browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
   page = await browser.newPage({ viewport: { width: 1728, height: 1080 } });
   page.on("pageerror", (error) => errors.push(error.message));
@@ -26,7 +29,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 10 / 10 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 11 / 11 已启用", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -198,7 +201,38 @@ try {
   await nav.getByRole("button", { name: "Devices", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByText("请在 Tauri 桌面端使用原生串口；浏览器不提供此能力。", { exact: true }).waitFor();
-  assert.equal(await dialog.getByRole("button", { name: "连接端口", exact: true }).isDisabled(), true);
+  assert.equal(await dialog.getByRole("button", { name: "建立连接", exact: true }).isDisabled(), true);
+  await dialog.getByRole("combobox", { name: "通信插件" }).selectOption("websocket");
+  assert.equal(await dialog.getByRole("spinbutton", { name: "波特率" }).count(), 0, "protocol parameters come from the selected plugin");
+  await dialog.getByRole("textbox", { name: "WebSocket URL" }).fill(networkPeer.url);
+  await dialog.getByRole("button", { name: "建立连接", exact: true }).click();
+  await dialog.getByText(/^已连接 ws:\/\/127/).waitFor();
+  await dialog.getByRole("button", { name: "打开 Serial Monitor", exact: true }).click();
+  await page.getByText("RX · WebSocket fixture: ready", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("combobox", { name: "Serial source", exact: true }).inputValue(), "device");
+  const transmitter = page.getByRole("textbox", { name: "Serial text", exact: true });
+  await page.getByRole("combobox", { name: "Line ending", exact: true }).selectOption("\r\n");
+  await transmitter.fill("温度:24.6"); await transmitter.press("Enter");
+  await page.getByText("RX · WebSocket fixture text: 温度:24.6", { exact: true }).waitFor();
+  await page.getByText("RX · WebSocket fixture binary: 温度:24.6", { exact: true }).waitFor();
+  assert.deepEqual(networkPeer.received[0], { text: "温度:24.6\r\n", binary: true });
+  await page.getByRole("button", { name: "Pause display", exact: true }).click();
+  await transmitter.fill("paused-network-sample"); await transmitter.press("Enter");
+  for (let n = 0; n < 100 && networkPeer.received.length < 2; n++) await new Promise((done) => setTimeout(done, 20));
+  assert.equal(networkPeer.received.length, 2);
+  assert.equal(await page.getByText("RX · WebSocket fixture text: paused-network-sample", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Resume display", exact: true }).click();
+  await page.getByText("RX · WebSocket fixture binary: paused-network-sample", { exact: true }).waitFor();
+  await page.screenshot({ path: "smoke-results/websocket-browser.png", fullPage: true });
+  await page.getByRole("button", { name: "Clear serial output", exact: true }).click();
+  await page.getByText("No serial output in this view.", { exact: true }).waitFor();
+  await nav.getByRole("button", { name: "Plugins", exact: true }).click();
+  await dialog.getByRole("button", { name: /^WebSocket 通信/ }).click();
+  await dialog.getByText("transports/websocket", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "停用", exact: true }).click();
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await page.getByText(/连接未建立。请在 Manage connection/).waitFor();
+  await nav.getByRole("button", { name: "Devices", exact: true }).click();
   await dialog.getByRole("button", { name: "管理插件", exact: true }).click();
   await dialog.getByRole("button", { name: /^桌面串口/ }).click();
   await dialog.getByText("transports/native-serial", { exact: true }).waitFor();
@@ -208,7 +242,7 @@ try {
   await dialog.getByText("没有已启用的通信插件。", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Close dialog" }).click();
   assert.deepEqual(errors, [], "no browser console errors");
-  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, no console errors");
+  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, real WebSocket text/binary round trip, pause/clear and disable cleanup, no console errors");
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: "smoke-results/failure.png", fullPage: true });
@@ -217,6 +251,7 @@ try {
   throw error;
 } finally {
   await browser?.close();
+  await networkPeer?.close();
   if (process.platform === "win32") server.kill();
   else { try { process.kill(-server.pid, "SIGTERM"); } catch {} }
 }

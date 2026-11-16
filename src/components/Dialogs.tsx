@@ -213,6 +213,6 @@ export function NewProjectDialog() {
 export function DeployDialog() {
   const { dialog, setDialog } = useStudio();
   return <Modal open={dialog === "deploy"} onOpenChange={(open) => !open && setDialog(null)} width={482}>
-    <div className="p-5"><div className="flex justify-between"><Dialog.Title className="text-[14px] font-semibold">Deploy · 尚未实现</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div><Dialog.Description className="mt-4 text-[12px] leading-6 text-[#7D848C]">当前没有真实串口、USB 和烧录插件。Demo Simulation 仅生成演示数据，不会编译或写入设备。</Dialog.Description></div>
+    <div className="p-5"><div className="flex justify-between"><Dialog.Title className="text-[14px] font-semibold">Deploy · 尚未实现</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div><Dialog.Description className="mt-4 text-[12px] leading-6 text-[#7D848C]">串口和 WebSocket 插件仅提供数据通信，当前没有已接入的固件烧录插件。Demo Simulation 仅生成演示数据，不会编译或写入设备。</Dialog.Description></div>
   </Modal>;
 }

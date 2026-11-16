@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import { startWebSocketPeer } from "./websocket-peer.mjs";
+const memory = new Map<string, string>();
+Object.defineProperty(globalThis, "localStorage", { value: { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value) } });
+Object.defineProperty(globalThis, "window", { value: globalThis });
+const { useTransport } = await import("../src/store/transport");
+const { plugins } = await import("../src/plugins/runtime");
+const io = () => useTransport.getState();
+const until = async (condition: () => boolean) => { for (let n = 0; n < 500 && !condition(); n++) await new Promise((resolve) => setTimeout(resolve, 10)); assert.ok(condition()); };
+const peer = await startWebSocketPeer();
+const connect = (suffix = "") => io().connect("websocket", { address: peer.url + suffix, parameters: {} });
+try {
+  await io().connect("websocket", { address: "http://example.com", parameters: {} });
+  assert.equal(io().status, "error"); assert.match(io().error, /ws:\/\//);
+  await connect(); assert.equal(io().status, "connected");
+  await until(() => io().lines.some((line) => line.text.includes("WebSocket fixture: ready")));
+  const text = "温度:24.6\r\n";
+  await io().send(text);
+  await until(() => io().lines.some((line) => line.text.includes("fixture binary: 温度:24.6")));
+  assert.deepEqual(peer.received[0], { text, binary: true });
+  assert.equal(io().sentBytes, new TextEncoder().encode(text).length);
+  assert.ok(io().lines.some((line) => line.text.includes("fixture text: 温度:24.6")));
+  await io().send("close-normal"); await until(() => io().status === "disconnected"); assert.equal(io().error, "");
+  await connect(); await io().send("close-error"); await until(() => io().status === "error"); assert.match(io().error, /1011.*fixture fault/);
+  await connect(); plugins.disable("aether.transport.websocket"); await until(() => io().status === "disconnected");
+  assert.equal(plugins.get("transports", "websocket"), undefined);
+  plugins.enable("aether.transport.websocket");
+  const opening = connect("/pending"); await until(() => peer.pending === 1);
+  await io().disconnect(); await opening; assert.equal(io().status, "disconnected");
+  await connect(); assert.equal(io().status, "connected", "cancelled handshake must release the old connection");
+  const { useStudio } = await import("../src/store/studio");
+  useStudio.getState().createProject({ name: "Network smoke project", board: "esp32-s3", template: "Blank workspace" });
+  await until(() => io().status === "disconnected");
+  assert.ok(peer.closes.includes(1000));
+  console.log("PASS network: real local WebSocket text/binary round trip, UTF-8 bytes, normal/error close, plugin disable, pending handshake cancellation, reconnect and project switch; no hardware");
+} finally { await io().disconnect(); await peer.close(); }
