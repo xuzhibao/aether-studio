@@ -72,7 +72,7 @@ npm run tauri -- dev
 npm run tauri -- build
 ```
 
-GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以及 Linux 原生窗口启动和存活状态；原生窗口检查会上传截图和日志。
+GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原生窗口启动，以及通过原生对话框保存、打开和再次导出工程。测试截图和日志保存在工作流产物中。
 
 ## 运行示例工程
 
@@ -106,7 +106,7 @@ GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以�
 | `aether.micropython` | toolchain | 示例文件、工程文件检查、命令 |
 | `aether.editor.monaco` | editor | Monaco 文本编辑器 |
 | `aether.demo` | simulator | 生成数据、输出日志、画布读数、面板与菜单 |
-| `aether.ai.openai` | ai-provider | 可配置的 Chat Completions HTTP 适配器和 Ask Agent |
+| `aether.ai.openai` | ai-provider | 可配置的 Chat Completions HTTP 适配器、问答与工具 Agent |
 | `aether.templates` | template | 环境监测、空白开发板工程模板 |
 | `aether.project-files` | workspace | `.aether` 工程导入导出、原生文件对话框、命令和菜单 |
 | `aether.project-tools` | tool | 文件读取、电路定义检查与文件修改建议 |
@@ -161,7 +161,7 @@ export const helloPlugin: StudioPlugin = {
 
 在 Plugins 选择 **OpenAI Compatible API**，填写完整的 Chat Completions URL、模型名称和 API Key，然后在右侧面板发送问题。远程地址使用 HTTPS，开发时允许 localhost HTTP。
 
-地址和模型自动保存，API Key 只保留在本次应用会话内。请求直接从浏览器/WebView 发出，服务需允许 CORS。发送时会把当前工程的代码和电路上下文传给所配置的服务。未配置、网络失败或 HTTP 错误会明确显示，不生成预设成功回复。
+地址和模型自动保存，API Key 只保留在本次应用会话内。请求直接从浏览器/WebView 发出，服务需允许 CORS。问答模式发送当前工程的代码和电路上下文；工具模式先发送工程摘要，再按模型调用读取并发送文件或电路数据。未配置、网络失败或 HTTP 错误会明确显示，不生成预设成功回复。
 
 ## Agent 工具与文件修改
 

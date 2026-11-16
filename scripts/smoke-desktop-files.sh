@@ -21,6 +21,7 @@ choose_path() {
   sleep 1 # GTK initializes the location entry after mapping the dialog.
   xdotool key --clearmodifiers ctrl+l
   sleep 0.5
+  xdotool key --clearmodifiers ctrl+a
   xdotool type --clearmodifiers --delay 10 "$1"
   import -window root "smoke-results/$(basename "$1")-dialog.png"
   xdotool key --clearmodifiers Return
@@ -32,7 +33,7 @@ wait_for_file() {
   done
   import -window root smoke-results/native-files-failure.png
   xwininfo -root -tree
-  find "$HOME" /tmp -name "*.aether*" -print 2>/dev/null || true
+  find smoke-results -name "*.aether*" -print
   echo "File not written: $1" >&2
   exit 1
 }
