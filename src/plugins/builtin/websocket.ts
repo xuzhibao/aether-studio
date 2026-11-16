@@ -31,7 +31,6 @@ export function createWebSocketPlugin(createSocket: (url: string) => WebSocket =
             close: () => {
               if (!closing) {
                 closing = true;
-                if (!opened) reject(new Error("WebSocket 连接已取消"));
                 socket.close(1000);
               }
               return closed;
@@ -52,7 +51,7 @@ export function createWebSocketPlugin(createSocket: (url: string) => WebSocket =
             signal?.removeEventListener("abort", abort);
             if (active === connection) active = undefined;
             finishClose();
-            if (closing) return;
+            if (closing) { if (!opened) reject(new Error("WebSocket 连接已取消")); return; }
             const message = `WebSocket 已关闭：${event.code}${event.reason ? " · " + event.reason : ""}`;
             if (!opened) reject(new Error(message));
             else if (event.code === 1000) handlers.closed();

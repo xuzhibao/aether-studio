@@ -23,6 +23,7 @@ interface TransportState {
 let connection: TransportConnection | undefined;
 let generation = 0;
 let pendingController: AbortController | undefined;
+let pendingConnection: Promise<TransportConnection> | undefined;
 const line = (text: string, level: SerialLine["level"] = "info"): SerialLine => ({ id: uid("io"), time: new Date().toLocaleTimeString("en-GB", { hour12: false }), text, level });
 export const useTransport = create<TransportState>((set, get) => ({
   status: "disconnected", transportId: "", address: "", label: "", sendHint: "", error: "", lines: [], receivedBytes: 0, sentBytes: 0,
@@ -38,7 +39,7 @@ export const useTransport = create<TransportState>((set, get) => ({
       const transport = plugins.require("transports", id);
       if (transport.unavailable) throw new Error(transport.unavailable);
       set({ sendHint: transport.sendHint });
-      const opened = await transport.connect(options, {
+      const opening = transport.connect(options, {
         data: (bytes) => {
           if (attempt !== generation) return;
           const text = decoder.decode(bytes, { stream: true });
@@ -58,25 +59,30 @@ export const useTransport = create<TransportState>((set, get) => ({
           plugins.emit("transport:disconnected", { id, error: message });
         },
       }, controller.signal);
+      pendingConnection = opening;
+      const opened = await opening;
       if (attempt !== generation) { await opened.close(); return; }
       connection = opened;
       set((s) => ({ status: "connected", label: opened.label, lines: [...s.lines, line("已连接 " + opened.label, "success")].slice(-500) }));
       plugins.emit("transport:connected", { id, ...options });
     } catch (error) {
       if (attempt === generation) set({ status: "error", error: String(error) });
-    } finally { if (pendingController === controller) pendingController = undefined; }
+    } finally { if (pendingController === controller) { pendingController = undefined; pendingConnection = undefined; } }
   },
   disconnect: async () => {
     if (["disconnected", "disconnecting"].includes(get().status)) return;
     generation++;
+    const opening = pendingConnection;
     pendingController?.abort();
-    pendingController = undefined;
+    pendingController = undefined; pendingConnection = undefined;
     const closing = connection;
     connection = undefined;
     const id = get().transportId;
     set({ status: "disconnecting" });
     try {
       await closing?.close();
+      // A cancelled handshake must release its resource before another connection starts.
+      await opening?.then((opened) => opened.close(), () => {});
       set((s) => ({ status: "disconnected", error: "", lines: [...s.lines, line("连接已断开")].slice(-500) }));
       plugins.emit("transport:disconnected", { id });
     } catch (error) { set({ status: "error", error: "关闭连接失败：" + String(error) }); }

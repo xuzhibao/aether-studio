@@ -275,3 +275,23 @@ readFailure = false;
 plugins.unregister("aether.serial.native");
 plugins.register(nativeSerialPlugin); plugins.enable("aether.serial.native");
 console.log("PASS transport: capability registration, split UTF-8 bytes, actual write contract, disable cleanup, late open cancellation and read error (backend fixtures; OS PTY tested separately)");
+
+// A deferred close event models browsers whose cancelled handshake closes asynchronously.
+const { createWebSocketPlugin, websocketPlugin } = await import("../src/plugins/builtin/websocket");
+let socketFixture!: WebSocket;
+plugins.unregister("aether.transport.websocket");
+plugins.register(createWebSocketPlugin(() => {
+  socketFixture = { readyState: 0, binaryType: "blob", close() {}, send() {} } as unknown as WebSocket;
+  return socketFixture;
+}));
+plugins.enable("aether.transport.websocket");
+const openingSocket = io().connect("websocket", { address: "ws://fixture.invalid", parameters: {} });
+const stoppingSocket = io().disconnect();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(io().status, "disconnecting", "do not report disconnected while the cancelled handshake still owns its socket");
+socketFixture.onclose!({ code: 1000, reason: "cancelled fixture" } as CloseEvent);
+await Promise.all([openingSocket, stoppingSocket]);
+assert.equal(io().status, "disconnected");
+plugins.unregister("aether.transport.websocket");
+plugins.register(websocketPlugin); plugins.enable("aether.transport.websocket");
+console.log("PASS WebSocket cancellation: wait for deferred close event before allowing reconnect (event fixture)");
