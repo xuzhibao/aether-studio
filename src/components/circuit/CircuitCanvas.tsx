@@ -499,7 +499,7 @@ export function CircuitCanvas() {
         </div>
       )}
 
-      {registry.all("overlays").map(({ id, render: Render }) => <Render key={id} readings={readings} running={runState === "running"} />)}
+      {registry.all("overlays").filter((overlay) => !overlay.simulator || overlay.simulator === useStudio.getState().capabilities.simulator).map(({ id, render: Render }) => <Render key={id} readings={readings} running={runState === "running"} />)}
 
       {libraryOpen && <ComponentLibrary />}
       {!libraryOpen && selected && <Inspector comp={selected} />}

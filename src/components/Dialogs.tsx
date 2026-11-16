@@ -1,3 +1,5 @@
+import { isDesktop } from "../lib/desktop";
+import { validProjectPath } from "../../shared/projectFormat";
 import { usePlugins } from "../plugins/usePlugins";
 import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -95,7 +97,7 @@ export function NewProjectDialog() {
     if (dialog === "new-project") {
       setName("Greenhouse Climate Node");
       setBoard(boards[0]?.id ?? "");
-      setTemplate(templates[0]?.id ?? "");
+      setTemplate((isDesktop() ? templates.find((item) => item.id === "ESP32-S3 C++")?.id : undefined) ?? templates[0]?.id ?? "");
     }
   }, [dialog]);
 
@@ -211,8 +213,26 @@ export function NewProjectDialog() {
 }
 
 export function DeployDialog() {
-  const { dialog, setDialog } = useStudio();
-  return <Modal open={dialog === "deploy"} onOpenChange={(open) => !open && setDialog(null)} width={482}>
-    <div className="p-5"><div className="flex justify-between"><Dialog.Title className="text-[14px] font-semibold">Deploy · 尚未实现</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div><Dialog.Description className="mt-4 text-[12px] leading-6 text-[#7D848C]">串口和 WebSocket 插件仅提供数据通信，当前没有已接入的固件烧录插件。Demo Simulation 仅生成演示数据，不会编译或写入设备。</Dialog.Description></div>
-  </Modal>;
+  const { dialog, setDialog, capabilities, getProjectContext, setTab } = useStudio();
+  const registry = usePlugins();
+  const providers = registry.all("deployments").filter((provider) => provider.toolchain === capabilities.toolchain);
+  const [selected, setSelected] = useState(""); const [address, setAddress] = useState(""); const [error, setError] = useState(""); const [running, setRunning] = useState(false);
+  useEffect(() => { if (dialog === "deploy") { setSelected(providers[0]?.id ?? ""); setError(""); } }, [dialog]);
+  const provider = providers.find((item) => item.id === selected);
+  return <Modal open={dialog === "deploy"} onOpenChange={(open) => !open && setDialog(null)} width={500}><form className="p-5" onSubmit={(event) => {
+    event.preventDefault(); if (!provider || !address.trim()) return; setRunning(true); setError("");
+    void provider.deploy(getProjectContext(), address.trim()).then(() => { setDialog(null); setTab("panel:build.tasks"); }).catch((error) => setError(String(error))).finally(() => setRunning(false));
+  }}><div className="flex justify-between"><Dialog.Title className="text-sm font-semibold">Deploy to device</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div><Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">明确选择端口后，调用已注册的部署插件。PlatformIO 将构建并写入目标设备；本操作会修改设备固件，串口监视器会先断开。</Dialog.Description>
+    {!providers.length ? <p className="mt-4 text-xs text-[#A8741F]">当前工具链没有已启用的部署插件。</p> : <><label className="mt-3 block text-xs">Deployment plugin<select aria-label="Deployment plugin" className="input mt-1 w-full" value={selected} onChange={(event) => setSelected(event.target.value)}>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="mt-3 block text-xs">{provider?.endpointLabel}<input aria-label={provider?.endpointLabel} className="input mt-1 w-full" placeholder="COM3 / /dev/ttyUSB0 / /dev/cu.usbserial…" value={address} onChange={(event) => setAddress(event.target.value)} /></label><button type="submit" disabled={running || !address.trim()} className="btn btn-primary mt-4 px-3 py-1.5 text-xs">开始构建并烧录</button></>}
+    {error && <p role="alert" className="mt-3 text-xs text-[#A8741F]">{error}</p>}
+  </form></Modal>;
+}
+
+export function NewFileDialog() {
+  const { dialog, setDialog, files, updateFile, openFile } = useStudio();
+  const [name, setName] = useState("");
+  useEffect(() => { if (dialog === "new-file") setName(""); }, [dialog]);
+  const path = name.trim();
+  const valid = validProjectPath(path) && !["aether.project.json", "circuit.json", "hardware/circuit.json"].includes(path) && !path.split("/").some((part) => [".git", ".pio", ".aether", "node_modules"].includes(part)) && !Object.hasOwn(files, path);
+  return <Modal open={dialog === "new-file"} onOpenChange={(open) => !open && setDialog(null)} width={420}><form className="p-5" onSubmit={(event) => { event.preventDefault(); if (valid) { updateFile(path, ""); openFile(path); setDialog(null); } }}><div className="flex justify-between"><Dialog.Title className="text-sm font-semibold">New file</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div><Dialog.Description className="mt-3 text-[11px] text-[#90969E]">输入工程相对路径。保存工程时写入磁盘。</Dialog.Description><input aria-label="File path" autoFocus className="input my-3 w-full" value={name} onChange={(event) => setName(event.target.value)} placeholder="src/sensor.cpp" /><button type="submit" disabled={!valid} className="btn btn-primary px-3 py-1.5 text-xs">Create file</button>{path && !valid && <p role="alert" className="mt-2 text-[11px] text-[#A8741F]">路径无效、已存在，或属于宿主管理文件。</p>}</form></Modal>;
 }

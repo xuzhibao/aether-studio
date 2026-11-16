@@ -1,3 +1,4 @@
+import { useDisk } from "./disk";
 import { useTransport } from "./transport";
 import { readLayout, writeLayout, defaultLayout } from "../lib/workspacePreferences";
 import { create } from "zustand";
@@ -20,7 +21,7 @@ import { plugins } from "../plugins/runtime";
 import type { ProjectContext, ProjectWorkspace } from "../plugins/api";
 import { clamp, simTime, uid } from "../lib/utils";
 
-export type DialogKind = "new-project" | "deploy" | "devices" | "tests" | "overview" | "plugins" | "review-changes" | null;
+export type DialogKind = "new-project" | "deploy" | "devices" | "tests" | "overview" | "plugins" | "review-changes" | "new-file" | null;
 
 type WorkspaceSnapshot = ProjectWorkspace;
 
@@ -131,8 +132,7 @@ interface StudioState {
   pauseSimulation: () => void;
   resetSimulation: () => void;
   tick: () => void;
-  build: () => void;
-  deployDone: () => void;
+  build: () => Promise<void>;
 
   setAgentDraft: (v: string) => void;
   runAgent: (prompt?: string) => Promise<void>;
@@ -242,7 +242,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       set({ activeTab: "circuit", selectedId: "board-1", tool: "select" });
     }
     if (nav === "circuit") set({ activeTab: "circuit" });
-    if (nav === "source") get().openFile("main.py");
+    if (nav === "source") get().openFile(Object.keys(get().files).find((name) => /\.(py|cpp|c)$/.test(name)) ?? Object.keys(get().files)[0]);
     if (nav === "components") set({ activeTab: "circuit", libraryOpen: true });
     if (nav === "simulation") set({ activeTab: "serial" });
     if (nav === "devices") set({ dialog: "devices" });
@@ -276,6 +276,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     })),
   getProjectContext: () => ({ ...snapshot(get()), project: get().projects.find((p) => p.id === get().activeProjectId)! }),
   saveProject: () => {
+    if (useDisk.getState().root) { void useDisk.getState().save().catch(reportError); return; }
     const s = get();
     const files = { ...s.files, "circuit.json": JSON.stringify({ components: s.components, wires: s.wires }, null, 2) };
     const workspaces = { ...s.workspaces, [s.activeProjectId]: { ...snapshot(s), files } };
@@ -402,12 +403,17 @@ export const useStudio = create<StudioState>((set, get) => ({
       set({ elapsed, readings: frame.readings, ledOn: !s.ledOn, serial: [...s.serial, ...frame.lines.map((text): SerialLine => ({ id: uid("s"), time: simTime(elapsed), level: "data", text }))].slice(-90) });
     });
   },
-  build: () => withCapability(() => {
+  build: async () => {
     const s = get();
-    const lines = plugins.require("toolchains", s.capabilities.toolchain).check(s.getProjectContext());
-    set({ dockOpen: true, dockTab: "console", console: [...s.console, ...lines.map((text): ConsoleLine => ({ id: uid("c"), source: "Build", text, tone: "muted" }))] });
-  }),
-  deployDone: () => get().addToast({ title: "尚未实现", detail: "没有已接入的真实烧录插件。", tone: "warn" }),
+    try {
+      const toolchain = plugins.require("toolchains", s.capabilities.toolchain);
+      if (toolchain.build) { get().setTab("panel:build.tasks"); await toolchain.build(s.getProjectContext()); }
+      else {
+        const lines = toolchain.check(s.getProjectContext());
+        set({ dockOpen: true, dockTab: "console", console: [...s.console, ...lines.map((text): ConsoleLine => ({ id: uid("c"), source: "Build", text, tone: "muted" }))] });
+      }
+    } catch (error) { useDisk.setState({ error: String(error) }); reportError(error); }
+  },
   setAgentDraft: (v) => set({ agentDraft: v }),
   setAgent: (id) => { get().cancelAgent(); set({ activeAgentId: id }); },
   cancelAgent: () => {
@@ -473,6 +479,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   switchProject: (id) => {
     const s = get();
     if (id === s.activeProjectId) return;
+    useDisk.getState().detach();
     get().cancelAgent();
     void useTransport.getState().disconnect();
     const currentSnapshot = snapshot(s);
@@ -512,6 +519,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const projects = [...s.projects, meta];
     const workspaces = { ...s.workspaces, [s.activeProjectId]: snapshot(s), [id]: workspace };
     localStorage.setItem(storageKey, JSON.stringify({ version: 1, projects, activeProjectId: id, workspaces }));
+    useDisk.getState().detach();
     get().cancelAgent();
     void useTransport.getState().disconnect();
     set({ agentMessages: [welcomeMessage], proposalReview: null, projects, workspaces, activeProjectId: id, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(files).filter((f) => f !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [] });
@@ -535,6 +543,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     };
     const currentSnapshot = snapshot(s);
     const workspace = selectedTemplate.create();
+    useDisk.getState().detach();
     get().cancelAgent();
     void useTransport.getState().disconnect();
     set({
@@ -568,6 +577,7 @@ export const useStudio = create<StudioState>((set, get) => ({
 }));
 
 plugins.connect({
+  openProjectFolder: () => useDisk.getState().open(), saveProjectFolder: () => useDisk.getState().saveAs(), reloadProjectFolder: () => useDisk.getState().reload(), buildProject: () => useStudio.getState().build(),
   getProject: () => useStudio.getState().getProjectContext(),
   importProject: (project) => useStudio.getState().importProject(project),
   notify: (title, detail) => useStudio.getState().addToast({ title, detail }),

@@ -1,4 +1,4 @@
-import { isTauri } from "../../lib/desktop";
+import { isDesktop } from "../../lib/desktop";
 import type { StudioPlugin, TransportConnection, TransportPort } from "../api";
 
 export interface SerialBackend {
@@ -8,20 +8,19 @@ export interface SerialBackend {
   write: (id: number, data: number[]) => Promise<void>;
   close: (id: number) => Promise<void>;
 }
-const invoke = async <T>(command: string, args?: Record<string, unknown>) => (await import("@tauri-apps/api/core")).invoke<T>("plugin:serial|" + command, args);
 const desktopBackend: SerialBackend = {
-  list: () => invoke("list"), open: (path, baudRate) => invoke("open", { path, baudRate }),
-  read: (id) => invoke("read", { id }), write: (id, data) => invoke("write", { id, data }), close: (id) => invoke("close", { id }),
+  list: () => window.aether!.serial.list(), open: (path, baudRate) => window.aether!.serial.open(path, baudRate),
+  read: (id) => window.aether!.serial.read(id), write: (id, data) => window.aether!.serial.write(id, data), close: (id) => window.aether!.serial.close(id),
 };
-export function createNativeSerialPlugin(backend = desktopBackend, supported = isTauri()): StudioPlugin {
+export function createNativeSerialPlugin(backend = desktopBackend, supported = isDesktop()): StudioPlugin {
   let enabled = false;
   let active: TransportConnection | undefined;
   return {
-    manifest: { id: "aether.serial.native", name: "桌面串口", version: "0.1.0", type: "transport", entry: "builtin/nativeSerial.ts", enabled: true, description: "通过 Tauri 原生串口插件枚举和打开端口，收发原始字节。8N1、无流控；需手动连接，不自动烧录或执行固件。浏览器中不可用。" },
+    manifest: { id: "aether.serial.native", name: "桌面串口", version: "0.1.0", type: "transport", entry: "builtin/nativeSerial.ts", enabled: true, description: "通过 Electron 原生串口插件枚举和打开端口，收发原始字节。8N1、无流控；需手动连接，不自动烧录或执行固件。浏览器中不可用。" },
     activate(api) {
       enabled = true;
       api.register("transports", {
-        id: "native-serial", name: "Native Serial", unavailable: supported ? undefined : "请在 Tauri 桌面端使用原生串口；浏览器不提供此能力。",
+        id: "native-serial", name: "Native Serial", unavailable: supported ? undefined : "请在 Electron 桌面端使用原生串口；浏览器不提供此能力。",
         endpoint: { label: "端口路径", placeholder: "COM3 / /dev/ttyUSB0 / /dev/cu.usbserial…" },
         parameters: [{ key: "baudRate", label: "波特率", type: "number", initial: "115200", min: 1 }],
         description: "8 data bits · no parity · 1 stop bit · no flow control。也可手动填写未枚举到的端口路径。打开端口不识别开发板或固件。",

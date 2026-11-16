@@ -29,7 +29,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 11 / 11 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 12 / 12 已启用", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -200,7 +200,7 @@ try {
   finishHeldRequest?.();
   await nav.getByRole("button", { name: "Devices", exact: true }).click();
   dialog = page.getByRole("dialog");
-  await dialog.getByText("请在 Tauri 桌面端使用原生串口；浏览器不提供此能力。", { exact: true }).waitFor();
+  await dialog.getByText("请在 Electron 桌面端使用原生串口；浏览器不提供此能力。", { exact: true }).waitFor();
   assert.equal(await dialog.getByRole("button", { name: "建立连接", exact: true }).isDisabled(), true);
   await dialog.getByRole("combobox", { name: "通信插件" }).selectOption("websocket");
   assert.equal(await dialog.getByRole("spinbutton", { name: "波特率" }).count(), 0, "protocol parameters come from the selected plugin");

@@ -52,11 +52,12 @@ export interface TransportParameter { key: string; label: string; type: "text" |
 export interface TransportHandlers { data: (bytes: Uint8Array) => void; error: (message: string) => void; closed: () => void }
 export interface TransportConnection { label: string; write: (bytes: Uint8Array) => Promise<void>; close: () => Promise<void> }
 export interface CapabilityMap {
+  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; deploy: (project: ProjectContext, address: string) => Promise<void> };
   transports: { id: string; name: string; unavailable?: string; endpoint: { label: string; placeholder: string }; parameters: TransportParameter[]; description: string; sendHint: string; list?: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers, signal?: AbortSignal) => Promise<TransportConnection> };
   boards: { id: string; name: string; component: string; description: string };
   components: PartDefinition;
   editors: { id: string; name: string; render: ComponentType<{ file: string }> };
-  toolchains: { id: string; name: string; files: () => Record<string, string>; check: (project: ProjectContext) => string[] };
+  toolchains: { id: string; name: string; files: () => Record<string, string>; check: (project: ProjectContext) => string[]; build?: (project: ProjectContext) => Promise<void> };
   simulators: { id: string; name: string; start: (project: ProjectContext) => string[]; tick: (project: ProjectContext, elapsed: number) => SimulationFrame };
   agents: { id: string; name: string; run: (project: ProjectContext, messages: AIMessage[], signal?: AbortSignal, onTool?: (run: ToolRun) => void) => Promise<AgentResult> };
   tools: { id: string; name: string; description: string; parameters: Record<string, unknown>; execute: (args: unknown, project: ProjectContext) => { output: unknown; proposal?: EditProposal } | Promise<{ output: unknown; proposal?: EditProposal }> };
@@ -64,11 +65,15 @@ export interface CapabilityMap {
   templates: { id: string; name: string; description: string; board: string; create: () => ProjectWorkspace };
   projectFormats: { id: string; name: string; encode: (project: ProjectContext) => string; decode: (content: string) => ProjectContext };
   commands: { id: string; name: string; shortcut?: string; run: () => void | Promise<void> };
-  overlays: { id: string; render: ComponentType<{ readings: PartViewProps["readings"]; running: boolean }> };
+  overlays: { id: string; simulator?: string; render: ComponentType<{ readings: PartViewProps["readings"]; running: boolean }> };
   panels: { id: string; name: string; render: ComponentType };
   menus: { id: string; name: string; command: string; location?: "project" | "share" | "plugins" };
 }
 export interface PluginHost {
+  openProjectFolder: () => Promise<void>;
+  saveProjectFolder: () => Promise<void>;
+  reloadProjectFolder: () => Promise<void>;
+  buildProject: () => Promise<void>;
   getProject: () => ProjectContext;
   log: (text: string) => void;
   importProject: (project: ProjectContext) => void;

@@ -28,7 +28,7 @@ export const projectToolsPlugin: StudioPlugin = {
         const input = args as { summary?: unknown; files?: unknown };
         if (!input || typeof input.summary !== "string" || !Array.isArray(input.files) || !input.files.length) throw new Error("修改需要 summary 和非空 files 数组");
         const files = input.files as { path?: unknown; content?: unknown }[];
-        if (!files.every((file) => file && typeof file.path === "string" && validProjectPath(file.path) && file.path !== "circuit.json" && typeof file.content === "string")) throw new Error("文件路径或内容无效；不能修改生成的 circuit.json");
+        if (!files.every((file) => file && typeof file.path === "string" && validProjectPath(file.path) && !["circuit.json", "hardware/circuit.json", "aether.project.json"].includes(file.path) && typeof file.content === "string")) throw new Error("文件路径或内容无效；不能修改生成的 circuit.json");
         if (new Set(files.map((file) => file.path)).size !== files.length) throw new Error("同一批修改不能重复文件路径");
         const changes = (files as {path: string; content: string}[]).map(({ path, content }) => ({ path, before: Object.hasOwn(project.files, path) ? project.files[path] : null, after: content }));
         const proposal: EditProposal = { id: uid("proposal"), projectId: project.project.id, summary: input.summary, changes, status: "pending" };

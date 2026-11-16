@@ -68,12 +68,12 @@ export function TopBar() {
   const registry = usePlugins();
   const traffic = async (action: "close" | "minimize" | "maximize") => {
     const handled = await windowAction(action);
-    if (!handled) addToast({ title: "Desktop window", detail: "Window controls are enabled in the Tauri build.", tone: "default" });
+    if (!handled) addToast({ title: "Desktop window", detail: "Window controls are enabled in the Electron desktop app.", tone: "default" });
   };
 
   return (
     <header
-      data-tauri-drag-region
+      data-desktop-drag-region
       className="relative z-30 flex h-[54px] flex-none items-center gap-2 bg-[#FCFCFD]/95 px-3 hairline-b"
     >
       <div className="flex min-w-0 items-center gap-3">
@@ -193,7 +193,7 @@ export function TopBar() {
 
         <button onClick={build} className="btn btn-ghost h-[27px] gap-1.5 px-2 text-[10.5px] text-[#4D545C]">
           <Hammer size={12.5} strokeWidth={1.75} className="text-[#70767E]" />
-          Check Files
+          {registry.get("toolchains", useStudio.getState().capabilities.toolchain)?.build ? "Build" : "Check Files"}
         </button>
         <button onClick={() => setDialog("deploy")} className="btn h-[27px] gap-1.5 border-[#D9DDE3] px-2.5 text-[10.5px] font-[520] text-[#2F3339]">
           <ArrowUpToLine size={12.5} strokeWidth={1.9} className="text-[#007AFF]" />

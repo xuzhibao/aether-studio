@@ -7,11 +7,16 @@
     "dev": "vite --port 1420",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "tauri": "tauri",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.desktop.json",
     "smoke": "node --import tsx scripts/smoke.ts",
     "smoke:ui": "node scripts/smoke-ui.mjs",
-    "smoke:network": "node --import tsx scripts/smoke-network.ts"
+    "smoke:network": "node --import tsx scripts/smoke-network.ts",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "desktop": "node scripts/dev-desktop.mjs",
+    "desktop:package": "npm run build && npm run build:desktop && npm run licenses && electron-builder --dir",
+    "smoke:host": "node --import tsx scripts/smoke-host.ts",
+    "smoke:desktop": "node scripts/smoke-electron.mjs",
+    "licenses": "node scripts/licenses.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -23,24 +28,26 @@
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@tauri-apps/api": "^2.8.0",
-    "@tauri-apps/plugin-dialog": "^2.8.4",
-    "@tauri-apps/plugin-fs": "^2.7.1",
+    "chokidar": "^4.0.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "monaco-editor": "^0.52.2",
     "motion": "^12.23.12",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "serialport": "^13.0.0",
     "tailwind-merge": "^2.6.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4",
+    "@types/node": "^22.20.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.25.12",
     "playwright": "^1.65.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
@@ -51,5 +58,41 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "main": "desktop-dist/main.mjs",
+  "license": "Apache-2.0",
+  "description": "Plugin-based open source hardware development workspace",
+  "author": "Aether Studio contributors",
+  "build": {
+    "appId": "studio.aether.app",
+    "productName": "Aether Studio",
+    "files": [
+      "dist/**/*",
+      "desktop-dist/**/*",
+      "THIRD_PARTY_NOTICES.md",
+      "LICENSE",
+      "dist-licenses/**/*",
+      "NOTICE"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "dir"
+      ],
+      "category": "Development",
+      "executableName": "aether-studio"
+    },
+    "mac": {
+      "target": [
+        "dir"
+      ]
+    },
+    "win": {
+      "target": [
+        "dir"
+      ]
+    }
   }
 }

@@ -11,7 +11,7 @@ export const demoPlugin: StudioPlugin = {
       useEffect(() => api.events.on("demo:sample", setLastSample), []);
       return <div><DemoPanel /><pre className="px-5 text-[11px]">{lastSample ? JSON.stringify(lastSample, null, 2) : "尚无样本；请先运行 Demo Simulation。"}</pre></div>;
     }
-    api.register("overlays", { id: "demo.readings", render: ({ readings, running }) => <div className="hud-card pointer-events-none absolute bottom-[18px] right-4 w-[243px] p-3 text-[10px] text-[#727A83]"><div className="font-semibold text-[#2B2F35]">Demo Simulation · {running ? "Running" : "Idle"}</div><div className="mt-2">{readings.temperature} °C · {readings.humidity}% · {readings.pressure} hPa</div><div className="mt-2 border-t border-[#EEF0F3] pt-2">生成数据 · 不执行固件 · 无真实设备</div></div> });
+    api.register("overlays", { id: "demo.readings", simulator: "demo", render: ({ readings, running }) => <div className="hud-card pointer-events-none absolute bottom-[18px] right-4 w-[243px] p-3 text-[10px] text-[#727A83]"><div className="font-semibold text-[#2B2F35]">Demo Simulation · {running ? "Running" : "Idle"}</div><div className="mt-2">{readings.temperature} °C · {readings.humidity}% · {readings.pressure} hPa</div><div className="mt-2 border-t border-[#EEF0F3] pt-2">生成数据 · 不执行固件 · 无真实设备</div></div> });
     api.register("simulators", {
       id: "demo", name: "Demo Simulation",
       start: ({ components }) => {

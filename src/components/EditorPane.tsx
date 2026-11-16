@@ -1,3 +1,4 @@
+import { useDisk } from "../store/disk";
 import { useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import {
@@ -13,6 +14,8 @@ import { cn } from "../lib/utils";
 import { Tip } from "./ui";
 
 const languageFor = (file: string) => {
+  if (/\.(cpp|hpp|cc|h|c)$/.test(file)) return "cpp";
+  if (file.endsWith(".ini")) return "ini";
   if (file.endsWith(".py")) return "python";
   if (file.endsWith(".json")) return "json";
   if (file.endsWith(".md")) return "markdown";
@@ -20,6 +23,7 @@ const languageFor = (file: string) => {
 };
 
 export function EditorPane({ file }: { file: string }) {
+  const diskBusy = useDisk((s) => s.busy);
   const content = useStudio((s) => s.files[file] ?? "");
   const updateFile = useStudio((s) => s.updateFile);
   const aiModified = useStudio((s) => s.aiModifiedFiles.includes(file));
@@ -137,7 +141,7 @@ export function EditorPane({ file }: { file: string }) {
           loading={<div className="flex h-full items-center justify-center text-[10px] text-[#9AA0A8]">Preparing editor…</div>}
           options={{
             automaticLayout: true,
-            readOnly: file === "circuit.json",
+            readOnly: diskBusy || file === "circuit.json",
             fontFamily: '"JetBrains Mono Variable", "SF Mono", monospace',
             fontSize,
             lineHeight: 21,

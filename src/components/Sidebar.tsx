@@ -178,7 +178,7 @@ export function Sidebar() {
         <div className="flex h-[42px] flex-none items-center justify-between pl-3.5 pr-2">
           <SectionLabel>Explorer</SectionLabel>
           <div className="flex items-center">
-            <IconButton label="New file" className="h-[24px] w-[24px]" onClick={() => addToast({ title: "New file", detail: "Choose a template from the command palette.", tone: "default" })}>
+            <IconButton label="New file" className="h-[24px] w-[24px]" onClick={() => setDialog("new-file")}>
               <Plus size={13} />
             </IconButton>
             <IconButton label="Collapse sidebar" className="h-[24px] w-[24px]" onClick={() => setSidebarCollapsed(true)}>
@@ -234,11 +234,7 @@ export function Sidebar() {
 
             {rootOpen && (
               <div className="mt-0.5">
-                <FolderRow label="firmware" open={firmwareOpen} onToggle={() => setFirmwareOpen(!firmwareOpen)} depth={1} />
-                {firmwareOpen && Object.keys(files).filter((file) => file !== "circuit.json" && file !== "README.md").map((file) => <FileRow key={file} path={file} depth={2} />)}
-                <FolderRow label="hardware" open={hardwareOpen} onToggle={() => setHardwareOpen(!hardwareOpen)} depth={1} />
-                {hardwareOpen && <FileRow path="circuit.json" depth={2} />}
-                {files["README.md"] !== undefined && <FileRow path="README.md" depth={1} />}
+                <ProjectTree files={Object.keys(files)} />
               </div>
             )}
           </div>
@@ -301,4 +297,14 @@ export function Sidebar() {
       <ResizeDivider axis="x" value={sidebarWidth} min={208} max={304} onChange={setSidebarWidth} />
     </div>
   );
+}
+
+function ProjectTree({ files, prefix = "", depth = 1 }: { files: string[]; prefix?: string; depth?: number }) {
+  const [closed, setClosed] = useState<string[]>([]);
+  const children = [...new Set(files.filter((file) => file.startsWith(prefix)).map((file) => file.slice(prefix.length).split("/")[0]))].sort();
+  return <>{children.map((name) => {
+    const key = prefix + name;
+    const directory = files.some((file) => file.startsWith(key + "/"));
+    return directory ? <div key={key}><FolderRow label={name} depth={depth} open={!closed.includes(key)} onToggle={() => setClosed(closed.includes(key) ? closed.filter((item) => item !== key) : [...closed, key])} />{!closed.includes(key) && <ProjectTree files={files} prefix={key + "/"} depth={depth + 1} />}</div> : <FileRow key={key} path={key} depth={depth} />;
+  })}</>;
 }

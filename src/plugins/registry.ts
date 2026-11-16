@@ -61,6 +61,7 @@ export class PluginRegistry {
         project: { get: () => this.host.getProject() },
         capabilities: { all: (kind) => this.all(kind), require: (kind, id) => this.require(kind, id) },
         host: {
+          openProjectFolder: () => this.host.openProjectFolder(), saveProjectFolder: () => this.host.saveProjectFolder(), reloadProjectFolder: () => this.host.reloadProjectFolder(), buildProject: () => this.host.buildProject(),
           getProject: () => this.host.getProject(), log: (text) => this.host.log(text),
           importProject: (project) => this.host.importProject(project), notify: (title, detail) => this.host.notify(title, detail),
           runSimulation: () => this.host.runSimulation(), createProject: (board, template) => this.host.createProject(board, template),

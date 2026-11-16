@@ -1,216 +1,179 @@
 # Aether Studio
 
-Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发工作区。可以在同一工作区中选择开发板、创建工程、编辑电路和代码、运行演示、保存并重开，也能通过 `.aether` 文件迁移工程。
+Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、TypeScript 和 Monaco。它提供电路画布、文本编辑器、磁盘工程、构建任务、串口和 WebSocket 监视器，以及可配置的 AI 工程助手。
 
-核心原则是 **万物皆插件（Everything is a Plugin）**。宿主提供桌面窗口、工作区、工程存储、事件和扩展入口。开发板、元器件、编辑器、工具链、仿真与 AI 服务通过同一套 TypeScript API 注册。
+**万物皆插件**：宿主提供窗口、文件访问、任务与资源管理、事件和 UI 扩展入口；开发板、元器件、编辑器、工具链、部署、仿真和 AI 通过插件注册。官方功能也使用同一注册表。
 
-## 功能
+## 当前功能
 
-- macOS 风格布局、左侧导航、中央画布、右侧 Agent、底部调试区、Monaco 编辑器和命令面板。
-- 统一插件注册、启用、停用和卸载接口，依赖检查，停用时移除能力、UI 和事件订阅。
-- Plugins 界面显示名称、类型、版本、入口、依赖和已注册能力，并支持启停和插件设置。
-- 开发板和模板来自已启用插件。可创建空白 ESP32-S3 工程，添加、拖动、删除元器件和编辑连线。
-- MicroPython 示例可编辑；Check Files 只检查入口文件非空和配置 JSON 可解析，不是真实编译。
-- Demo Simulation 提供环境数据、OLED 演示帧、日志、画布读数和插件面板。
-- 保存工程后，可切换工程、刷新页面或重启应用再打开，恢复电路、代码和能力绑定。
-- 导出和导入 `.aether` 工程文件，在不同浏览器、设备和桌面端之间迁移代码、电路和能力绑定。
-- 保存面板布局、分屏比例、编辑器字号和减少动画设置。
-- 桌面串口插件支持端口枚举与文本收发；WebSocket 插件支持浏览器和桌面网络通信。两者使用同一连接管理和监视器，设备数据与演示日志分开显示。
-- AI 面板可调用用户配置的 OpenAI Compatible Chat Completions API。支持问答与工程工具调用；文件修改先预览，再由用户应用，不自动执行硬件操作。
+- 保留 macOS 风格布局、电路画布、Monaco、命令面板和 Agent 面板。
+- 插件启停、依赖检查、事件、设置，以及命令、菜单和面板贡献。
+- 打开真实工程目录，编辑 UTF-8 文本、新建文件、保存、检测外部变更和重启后重开。
+- PlatformIO C++ 工程构建：实际进程、实时日志、退出码、取消任务和子进程清理。
+- 构建成功后记录已加载工程文本快照 SHA-256、PlatformIO 版本、产物路径、大小和校验和。
+- PlatformIO 部署插件：明确填写端口后，运行实际构建及上传命令。不会因为打开串口而显示烧录成功。
+- ESP32-S3 C++ 模板，以及 MicroPython 电路演示模板。
+- 原生串口与 WebSocket 字节通信；设备输出与 Demo Simulation 分开显示。
+- `.aether` 工程导入导出、面板布局和编辑设置保存。
+- 可配置的 Chat Completions API、工程读取工具、文件修改建议预览、应用、拒绝和请求取消。
 
-**Demo Simulation 使用生成数据，不执行 Python、不验证电气接线、不连接真实硬件。修改 Python 代码不会改变演示数据。**
+**Demo Simulation 只生成演示数据，不执行 Python、不验证电气接线、不连接真实硬件。** C++ 模板不绑定演示仿真器。构建成功不代表已烧录，上传成功应以实际任务结果为准。
 
-## 启动
+## 安装与启动
 
-建议使用 Node.js 22 或更新版本。首次安装：
+需要 Node.js 22 或更新版本：
 
 ```bash
 npm ci
+npm run desktop
+```
+
+桌面开发命令会编译主进程并启动 Vite。修改主进程或 preload 后需重启此命令。浏览器预览：
+
+```bash
 npm run dev
 ```
 
-打开 `http://127.0.0.1:1420`。
+打开 `http://127.0.0.1:1420`。浏览器保留工作区、工程文件和演示能力，不能调用桌面文件系统、串口或本地构建。
+
+构建未安装的桌面应用目录：
+
+```bash
+npm run desktop:package
+```
+
+输出位于 `release/`。此命令包含前端、主进程、第三方许可收集及 Electron 打包。当前不生成签名安装器或自动更新包。
+
+## 配置 PlatformIO
+
+PlatformIO Core 由用户安装，Aether 不捆绑编译器、芯片 SDK 或目标固件。首次构建需要下载工程声明的平台和工具包。
+
+Linux / macOS：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install platformio==6.1.19
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run desktop
+```
+
+Windows PowerShell：
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install platformio==6.1.19
+$env:AETHER_PLATFORMIO_CLI = (Resolve-Path .\.venv\Scripts\platformio.exe).Path
+npm run desktop
+```
+
+如果 `platformio` 已在应用进程的 PATH 中，可以直接启动。`AETHER_PLATFORMIO_CLI` 指定完整可执行文件路径，不接受 shell 命令串。找不到工具或构建失败时显示实际错误。
+
+## 磁盘工程
+
+工程菜单或命令面板提供：
+
+- **Open project folder**：打开已有目录，快捷键 `Ctrl+Alt+O` / `⌘⌥O`。
+- **Save project to folder**：将当前工作区写入空目录，不覆盖已有目录内容。
+- **Reload folder (discard unsaved edits)**：重新读取磁盘，放弃当前未保存缓冲区。
+
+打开普通 PlatformIO 目录时不执行工程脚本；点击构建或上传才执行工具及工程配置中的构建脚本。请只构建可信工程。
+
+目录中的普通源文件保持原有路径。Aether 元数据保存在 `aether.project.json`，电路定义保存在 `hardware/circuit.json`。界面的 `circuit.json` 是电路的只读视图，不能作为独立源文件创建；打开目录时若根目录已有同名文件，需要先重命名。
+
+保存使用外部变更检查和逐文件临时写入。文件被外部修改后，Aether 拒绝覆盖；可重新读取目录，或将当前缓冲区另存到空目录。保存不是整个工程的文件系统事务，异常中断后不要直接删除 `.aether-saving` 文件，应先检查其中内容。
+
+当前加载不超过 1 MiB 的 UTF-8 文本文件，跳过链接、二进制和工具缓存目录，包括 `.git`、`.pio`、`.aether`、`node_modules`、`build`、`dist`、`target`、`release`。未加载的文件不会被保存操作删除或改写。尚未提供重命名、删除、外部编辑自动合并或多根工作区。
+
+磁盘工程源码以文件系统为准；`localStorage` 用于浏览器工作区和界面偏好。桌面最近打开目录记录在应用用户数据目录，重启时重新读取文件。可通过 `AETHER_USER_DATA_DIR` 指定用户数据位置。
+
+## 构建与上传
+
+在 **Plugins** 启用 PlatformIO，然后创建 **ESP32-S3 C++** 模板，或打开现有 `platformio.ini` 工程。新建模板需先 **Save project to folder**。
+
+点击 **Build**，或在左侧 **Build Tasks** 中选择 **Build with PlatformIO**。任务运行前保存工程文件，并断开设备通信。运行期间可以编辑缓冲区，但需等待或取消任务后再保存；下次构建才会使用这些编辑。
+
+最近成功任务保存在 `.aether/build.json`，包含已加载文本与元数据的快照指纹、工具版本、日志和产物校验和。构建前后若已加载的磁盘输入发生变化，不登记产物。此前成功任务的记录不代表当前未保存缓冲区已经构建。
+
+上传时点击 **Deploy to Device**，选择 **PlatformIO Upload** 并明确填写端口。插件执行 `platformio run --target upload --upload-port PORT`，由工程配置决定芯片、构建和烧录方式。上传会修改设备固件；监视器先断开，完成后需手动重新连接。MicroPython 文件部署尚未接入。
+
+不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 提供固定平台版本的 ESP32-S3 Arduino 示例。
+
+## 设备通信
+
+打开 **Devices**，选择通信插件及地址。原生串口支持手动路径、端口枚举、波特率、8N1 和无流控。WebSocket 支持 `ws://`、`wss://`，接收文本及二进制帧，发送携带 UTF-8 文本的二进制帧。
+
+**Serial Monitor** 的 **Device transport** 显示实际接收数据，支持筛选、暂停显示、清空及换行选择。暂停显示不暂停接收。串口 TX 表示本地写入完成；WebSocket TX 表示进入发送队列，均不代表设备已执行命令。当前一次只连接一个设备或服务。
+
+停用插件、切换工程或执行构建会断开通信。打开端口不识别开发板或固件；部分开发板可能因打开端口时控制线变化而复位。Linux 用户需要端口访问权限。
+
+## AI
+
+在 Plugins 配置 **OpenAI Compatible API** 的完整 Chat Completions URL、模型和 API Key。地址和模型保存到本地，Key 仅保留在当前会话。请求直接从渲染进程发出，服务需要允许对应来源的跨域访问；AI 服务不是 IDE 的必选依赖。
+
+普通问答发送当前工程上下文；**Project Tools** 按模型请求读取文件或电路，并生成文件修改建议。修改须预览后应用，应用后仍需保存。文件改变后禁止用过期建议覆盖。Agent 不自动构建、上传或执行硬件操作。
+
+## 插件开发
+
+`src/plugins/api.ts` 定义 Manifest 和能力接口，`src/plugins/registry.ts` 管理注册、依赖、启停和清理。当前官方前端插件由 `src/plugins/builtin/index.tsx` 静态导入，运行在可信应用进程内。
+
+插件通过 `api.register(kind, contribution)` 提供开发板、元器件、编辑器、工具链、部署、仿真器、通信、模型、Agent、工具、模板、命令、工程格式、菜单、面板和叠加视图。操作时使用 `api.project.get()` 读取当前工程；事件订阅在停用时移除。
+
+例如，在内置插件目录新增：
+
+```ts
+import type { StudioPlugin } from "../api";
+export const hello: StudioPlugin = {
+  manifest: { id: "example.hello", name: "Hello", version: "0.1.0", type: "workspace", entry: "builtin/hello.ts", enabled: true, description: "输出当前工程名称。" },
+  activate(api) {
+    api.register("commands", {
+      id: "hello.project", name: "Hello project",
+      run: () => api.host.log(api.project.get().project.name),
+    });
+  },
+};
+```
+
+将插件加入 `builtinPlugins` 数组后，可在命令面板运行，停用后命令被移除。
+
+桌面受限 API 定义在 `shared/desktop.ts`，preload 只暴露指定操作，不暴露 Node、任意 IPC 或任意 shell 执行。后台任务只能调用已注册提供者。PlatformIO 的后台命令和产物发现位于 `desktop/plugins/platformio.ts`，串口适配位于 `desktop/plugins/serial.ts`。
+
+当前还没有本地插件包安装器、独立插件进程、完整沙箱和插件市场。前后端注册入口仍随应用构建，不宣称支持不可信外部插件。
+
+## 检查
 
 ```bash
 npm run typecheck
 npm run smoke
 npm run smoke:network
 npm run build
-npm run preview -- --host 127.0.0.1
+npm run build:desktop
 ```
 
-`smoke:network` 启动本地 WebSocket 服务，验证实际网络收发、关闭、取消连接和插件生命周期，不需要外部服务或硬件。
+真实文件和构建检查需要 PlatformIO：
 
-`smoke` 使用一个小脚本检查插件生命周期、依赖、工程编辑和持久化、演示输出，以及 AI 适配器的 HTTP 请求格式和错误处理。AI 检查使用测试响应，不验证真实模型服务。
+```bash
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
+```
 
-浏览器端到端冒烟测试：
+浏览器检查：
 
 ```bash
 npx playwright install chromium
-npm run build
 npm run smoke:ui
 ```
 
-Linux CI 可使用 `npx playwright install --with-deps chromium` 同时安装浏览器系统依赖。测试会启动独立的预览服务，操作插件界面、创建工程、添加和拖动元器件、在 Monaco 中编辑、运行演示、保存后刷新重开，并检查浏览器控制台。截图写入 `smoke-results/`。
-
-## 桌面端
-
-先安装 Rust stable 和 [Tauri 2 对应平台的系统依赖](https://v2.tauri.app/start/prerequisites/)。macOS 需要 Xcode Command Line Tools；Windows 需要 MSVC C++ 构建工具和 WebView2；Linux 需要 GTK/WebKit 开发库。
-
-Ubuntu 24.04 的依赖安装示例：
+桌面检查需要图形会话、Python 和 PlatformIO：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+npm run desktop:package
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:desktop
 ```
 
-在仓库根目录运行：
+Linux CI 使用 Xvfb 运行打包后的应用。测试仅替换系统文件选择器的选择结果；文件读写、任务、编译、系统虚拟串口和本地 WebSocket 收发实际执行。AI 使用明确标记的 HTTP 测试响应，没有在线模型或真实开发板验证。
 
-```bash
-npm run tauri -- dev
-```
+## 许可与限制
 
-此命令会自动启动 Vite，无需另开 `npm run dev`。构建桌面包：
+Aether 原创代码采用 Apache-2.0，见 `LICENSE` 和 `NOTICE`。第三方组件保留原许可。`npm run licenses` 收集当前安装依赖及 Electron/Chromium 的许可，生成 `THIRD_PARTY_NOTICES.md` 和随桌面包分发的 `dist-licenses/`。该清单不等于对任意工程 SDK、模型权重和二进制附件的完整审计。
 
-```bash
-npm run tauri -- build
-```
+PlatformIO Core 使用 Apache-2.0；其下载的开发平台、编译器和 SDK 按各自许可提供。IDE 不要求商业模拟器、账号或付费模型。支持 ESP32 不代表其无线固件依赖全部提供源码。
 
-GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原生窗口启动，通过原生对话框保存、打开和再次导出工程，以及系统虚拟串口和本地 WebSocket 服务的界面收发。测试截图和日志保存在工作流产物中。
-
-## 运行示例工程
-
-1. 打开左侧 **Plugins**，确认内置插件已启用。
-2. 选择 ESP32-S3 插件，点击创建工程，选择 **Blank workspace**。
-3. 打开 **Components**，分别添加 **BME280** 和 **OLED**；可拖动元器件，使用 `W` 选择引脚连线。
-4. 打开 `main.py` 编辑示例代码。代码中的 BME280/SSD1306 真机驱动需自行安装，本 MVP 不提供它们。
-5. 点击 **Run Simulation**，在底部 **Console / Serial Monitor** 查看带有 `Demo Simulation` 标记的输出。
-6. 使用 `Ctrl+S` / `⌘S` 保存。刷新页面、重启桌面端或从顶部工程菜单重新打开。
-
-也可直接使用 **Environment monitor** 模板，获得预置电路和代码。
-
-工程与插件设置默认保存到当前浏览器来源或桌面 WebView 的 `localStorage`。创建和切换工程时保存工作区；普通编辑需按保存快捷键。浏览器和桌面端的数据分别存储。`circuit.json` 是从画布生成的只读视图，修改电路请使用画布。
-
-## 工程文件与布局
-
-工程菜单提供 **Open project (.aether)** 和 **Export project (.aether)**，也可在命令面板执行。导出包含当前尚未保存的代码、电路和能力绑定，不包含 API Key、聊天记录或工作区布局。
-
-- `Ctrl+Shift+E` / `⌘⇧E`：导出工程。浏览器下载 `.aether` 文件；桌面端通过原生对话框选择保存位置。
-- `Ctrl+Shift+O` / `⌘⇧O`：选择并打开工程文件。导入会创建新的本地工程，保留已有工程；无效格式或不存在的连线引脚会被拒绝。
-- 工程文件不包含插件实现。另一台设备仍需安装并启用对应插件，停用的能力不会因为导入而自动启用。
-
-顶部 **Workspace settings** 可调整编辑器字号和减少动画设置，点击 **Save layout** 保存当前面板尺寸、折叠状态、调试面板、分屏比例及编辑器设置。下次启动自动恢复，**Reset layout** 恢复默认值。标签栏菜单也提供 **Save panel layout**。
-
-## 内置插件
-
-| ID | 类型 | 提供的能力 |
-| --- | --- | --- |
-| `aether.esp32-s3` | board | ESP32-S3 DevKitC-1 定义、引脚和外观 |
-| `aether.components` | components | BME280、OLED、LED、电阻等九种元器件 |
-| `aether.micropython` | toolchain | 示例文件、工程文件检查、命令 |
-| `aether.editor.monaco` | editor | Monaco 文本编辑器 |
-| `aether.demo` | simulator | 生成数据、输出日志、画布读数、面板与菜单 |
-| `aether.ai.openai` | ai-provider | 可配置的 Chat Completions HTTP 适配器、问答与工具 Agent |
-| `aether.templates` | template | 环境监测、空白开发板工程模板 |
-| `aether.project-files` | workspace | `.aether` 工程导入导出、原生文件对话框、命令和菜单 |
-| `aether.project-tools` | tool | 文件读取、电路定义检查与文件修改建议 |
-| `aether.serial.native` | transport | 桌面原生串口枚举、打开、收发字节和关闭 |
-| `aether.transport.websocket` | transport | 浏览器与桌面端 WebSocket 文本和二进制帧通信 |
-
-停用被其他已启用插件依赖的插件时，界面会提示先停用依赖者。重新启用插件会加载依赖。停用不会删除工程内容；对应能力会停止提供，画布或编辑器显示不可用提示。
-
-## 插件如何工作
-
-- `src/plugins/api.ts`：Manifest、Plugin API、工程上下文和贡献类型。
-- `src/plugins/registry.ts`：统一注册表、生命周期、依赖、事件、设置和能力清理。
-- `src/plugins/builtin/`：内置插件实现；硬件定义和绘制也在这里。
-- `src/plugins/runtime.ts`：导入内置入口并注册加载。
-- `src/store/studio.ts`：工作区状态、工程保存和调用已注册能力。
-
-`entry` 是入口元数据；当前入口由 TypeScript 静态导入，不从字符串动态执行，也不扫描用户目录。插件在同一进程内运行。类型可注册多个能力，不各建一套管理系统。生命周期目前是同步 `activate(api)` 和可选的 `deactivate()`；异步 API 调用放在注册的命令或能力内。
-
-插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`tools`、`transports`、`templates`、`commands`、`projectFormats`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
-
-## 开发一个简单插件
-
-新建 `src/plugins/builtin/hello.ts`：
-
-```ts
-import type { StudioPlugin } from "../api";
-
-export const helloPlugin: StudioPlugin = {
-  manifest: {
-    id: "example.hello",
-    name: "Hello Project",
-    version: "0.1.0",
-    type: "workspace",
-    entry: "builtin/hello.ts",
-    description: "读取当前工程并输出日志。",
-    enabled: true,
-  },
-  activate(api) {
-    api.register("commands", {
-      id: "example.hello.show",
-      name: "Hello: 显示工程名称",
-      run() {
-        api.host.log(api.project.get().project.name);
-        api.events.emit("hello:shown");
-      },
-    });
-  },
-};
-```
-
-在 `src/plugins/builtin/index.tsx` 导入 `helloPlugin` 并加入 `builtinPlugins` 数组。启动后在 Plugins 中查看，在 `Ctrl+K` / `⌘K` 命令面板中执行。命令输出显示在 Console。插件停用后命令会被移除。贡献 ID 在同类能力内必须唯一。
-
-## AI API 设置
-
-在 Plugins 选择 **OpenAI Compatible API**，填写完整的 Chat Completions URL、模型名称和 API Key，然后在右侧面板发送问题。远程地址使用 HTTPS，开发时允许 localhost HTTP。
-
-地址和模型自动保存，API Key 只保留在本次应用会话内。请求直接从浏览器/WebView 发出，服务需允许 CORS。问答模式发送当前工程的代码和电路上下文；工具模式先发送工程摘要，再按模型调用读取并发送文件或电路数据。未配置、网络失败或 HTTP 错误会明确显示，不生成预设成功回复。
-
-## Agent 工具与文件修改
-
-配置 API 后，可在右侧 **Agent mode** 选择普通问答或 **Project Tools**。工具模式要求所配置的服务和模型支持 Chat Completions function calling。工具来自已启用插件，停用工程工具插件后不会再提供这些能力。
-
-- `project_read_file`：读取工程中的文件内容。
-- `project_inspect_circuit`：查看元器件和连线定义，不执行电气校验或硬件测量。
-- `project_propose_files`：对已有文件或新文件提出完整内容建议，不直接写入。
-
-工具调用结果显示在对话中。点击 **预览文件修改** 查看生成时的原文与建议版本，可切换文件，选择 **应用修改** 或 **拒绝建议**。应用只更新当前工作区，仍需保存；不会自动编译、运行或烧录。若工程或相关文件在建议生成后已改变，应用会被阻止，避免覆盖手动编辑。`circuit.json` 由画布生成，工具不能修改它。
-
-请求期间可点击 **Stop** 取消。切换工程、重新选择 Agent 或关闭提供当前 Agent 的插件也会取消未完成的请求。单次请求最长 60 秒，工具模式最多进行 6 轮 API 交互。网络错误和工具错误会显示实际原因。
-
-新增工具时，在插件中注册 `tools` 能力，提供 `id`、`name`、`description`、JSON Schema `parameters` 和 `execute(args, project)`。返回 `{ output }` 提供执行结果，返回 `{ output, proposal }` 可提供待审阅文件修改。普通问答不会调用工具。
-
-## 桌面串口
-
-在 Tauri 桌面端打开 **Devices**，选择 **Native Serial**，从端口列表选择或手动填写 `COM3`、`/dev/ttyUSB0`、`/dev/cu.usbserial…` 等路径。设置波特率后点击 **建立连接**。当前参数为 8N1、无流控；更改参数需先断开再连接。
-
-打开 **Serial Monitor**，选择 **Device transport** 查看设备数据。底部输入框发送 UTF-8 文本，可选择不附加换行、LF 或 CRLF。`RX` 表示收到的字节，`TX` 在写入成功后记录，不代表设备已执行命令。暂停显示不会暂停接收；记录保留最近 500 项，支持筛选和清空。底部调试区的 Serial Monitor 也可切换数据来源。
-
-**Demo Simulation** 始终使用独立演示日志，不会把模拟读数写入真实串口。打开端口只表示操作系统连接成功，不检测开发板型号、固件或传感器，也不发送烧录或 Python 执行指令。部分开发板可能因操作系统在打开端口时改变控制线而复位。设备连接不保存，切换工程或停用通信插件会断开。断开时保留历史记录；错误会显示实际原因。
-
-浏览器中原生串口入口会显示不可用，当前没有 Web Serial 适配器。Linux 用户需要端口访问权限；被其他程序占用的端口需先释放。CI 使用操作系统虚拟串口检查收发与关闭，不替代开发板验证。
-
-## WebSocket 通信
-
-浏览器和桌面端均可在 **Devices** 选择 **WebSocket**，输入 `ws://` 或 `wss://` 地址，点击 **建立连接**。连接成功后打开 **Serial Monitor**，切换 **Device transport** 收发文本。串口和 WebSocket 共用监视器，目前一次只连接一个服务或端口。
-
-接收的文本帧转为 UTF-8 字节，二进制帧按字节接收；监视器以 UTF-8 显示。发送文本时，将包含所选换行符的 UTF-8 字节放入二进制帧。服务端需要支持二进制帧；当前不提供文本帧发送模式、自定义握手头、自动重连或硬件协议适配。
-
-WebSocket 的 `TX` 表示数据已交给浏览器/WebView 发送队列，不代表已送达或被设备执行。正常的远端关闭会断开，异常关闭显示关闭码和原因。建立连接期间可点击 **断开连接** 取消；停用插件或切换工程也会关闭连接。地址和连接状态不写入工程文件或持久配置。HTTPS 页面应连接 `wss://`；证书与浏览器网络策略仍由浏览器/WebView 检查。
-
-## 开发通信插件
-
-注册 `transports` 能力，为 `endpoint` 提供地址标签和提示，在 `parameters` 中声明协议参数字段。宿主按插件声明生成连接表单：串口提供波特率，WebSocket 没有波特率。可选的 `list()` 为地址输入框提供候选项。
-
-`connect({ address, parameters }, handlers, signal)` 返回带有 `label`、`write(bytes)` 和 `close()` 的连接。接收字节通过 `handlers.data` 回传，正常远端关闭调用 `handlers.closed`，错误调用 `handlers.error`。插件应响应取消信号，在停用时关闭自身连接，并用 `sendHint` 说明写入成功的具体含义。
-
-原生串口代码位于 `src-tauri/src/plugins/serial.rs`，通过 Tauri 插件注册并声明对应命令权限；WebSocket 实现在 `src/plugins/builtin/websocket.ts`。
-
-## 尚未实现
-
-真实 MicroPython 执行器、编译器集成、物理电路仿真、通用 USB 协议、真实烧录、MQTT/HTTP 等其他通信协议、终端命令工具、无需审阅的自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
-
-外部插件安装、市场、版本依赖解析、跨进程 RPC、沙箱与完整权限系统当前尚未提供。
+当前尚未提供 LSP、DAP 调试、交互式 PTY 终端、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 桌面运行需要对应环境验证。

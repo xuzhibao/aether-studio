@@ -1,3 +1,4 @@
+import { usePlugins } from "../plugins/usePlugins";
 import { useTransport } from "../store/transport";
 import {
   AlertTriangle,
@@ -11,6 +12,8 @@ import { cn, formatElapsed } from "../lib/utils";
 
 export function StatusBar() {
   const io = useTransport();
+  const registry = usePlugins();
+  const context = useStudio((s) => s.capabilities);
   const {
     runState,
     elapsed,
@@ -37,7 +40,7 @@ export function StatusBar() {
       </button>
       <span className="font-mono text-[9px] tabular text-[#767D85]">{formatElapsed(elapsed)}</span>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
-      <span className="flex items-center gap-1"><Cpu size={10} className="text-[#878D95]" /> ESP32-S3 <span className="text-[#B8BCC2]">·</span> MicroPython</span>
+      <span className="flex items-center gap-1"><Cpu size={10} className="text-[#878D95]" /> {registry.get("boards", context.board)?.name || "File workspace"} <span className="text-[#B8BCC2]">·</span> {registry.get("toolchains", context.toolchain)?.name || "No toolchain"}</span>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => { setDockOpen(true); setDockTab("console"); }}>
         <CheckCircle2 size={10} className="text-[#2B9661]" /> {errors} Errors

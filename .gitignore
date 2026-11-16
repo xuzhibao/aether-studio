@@ -8,3 +8,12 @@ src-tauri/gen
 *.tsbuildinfo
 
 smoke-results
+
+desktop-dist
+release
+dist-licenses
+**/.pio
+**/.aether
+*.aether-saving
+
+.venv
