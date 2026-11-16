@@ -26,7 +26,7 @@ export function SerialWorkspace() {
     catch (error) { addToast({ title: "串口发送失败", detail: String(error), tone: "warn" }); }
     finally { setSending(false); }
   };
-  return <div className="flex h-full min-h-0 flex-col bg-[#FCFCFD]">
+  return <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[#FCFCFD]">
     <div className="flex h-[48px] flex-none items-center gap-2.5 border-b border-[#E9EBEE] px-3.5">
       <Activity size={16} className="text-[#47617D]" /><div><div className="text-[12px] font-semibold">Serial Monitor</div><div className="mt-0.5 text-[9px] text-[#969CA4]">{source === "demo" ? "Demo Simulation · Generated data · 不连接设备" : `${io.path || "未连接端口"} · ${io.status} · RX ${io.receivedBytes} bytes · TX ${io.sentBytes} bytes`}</div></div>
       <div className="ml-auto flex items-center gap-2"><select aria-label="Serial source" value={source} onChange={(event) => { setSource(event.target.value as typeof source); setFrozen(null); }} className="input text-[10px]"><option value="demo">Demo Simulation</option><option value="device">Device transport</option></select><button className="btn px-2 py-1 text-[10px]" onClick={() => setDialog("devices")}><Usb size={12} /> Manage connection</button>{source === "demo" && <button className="btn px-2 py-1 text-[10px]" onClick={() => runState === "running" ? pauseSimulation() : runSimulation()}>{runState === "running" ? "Pause simulation" : "Run simulation"}</button>}</div>
