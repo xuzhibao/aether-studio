@@ -23,8 +23,22 @@ choose_path() {
   sleep 0.5
   xdotool key --clearmodifiers ctrl+a
   xdotool type --clearmodifiers --delay 10 "$1"
+  sleep 0.5 # Let GTK resolve the typed path before activating it.
   import -window root "smoke-results/$(basename "$1")-dialog.png"
   xdotool key --clearmodifiers Return
+  sleep 1
+  # Open dialogs may first navigate to the typed path, then confirm selection.
+  if xdotool search --onlyvisible --name "^$2$" > /dev/null; then
+    xdotool windowfocus --sync "$dialog"
+    xdotool key --clearmodifiers Return
+  fi
+  for attempt in $(seq 1 20); do
+    if ! xdotool search --onlyvisible --name "^$2$" > /dev/null; then return; fi
+    sleep 1
+  done
+  import -window root smoke-results/native-files-failure.png
+  echo "Native file dialog did not close: $2" >&2
+  exit 1
 }
 wait_for_file() {
   for attempt in $(seq 1 20); do
@@ -54,6 +68,7 @@ xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+shift+o
 choose_path "$import_path" "Open Aether Project"
 sleep 2
+import -window root smoke-results/native-import-opened.png
 xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+shift+e
 choose_path "$roundtrip_path" "Export Aether Project"
