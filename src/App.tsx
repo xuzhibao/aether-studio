@@ -1,4 +1,6 @@
+import { MotionConfig } from "motion/react";
 import { PluginsDialog } from "./components/PluginsDialog";
+import { plugins } from "./plugins/runtime";
 import { useEffect } from "react";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { AgentPanel } from "./components/AgentPanel";
@@ -16,6 +18,8 @@ import { useStudio } from "./store/studio";
 
 export default function App() {
   const tick = useStudio((s) => s.tick);
+  const reducedMotion = useStudio((s) => s.settings.reducedMotion);
+  useEffect(() => { document.documentElement.dataset.reducedMotion = String(reducedMotion); }, [reducedMotion]);
 
   useEffect(() => {
     const timer = window.setInterval(() => tick(), 1000);
@@ -29,6 +33,13 @@ export default function App() {
       const mod = event.metaKey || event.ctrlKey;
       const s = useStudio.getState();
 
+      const shortcut = [mod ? "mod" : "", event.shiftKey ? "shift" : "", event.key.toLowerCase()].filter(Boolean).join("+");
+      const command = plugins.all("commands").find((c) => c.shortcut === shortcut);
+      if (command) {
+        event.preventDefault();
+        void Promise.resolve().then(command.run).catch((error) => s.addToast({ title: "插件命令失败", detail: String(error), tone: "warn" }));
+        return;
+      }
       if (mod && event.key.toLowerCase() === "k") {
         event.preventDefault();
         s.setCommandOpen(!s.commandOpen);
@@ -75,7 +86,7 @@ export default function App() {
   }, []);
 
   return (
-    <TooltipProvider delayDuration={380} skipDelayDuration={180}>
+    <MotionConfig reducedMotion={reducedMotion ? "always" : "user"}><TooltipProvider delayDuration={380} skipDelayDuration={180}>
       <div className="app-shell">
         <TopBar />
         <div className="flex min-h-0 flex-1">
@@ -93,6 +104,6 @@ export default function App() {
         <ProjectOverviewDialog />
         <Toasts />
       </div>
-    </TooltipProvider>
+    </TooltipProvider></MotionConfig>
   );
 }

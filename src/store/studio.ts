@@ -1,3 +1,4 @@
+import { readLayout, writeLayout, defaultLayout } from "../lib/workspacePreferences";
 import { create } from "zustand";
 import type {
   AgentMessage,
@@ -50,6 +51,7 @@ interface StudioState {
   dockHeight: number;
   dockTab: DockTab;
   splitMode: boolean;
+  splitRatio: number;
 
   selectedId: string | null;
   selectedPin: string | null;
@@ -100,6 +102,9 @@ interface StudioState {
   setDockHeight: (v: number) => void;
   setDockTab: (tab: DockTab) => void;
   setSplitMode: (v: boolean) => void;
+  setSplitRatio: (v: number) => void;
+  saveLayout: () => void;
+  resetLayout: () => void;
 
   selectComponent: (id: string | null) => void;
   selectPin: (comp: string, pin: string) => void;
@@ -132,6 +137,7 @@ interface StudioState {
   applyFix: (messageId: string) => void;
   addToast: (toast: Omit<Toast, "id">) => void;
   dismissToast: (id: string) => void;
+  importProject: (project: ProjectContext) => void;
   createProject: (input: NewProjectInput) => void;
   switchProject: (id: string) => void;
   updateSettings: (partial: Partial<StudioState["settings"]>) => void;
@@ -168,6 +174,7 @@ function loadProjects(): { projects: ProjectMeta[]; activeProjectId: string; wor
     activeProjectId: "env-monitor", workspaces: { "env-monitor": baseWorkspace() },
   };
 }
+const preferences = readLayout();
 const saved = loadProjects();
 const initial = saved.workspaces[saved.activeProjectId];
 const reportError = (error: unknown) => useStudio.getState().addToast({ title: "操作失败", detail: error instanceof Error ? error.message : String(error), tone: "warn" });
@@ -184,15 +191,6 @@ export const useStudio = create<StudioState>((set, get) => ({
   openTabs: ["circuit", "main.py", "serial"],
   dirty: false,
 
-  sidebarCollapsed: false,
-  sidebarWidth: 238,
-  agentWidth: 366,
-  agentCollapsed: false,
-  dockOpen: true,
-  dockHeight: 218,
-  dockTab: "code",
-  splitMode: false,
-
   selectedId: null,
   selectedPin: null,
   inspectorTab: "properties",
@@ -208,7 +206,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   readings: { temperature: 24.6, humidity: 48.2, pressure: 1013.2 },
   ledOn: true,
   serial: [],
-  console: [{ id: "startup", source: "Simulator", text: loadError || "Demo Simulation · 生成数据演示；不执行固件、不连接真实硬件。", tone: loadError ? "warn" : "muted" }],
+  console: [{ id: "startup", source: "Simulator", text: loadError || preferences.error || "Demo Simulation · 生成数据演示；不执行固件、不连接真实硬件。", tone: loadError || preferences.error ? "warn" : "muted" }],
   errors: 0,
   warnings: 0,
   cpu: 38,
@@ -224,7 +222,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   dialog: null,
   commandOpen: false,
   toasts: [],
-  settings: { reducedMotion: false, autopilot: true, fontSize: 12.5 },
+  ...preferences.layout,
 
   setActiveNav: (nav) => {
     set({ activeNav: nav });
@@ -287,6 +285,9 @@ export const useStudio = create<StudioState>((set, get) => ({
   setDockHeight: (v) => set({ dockHeight: clamp(v, 128, 360) }),
   setDockTab: (tab) => set({ dockTab: tab, dockOpen: true }),
   setSplitMode: (v) => set({ splitMode: v }),
+  setSplitRatio: (v) => set({ splitRatio: clamp(v, 36, 72) }),
+  saveLayout: () => withCapability(() => { writeLayout(get()); get().addToast({ title: "布局已保存", detail: "面板尺寸、分屏和编辑器设置将在下次启动时恢复。", tone: "success" }); }),
+  resetLayout: () => withCapability(() => { writeLayout(defaultLayout); set(structuredClone(defaultLayout)); }),
 
   selectComponent: (id) =>
     set({ selectedId: id, inspectorTab: "properties", libraryOpen: false, selectedPin: null }),
@@ -451,6 +452,20 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().saveProject();
   },
 
+  importProject: (context) => {
+    const s = get();
+    const id = uid("project");
+    const { project: source, ...content } = clone(context);
+    const meta: ProjectMeta = { ...source, id, updated: "Just now" };
+    const files = { ...content.files, "circuit.json": JSON.stringify({ components: content.components, wires: content.wires }, null, 2) };
+    const workspace = { ...content, files };
+    const projects = [...s.projects, meta];
+    const workspaces = { ...s.workspaces, [s.activeProjectId]: snapshot(s), [id]: workspace };
+    localStorage.setItem(storageKey, JSON.stringify({ version: 1, projects, activeProjectId: id, workspaces }));
+    set({ projects, workspaces, activeProjectId: id, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(files).filter((f) => f !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [] });
+    plugins.emit("project:imported", { id });
+  },
+
   createProject: (input) => withCapability(() => {
     const s = get();
     const id = uid("project");
@@ -498,6 +513,8 @@ export const useStudio = create<StudioState>((set, get) => ({
 
 plugins.connect({
   getProject: () => useStudio.getState().getProjectContext(),
+  importProject: (project) => useStudio.getState().importProject(project),
+  notify: (title, detail) => useStudio.getState().addToast({ title, detail }),
   log: (text) => useStudio.setState((s) => ({ console: [...s.console, { id: uid("plugin"), source: "Simulator", text }], dockOpen: true, dockTab: "console" })),
   runSimulation: () => useStudio.getState().runSimulation(),
   createProject: (board, template) => useStudio.getState().createProject({ name: "ESP32-S3 Demo", board, template }),

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
 const server = spawn("npm", ["run", "preview", "--", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], { stdio: "pipe", detached: process.platform !== "win32" });
@@ -26,7 +26,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 7 / 7 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 8 / 8 已启用", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -100,8 +100,44 @@ try {
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
   await nav.getByRole("button", { name: "Demo Simulation 说明", exact: true }).click();
   await page.getByRole("heading", { name: "Demo Simulation", exact: true }).waitFor();
+  const downloadEvent = page.waitForEvent("download");
+  await page.keyboard.press("Control+Shift+e");
+  const download = await downloadEvent;
+  assert.ok(download.suggestedFilename().endsWith(".aether"));
+  const portable = JSON.parse(await readFile(await download.path(), "utf8"));
+  assert.equal(portable.format, "aether-studio");
+  assert.equal(portable.workspace.components.length, 3);
+  assert.ok(portable.workspace.files["main.py"].includes("# smoke: persisted edit"));
+  portable.project.name = "导入的环境工程";
+  const chooserEvent = page.waitForEvent("filechooser");
+  await page.keyboard.press("Control+Shift+o");
+  await (await chooserEvent).setFiles({ name: "portable.aether", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(portable)) });
+  await page.getByRole("button").filter({ hasText: "导入的环境工程" }).first().waitFor();
+  const imported = await page.evaluate(() => JSON.parse(localStorage.getItem("aether.projects.v1")));
+  assert.notEqual(imported.activeProjectId, id);
+  assert.equal(imported.workspaces[imported.activeProjectId].files["main.py"], stored.workspaces[id].files["main.py"]);
+  assert.equal(imported.workspaces[imported.activeProjectId].components.length, 3);
+  assert.equal(imported.workspaces[id].files["main.py"], stored.workspaces[id].files["main.py"]);
+  const invalidChooser = page.waitForEvent("filechooser");
+  await page.keyboard.press("Control+Shift+o");
+  await (await invalidChooser).setFiles({ name: "invalid.aether", mimeType: "application/json", buffer: Buffer.from('{"version":999}') });
+  await page.getByText(/不支持的 Aether 工程格式/).waitFor();
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("aether.projects.v1")).activeProjectId), imported.activeProjectId);
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Editor font size" }).fill("16");
+  await page.getByRole("checkbox", { name: "Reduce motion" }).check();
+  await page.getByRole("button", { name: "Save layout", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
+  assert.equal(await page.getByRole("spinbutton", { name: "Editor font size" }).inputValue(), "16");
+  assert.equal(await page.getByRole("checkbox", { name: "Reduce motion" }).isChecked(), true);
+  await page.getByRole("button", { name: "Reset layout", exact: true }).click();
+  assert.equal(await page.getByRole("spinbutton", { name: "Editor font size" }).inputValue(), "12.5");
+  await page.keyboard.press("Escape");
+  await page.screenshot({ path: "smoke-results/imported-project.png", fullPage: true });
   assert.deepEqual(errors, [], "no browser console errors");
-  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, no console errors");
+  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, no console errors");
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: "smoke-results/failure.png", fullPage: true });

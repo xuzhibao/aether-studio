@@ -47,7 +47,8 @@ export function Workspace() {
   const plugins = usePlugins();
   const panel = plugins.all("panels").find((p) => activeTab === "panel:" + p.id);
   const Panel = panel?.render;
-  const [leftWidth, setLeftWidth] = useState(58);
+  const leftWidth = useStudio((s) => s.splitRatio);
+  const setLeftWidth = useStudio((s) => s.setSplitRatio);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">

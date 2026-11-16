@@ -1,6 +1,6 @@
 # Aether Studio
 
-Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发工作区。可以在同一工作区中选择开发板、创建工程、编辑电路和代码、运行演示、保存并重开。
+Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发工作区。可以在同一工作区中选择开发板、创建工程、编辑电路和代码、运行演示、保存并重开，也能通过 `.aether` 文件迁移工程。
 
 核心原则是 **万物皆插件（Everything is a Plugin）**。宿主提供桌面窗口、工作区、工程存储、事件和扩展入口。开发板、元器件、编辑器、工具链、仿真与 AI 服务通过同一套 TypeScript API 注册。
 
@@ -13,6 +13,8 @@ Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发
 - MicroPython 示例可编辑；Check Files 只检查入口文件非空和配置 JSON 可解析，不是真实编译。
 - Demo Simulation 提供环境数据、OLED 演示帧、日志、画布读数和插件面板。
 - 保存工程后，可切换工程、刷新页面或重启应用再打开，恢复电路、代码和能力绑定。
+- 导出和导入 `.aether` 工程文件，在不同浏览器、设备和桌面端之间迁移代码、电路和能力绑定。
+- 保存面板布局、分屏比例、编辑器字号和减少动画设置。
 - AI 面板可调用用户配置的 OpenAI Compatible Chat Completions API。只提供问答，不自动修改或执行工程。
 
 **Demo Simulation 使用生成数据，不执行 Python、不验证电气接线、不连接真实硬件。修改 Python 代码不会改变演示数据。**
@@ -83,7 +85,17 @@ GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以�
 
 也可直接使用 **Environment monitor** 模板，获得预置电路和代码。
 
-工程与插件设置保存到当前浏览器来源或桌面 WebView 的 `localStorage`，不会生成 `.aether` 文件。创建和切换工程时保存工作区；普通编辑需按保存快捷键。浏览器和桌面端的数据分别存储。`circuit.json` 是从画布生成的只读视图，修改电路请使用画布。
+工程与插件设置默认保存到当前浏览器来源或桌面 WebView 的 `localStorage`。创建和切换工程时保存工作区；普通编辑需按保存快捷键。浏览器和桌面端的数据分别存储。`circuit.json` 是从画布生成的只读视图，修改电路请使用画布。
+
+## 工程文件与布局
+
+工程菜单提供 **Open project (.aether)** 和 **Export project (.aether)**，也可在命令面板执行。导出包含当前尚未保存的代码、电路和能力绑定，不包含 API Key、聊天记录或工作区布局。
+
+- `Ctrl+Shift+E` / `⌘⇧E`：导出工程。浏览器下载 `.aether` 文件；桌面端通过原生对话框选择保存位置。
+- `Ctrl+Shift+O` / `⌘⇧O`：选择并打开工程文件。导入会创建新的本地工程，保留已有工程；无效格式或不存在的连线引脚会被拒绝。
+- 工程文件不包含插件实现。另一台设备仍需安装并启用对应插件，停用的能力不会因为导入而自动启用。
+
+顶部 **Workspace settings** 可调整编辑器字号和减少动画设置，点击 **Save layout** 保存当前面板尺寸、折叠状态、调试面板、分屏比例及编辑器设置。下次启动自动恢复，**Reset layout** 恢复默认值。标签栏菜单也提供 **Save panel layout**。
 
 ## 内置插件
 
@@ -96,6 +108,7 @@ GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以�
 | `aether.demo` | simulator | 生成数据、输出日志、画布读数、面板与菜单 |
 | `aether.ai.openai` | ai-provider | 可配置的 Chat Completions HTTP 适配器和 Ask Agent |
 | `aether.templates` | template | 环境监测、空白开发板工程模板 |
+| `aether.project-files` | workspace | `.aether` 工程导入导出、原生文件对话框、命令和菜单 |
 
 停用被其他已启用插件依赖的插件时，界面会提示先停用依赖者。重新启用插件会加载依赖。停用不会删除工程内容；对应能力会停止提供，画布或编辑器显示不可用提示。
 
@@ -109,7 +122,7 @@ GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以�
 
 `entry` 是入口元数据；当前入口由 TypeScript 静态导入，不从字符串动态执行，也不扫描用户目录。插件在同一进程内运行。类型可注册多个能力，不各建一套管理系统。生命周期目前是同步 `activate(api)` 和可选的 `deactivate()`；异步 API 调用放在注册的命令或能力内。
 
-插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`templates`、`commands`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
+插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`templates`、`commands`、`projectFormats`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
 
 ## 开发一个简单插件
 
@@ -151,6 +164,6 @@ export const helloPlugin: StudioPlugin = {
 
 ## 尚未实现
 
-真实 MicroPython 执行器、编译器集成、物理电路仿真、串口/USB、真实烧录、网络协议、Agent 工具执行和自动改码、真实硬件测试、文件导入导出、云同步、账号和分享、语音及附件上传。
+真实 MicroPython 执行器、编译器集成、物理电路仿真、串口/USB、真实烧录、网络协议、Agent 工具执行和自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
 
 外部插件安装、市场、版本依赖解析、跨进程 RPC、沙箱与完整权限系统当前尚未提供。

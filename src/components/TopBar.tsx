@@ -56,6 +56,7 @@ export function TopBar() {
   const activeProjectId = useStudio((s) => s.activeProjectId);
   const projects = useStudio((s) => s.projects);
   const dirty = useStudio((s) => s.dirty);
+  const settings = useStudio((s) => s.settings);
   const runState = useStudio((s) => s.runState);
   const agentCollapsed = useStudio((s) => s.agentCollapsed);
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -83,7 +84,7 @@ export function TopBar() {
           <DropdownMenu.Trigger className="btn px-2 py-1 text-[10px]">Plugins</DropdownMenu.Trigger>
           <DropdownMenu.Portal><DropdownMenu.Content className="menu-content" sideOffset={8}>
             <DropdownMenu.Item className="menu-item" onSelect={() => setDialog("plugins")}>管理插件</DropdownMenu.Item>
-            {registry.all("menus").map((menu) => <DropdownMenu.Item key={menu.id} className="menu-item" onSelect={() => { void Promise.resolve().then(() => registry.require("commands", menu.command).run()).catch((error) => addToast({ title: "插件命令失败", detail: String(error), tone: "warn" })); }}>{menu.name}</DropdownMenu.Item>)}
+            {registry.all("menus").filter((menu) => !menu.location || menu.location === "plugins").map((menu) => <DropdownMenu.Item key={menu.id} className="menu-item" onSelect={() => { void Promise.resolve().then(() => registry.require("commands", menu.command).run()).catch((error) => addToast({ title: "插件命令失败", detail: String(error), tone: "warn" })); }}>{menu.name}</DropdownMenu.Item>)}
           </DropdownMenu.Content></DropdownMenu.Portal>
         </DropdownMenu.Root>
         <DropdownMenu.Root>
@@ -132,6 +133,7 @@ export function TopBar() {
               <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Project settings", detail: "Workspace configuration is up to date.", tone: "default" })}>
                 <Settings2 size={13} /> Project Settings
               </DropdownMenu.Item>
+              {registry.all("menus").filter((menu) => menu.location === "project").map((menu) => <DropdownMenu.Item key={menu.id} className="menu-item" onSelect={() => { void Promise.resolve().then(() => registry.require("commands", menu.command).run()).catch((error) => addToast({ title: "插件命令失败", detail: String(error), tone: "warn" })); }}>{menu.name}</DropdownMenu.Item>)}
               <DropdownMenu.Separator className="menu-sep" />
               <DropdownMenu.Item className="menu-item" onSelect={saveProject}>
                 <Cloud size={13} /> Save Snapshot
@@ -244,10 +246,7 @@ export function TopBar() {
                   <Copy size={10} /> Copy
                 </button>
               </div>
-              <button className="menu-item mt-1.5 h-[27px] w-full px-1.5" onClick={() => addToast({ title: "尚未实现", detail: "工程文件导出尚未实现。", tone: "default" })}>
-                <Download size={12} /> Export project bundle
-                <span className="menu-meta">.aether</span>
-              </button>
+              {registry.all("menus").filter((menu) => menu.location === "share").map((menu) => <button key={menu.id} className="menu-item mt-1.5 h-[27px] w-full px-1.5" onClick={() => { void Promise.resolve().then(() => registry.require("commands", menu.command).run()).catch((error) => addToast({ title: "插件命令失败", detail: String(error), tone: "warn" })); }}><Download size={12} />{menu.name}</button>)}
               <button className="menu-item h-[27px] w-full px-1.5" onClick={() => addToast({ title: "尚未实现", detail: "在线工程预览尚未实现。", tone: "default" })}>
                 <ExternalLink size={12} /> Open read-only preview
               </button>
@@ -267,18 +266,13 @@ export function TopBar() {
                 <div className="text-[11.5px] font-semibold">Workspace settings</div>
                 <span className="text-[9px] text-[#9CA1A8]">Aether 0.1.0</span>
               </div>
-              <div className="space-y-0.5">
-                {[
-                  ["Appearance", "Light", false],
-                  ["Editor font", "JetBrains Mono 12.5", false],
-                  ["Agent autopilot", "尚未实现", true],
-                ].map(([label, value]) => (
-                  <div key={label as string} className="flex h-[29px] items-center justify-between rounded-[5px] px-1.5 text-[10.5px] hover:bg-[#F6F7F9]">
-                    <span className="text-[#5C626A]">{label}</span>
-                    <span className="text-[#9499A1]">{value}</span>
-                  </div>
-                ))}
-              </div>
+              <label className="mt-2 flex items-center justify-between text-[10.5px] text-[#5C626A]">Editor font size
+                <input aria-label="Editor font size" type="number" min={10} max={22} step={0.5} value={settings.fontSize} className="input w-[70px] text-[10px]" onChange={(e) => useStudio.getState().updateSettings({ fontSize: Math.max(10, Math.min(22, Number(e.target.value))) })} />
+              </label>
+              <label className="mt-3 flex items-center justify-between text-[10.5px] text-[#5C626A]">Reduce motion
+                <input aria-label="Reduce motion" type="checkbox" checked={settings.reducedMotion} onChange={(e) => useStudio.getState().updateSettings({ reducedMotion: e.target.checked })} />
+              </label>
+              <div className="mt-3 flex gap-2"><button className="btn px-2 py-1 text-[10px]" onClick={() => useStudio.getState().saveLayout()}>Save layout</button><button className="btn px-2 py-1 text-[10px]" onClick={() => useStudio.getState().resetLayout()}>Reset layout</button></div>
               <div className="my-2 h-px bg-[#ECEEF1]" />
               <button className="menu-item h-[27px] w-full" onClick={() => addToast({ title: "Documentation", detail: "请查看仓库 README.md。", tone: "default" })}>
                 <CircleHelp size={12} /> Documentation

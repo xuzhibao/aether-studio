@@ -105,7 +105,7 @@ export function TabBar() {
               Fit canvas to view
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="menu-sep" />
-            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "尚未实现", detail: "布局保存尚未接入。", tone: "default" })}>
+            <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().saveLayout()}>
               Save panel layout
             </DropdownMenu.Item>
             <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Tabs", detail: "All project files are available in the explorer.", tone: "default" })}>

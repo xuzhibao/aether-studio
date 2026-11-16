@@ -7,6 +7,7 @@ const LazyEditor = lazy(() => import("../../components/EditorPane").then((m) => 
 function EditorPane({ file }: { file: string }) { return <Suspense fallback={<div className="p-4 text-xs">Loading editor…</div>}><LazyEditor file={file} /></Suspense>; }
 import { micropythonPlugin } from "./micropython";
 import { demoPlugin } from "./demo";
+import { projectFilesPlugin } from "./projectFiles";
 import { providerPlugin } from "./provider";
 const boardPlugin: StudioPlugin = {
   manifest: { id: "aether.esp32-s3", name: "ESP32-S3 DevKitC-1", type: "board", version: "0.1.0", entry: "builtin/index.tsx#boardPlugin", enabled: true, description: "ESP32-S3 开发板定义、引脚和电路外观。" },
@@ -39,4 +40,4 @@ const templatePlugin: StudioPlugin = {
     api.register("commands", { id: "esp32.example", name: "ESP32-S3: 创建环境监测示例", run: () => api.host.createProject("esp32-s3", "Environment monitor") });
   },
 };
-export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin];
+export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin];

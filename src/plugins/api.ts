@@ -53,14 +53,17 @@ export interface CapabilityMap {
   agents: { id: string; name: string; run: (project: ProjectContext, messages: AIMessage[], signal?: AbortSignal) => Promise<string> };
   providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string> };
   templates: { id: string; name: string; description: string; board: string; create: () => ProjectWorkspace };
-  commands: { id: string; name: string; run: () => void | Promise<void> };
+  projectFormats: { id: string; name: string; encode: (project: ProjectContext) => string; decode: (content: string) => ProjectContext };
+  commands: { id: string; name: string; shortcut?: string; run: () => void | Promise<void> };
   overlays: { id: string; render: ComponentType<{ readings: PartViewProps["readings"]; running: boolean }> };
   panels: { id: string; name: string; render: ComponentType };
-  menus: { id: string; name: string; command: string };
+  menus: { id: string; name: string; command: string; location?: "project" | "share" | "plugins" };
 }
 export interface PluginHost {
   getProject: () => ProjectContext;
   log: (text: string) => void;
+  importProject: (project: ProjectContext) => void;
+  notify: (title: string, detail: string) => void;
   runSimulation: () => void;
   createProject: (board: string, template: string) => void;
 }
