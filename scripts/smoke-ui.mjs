@@ -90,6 +90,8 @@ try {
   assert.match(await dialog.getByRole("alert").innerText(), /请先停用/);
   await dialog.getByRole("button", { name: /^ESP32 示例工程/ }).click();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
+  await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
+  await dialog.getByRole("button", { name: "停用", exact: true }).click();
   await dialog.getByRole("button", { name: /^Monaco 编辑器/ }).click();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
@@ -98,6 +100,8 @@ try {
   dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
   await dialog.getByRole("button", { name: /^ESP32 示例工程/ }).click();
+  await dialog.getByRole("button", { name: "启用", exact: true }).click();
+  await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
   await page.screenshot({ path: "smoke-results/plugins.png", fullPage: true });
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();

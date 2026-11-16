@@ -21,7 +21,7 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 
 ## 安装与启动
 
-需要 Node.js 22 或更新版本：
+需要 Node.js 22.12.0 或更新版本：
 
 ```bash
 npm ci
@@ -42,7 +42,7 @@ npm run dev
 npm run desktop:package
 ```
 
-输出位于 `release/`。此命令包含前端、主进程、第三方许可收集及 Electron 打包。当前不生成签名安装器或自动更新包。
+首次启动或打包会下载 Electron 运行时。输出位于 `release/`。打包命令包含前端、主进程、第三方许可收集及 Electron 打包。当前不生成签名安装器或自动更新包。
 
 ## 配置 PlatformIO
 
