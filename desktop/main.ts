@@ -64,22 +64,24 @@ app.on("before-quit", (event) => {
   void Promise.all([tasks.stopAll(), serial.dispose(), workspace.close()]).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
-await app.whenReady();
-const directory = path.dirname(fileURLToPath(import.meta.url));
-const assets = path.resolve(directory, "../dist");
-protocol.handle("aether", (request) => {
-  const url = new URL(request.url);
-  const file = path.resolve(assets, "." + decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname));
-  if (url.hostname !== "app" || !file.startsWith(assets + path.sep)) return new Response("Forbidden", { status: 403 });
-  return net.fetch(pathToFileURL(file).href);
-});
-window = new BrowserWindow({ width: 1728, height: 1080, minWidth: 1180, minHeight: 760, frame: false, backgroundColor: "#F5F6F8", webPreferences: { preload: path.join(directory, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false } });
-window.on("close", (event) => { if (!confirmClose()) event.preventDefault(); else dirty = false; });
-window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-window.webContents.on("will-navigate", (event) => event.preventDefault());
-routes();
-if (process.env.AETHER_DEV_URL) {
-  const url = new URL(process.env.AETHER_DEV_URL);
-  if (url.hostname !== "127.0.0.1" || url.protocol !== "http:") throw new Error("开发服务器只能使用本机 HTTP 地址");
-  await window.loadURL(url.href);
-} else await window.loadURL("aether://app/index.html");
+// Keep the ESM entry import complete so Electron can reach its ready event.
+void app.whenReady().then(async () => {
+  const directory = path.dirname(fileURLToPath(import.meta.url));
+  const assets = path.resolve(directory, "../dist");
+  protocol.handle("aether", (request) => {
+    const url = new URL(request.url);
+    const file = path.resolve(assets, "." + decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname));
+    if (url.hostname !== "app" || !file.startsWith(assets + path.sep)) return new Response("Forbidden", { status: 403 });
+    return net.fetch(pathToFileURL(file).href);
+  });
+  window = new BrowserWindow({ width: 1728, height: 1080, minWidth: 1180, minHeight: 760, frame: false, backgroundColor: "#F5F6F8", webPreferences: { preload: path.join(directory, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  window.on("close", (event) => { if (!confirmClose()) event.preventDefault(); else dirty = false; });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  routes();
+  if (process.env.AETHER_DEV_URL) {
+    const url = new URL(process.env.AETHER_DEV_URL);
+    if (url.hostname !== "127.0.0.1" || url.protocol !== "http:") throw new Error("开发服务器只能使用本机 HTTP 地址");
+    await window.loadURL(url.href);
+  } else await window.loadURL("aether://app/index.html");
+}).catch((error) => { console.error("Aether startup failed", error); app.exit(1); });
