@@ -1,10 +1,22 @@
 import assert from "node:assert/strict";
+import { WebSocket as NodeWebSocket } from "ws";
 import { startWebSocketPeer } from "./websocket-peer.mjs";
 const memory = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", { value: { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value) } });
 Object.defineProperty(globalThis, "window", { value: globalThis });
 const { useTransport } = await import("../src/store/transport");
 const { plugins } = await import("../src/plugins/runtime");
+// The app runs in browsers/WebViews. Use ws as the standalone Node test client:
+// Node 22's built-in client can omit close after aborting a held upgrade.
+const { createWebSocketPlugin } = await import("../src/plugins/builtin/websocket");
+const clientErrors: string[] = [];
+plugins.unregister("aether.transport.websocket");
+plugins.register(createWebSocketPlugin((url) => {
+  const client = new NodeWebSocket(url);
+  client.on("error", (error) => clientErrors.push(error.message));
+  return client as unknown as WebSocket;
+}));
+plugins.enable("aether.transport.websocket");
 const io = () => useTransport.getState();
 const until = async (condition: () => boolean) => { for (let n = 0; n < 500 && !condition(); n++) await new Promise((resolve) => setTimeout(resolve, 10)); assert.ok(condition()); };
 const peer = await startWebSocketPeer();
@@ -32,5 +44,6 @@ try {
   useStudio.getState().createProject({ name: "Network smoke project", board: "esp32-s3", template: "Blank workspace" });
   await until(() => io().status === "disconnected");
   assert.ok(peer.closes.includes(1000));
+  assert.ok(clientErrors.every((message) => message.includes("closed before the connection was established")), "only cancellation errors are expected from the Node client");
   console.log("PASS network: real local WebSocket text/binary round trip, UTF-8 bytes, normal/error close, plugin disable, pending handshake cancellation, reconnect and project switch; no hardware");
 } finally { await io().disconnect(); await peer.close(); }
