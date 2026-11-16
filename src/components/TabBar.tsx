@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useStudio } from "../store/studio";
+import { usePlugins } from "../plugins/usePlugins";
 import { cn } from "../lib/utils";
 import { Tip } from "./ui";
 
@@ -23,9 +24,9 @@ const iconFor = (tab: string) => {
   return FileText;
 };
 
-const labelFor = (tab: string) => (tab === "circuit" ? "Circuit" : tab === "serial" ? "Serial Monitor" : tab.split("/").pop());
-
 export function TabBar() {
+  const registry = usePlugins();
+  const labelFor = (tab: string) => tab.startsWith("panel:") ? registry.get("panels", tab.slice(6))?.name ?? "Plugin panel" : tab === "circuit" ? "Circuit" : tab === "serial" ? "Serial Monitor" : tab.split("/").pop();
   const { openTabs, activeTab, setTab, closeTab, aiModifiedFiles, splitMode, setSplitMode, dockOpen, setDockOpen, addToast, saveProject } = useStudio();
   const pinned = new Set(["circuit", "serial"]);
 
@@ -58,7 +59,7 @@ export function TabBar() {
                     e.stopPropagation();
                     closeTab(tab);
                   }}
-                  aria-label={"Close " + tab}
+                  aria-label={"Close " + labelFor(tab)}
                 >
                   <X size={10} />
                 </button>

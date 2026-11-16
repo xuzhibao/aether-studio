@@ -79,7 +79,7 @@ try {
   await until(async () => !!(await fs.stat('smoke-results/serial-port.txt').catch(() => null)));
   const port = (await fs.readFile('smoke-results/serial-port.txt', 'utf8')).trim();
   await page.locator('nav').getByRole('button', { name: 'Devices', exact: true }).click();
-  let dialog = page.getByRole('dialog'); await dialog.getByRole('textbox', { name: '端口路径', exact: true }).fill(port); await dialog.getByRole('button', { name: '建立连接', exact: true }).click();
+  let dialog = page.getByRole('dialog'); await dialog.getByLabel('端口路径', { exact: true }).fill(port); await dialog.getByRole('button', { name: '建立连接', exact: true }).click();
   await dialog.getByText(new RegExp('已连接 ' + port)).waitFor(); await dialog.getByRole('button', { name: '打开 Serial Monitor', exact: true }).click();
   await page.getByRole('textbox', { name: 'Serial text', exact: true }).fill('smoke-native-serial'); await page.getByRole('textbox', { name: 'Serial text', exact: true }).press('Enter');
   await page.getByText('RX · PTY fixture RX: acknowledgement', { exact: true }).waitFor();

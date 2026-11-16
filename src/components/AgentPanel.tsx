@@ -365,22 +365,7 @@ export function AgentPanel() {
           <div className="mb-1.5 flex items-center gap-1">
             <span className="mr-0.5 text-[8px] font-medium text-[#AAAEB5]">Context</span>
             <span className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#F1F3F6] px-1.5 text-[8px] text-[#6D747C]"><CircuitBoard size={8.5} /> Circuit</span>
-            <span className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#F1F3F6] px-1.5 text-[8px] text-[#6D747C]"><FileCode2 size={8.5} /> main.py</span>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className="flex h-[18px] w-[18px] items-center justify-center rounded-[4px] text-[#A0A5AC] hover:bg-[#F1F3F6] hover:text-[#666D75]">
-                  <Plus size={10} />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="start" sideOffset={5} className="menu-content w-[218px]">
-                <div className="menu-label">Add context</div>
-                {["sensors.py", "config.json", "Serial output", "Full project"].map((item) => (
-                  <DropdownMenu.Item key={item} className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Context attached", detail: item + " added to this request.", tone: "default" })}>
-                    <FileCode2 size={11} className="text-[#818991]" /> {item}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
+            <span className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#F1F3F6] px-1.5 text-[8px] text-[#6D747C]"><FileCode2 size={8.5} /> 当前工程文件</span>
           </div>
 
           <div className="agent-composer px-2.5 pb-1.5 pt-2">
