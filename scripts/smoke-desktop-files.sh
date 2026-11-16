@@ -6,15 +6,8 @@ import_path="$PWD/smoke-results/native-import.aether"
 roundtrip_path="$PWD/smoke-results/native-roundtrip.aether"
 choose_path() {
   local dialog=""
-  local parent_hex
-  printf -v parent_hex '0x%x' "$window"
   for attempt in $(seq 1 20); do
-    for candidate in $(xdotool search --onlyvisible --pid "$AETHER_APP_PID"); do
-      if [[ "$candidate" != "$window" && "$(xprop -id "$candidate" WM_TRANSIENT_FOR)" == *"$parent_hex"* ]]; then
-        dialog="$candidate"
-        break
-      fi
-    done
+    dialog=$(xdotool search --onlyvisible --name "^$2$" | head -1 || true)
     if [[ -n "$dialog" ]]; then break; fi
     sleep 1
   done
@@ -40,7 +33,7 @@ wait_for_file() {
 }
 xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+shift+e
-choose_path "$export_path"
+choose_path "$export_path" "Export Aether Project"
 wait_for_file "$export_path"
 node --input-type=module - "$export_path" "$import_path" <<'JS'
 import {readFileSync, writeFileSync} from 'node:fs';
@@ -53,11 +46,11 @@ writeFileSync(process.argv[3], JSON.stringify(file));
 JS
 xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+shift+o
-choose_path "$import_path"
+choose_path "$import_path" "Open Aether Project"
 sleep 2
 xdotool windowfocus --sync "$window"
 xdotool key --clearmodifiers ctrl+shift+e
-choose_path "$roundtrip_path"
+choose_path "$roundtrip_path" "Export Aether Project"
 wait_for_file "$roundtrip_path"
 node --input-type=module - "$roundtrip_path" <<'JS'
 import {readFileSync} from 'node:fs';

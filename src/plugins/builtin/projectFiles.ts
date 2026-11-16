@@ -39,7 +39,7 @@ const filters = [{ name: "Aether Studio Project", extensions: ["aether"] }];
 async function saveFile(name: string, content: string): Promise<string | null> {
   if (isTauri()) {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const path = await save({ defaultPath: name, filters });
+    const path = await save({ title: "Export Aether Project", defaultPath: name, filters });
     if (!path) return null;
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     await writeTextFile(path, content);
@@ -55,7 +55,7 @@ async function saveFile(name: string, content: string): Promise<string | null> {
 async function openFile(): Promise<string | null> {
   if (isTauri()) {
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const path = await open({ multiple: false, directory: false, filters });
+    const path = await open({ title: "Open Aether Project", multiple: false, directory: false, filters });
     if (!path) return null;
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     return readTextFile(path);
