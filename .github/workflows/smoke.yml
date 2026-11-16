@@ -63,7 +63,7 @@ jobs:
               sleep 8
               kill -0 "$app_pid"
               import -window root smoke-results/tauri-window.png
-              AETHER_APP_PID="$app_pid" bash scripts/smoke-desktop-files.sh
+              bash scripts/smoke-desktop-files.sh
               echo 'PASS Tauri: native window opened and remained alive'
               exit 0
             fi

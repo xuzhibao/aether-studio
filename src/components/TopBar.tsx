@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { usePlugins } from "../plugins/usePlugins";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
@@ -57,6 +58,8 @@ export function TopBar() {
   const projects = useStudio((s) => s.projects);
   const dirty = useStudio((s) => s.dirty);
   const settings = useStudio((s) => s.settings);
+  const [fontInput, setFontInput] = useState(String(settings.fontSize));
+  useEffect(() => setFontInput(String(settings.fontSize)), [settings.fontSize]);
   const runState = useStudio((s) => s.runState);
   const agentCollapsed = useStudio((s) => s.agentCollapsed);
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -267,7 +270,7 @@ export function TopBar() {
                 <span className="text-[9px] text-[#9CA1A8]">Aether 0.1.0</span>
               </div>
               <label className="mt-2 flex items-center justify-between text-[10.5px] text-[#5C626A]">Editor font size
-                <input aria-label="Editor font size" type="number" min={10} max={22} step={0.5} value={settings.fontSize} className="input w-[70px] text-[10px]" onChange={(e) => useStudio.getState().updateSettings({ fontSize: Math.max(10, Math.min(22, Number(e.target.value))) })} />
+                <input aria-label="Editor font size" type="number" min={10} max={22} step={0.5} value={fontInput} className="input w-[70px] text-[10px]" onChange={(e) => setFontInput(e.target.value)} onBlur={() => { const value = Number(fontInput); if (!fontInput || !Number.isFinite(value) || value < 10 || value > 22) { setFontInput(String(settings.fontSize)); addToast({ title: "字号范围为 10–22", tone: "warn" }); return; } useStudio.getState().updateSettings({ fontSize: value }); }} />
               </label>
               <label className="mt-3 flex items-center justify-between text-[10.5px] text-[#5C626A]">Reduce motion
                 <input aria-label="Reduce motion" type="checkbox" checked={settings.reducedMotion} onChange={(e) => useStudio.getState().updateSettings({ reducedMotion: e.target.checked })} />

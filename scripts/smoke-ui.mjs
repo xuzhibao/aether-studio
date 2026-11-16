@@ -124,7 +124,9 @@ try {
   await page.getByText(/不支持的 Aether 工程格式/).waitFor();
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("aether.projects.v1")).activeProjectId), imported.activeProjectId);
   await page.getByRole("button", { name: "Workspace settings", exact: true }).click();
-  await page.getByRole("spinbutton", { name: "Editor font size" }).fill("16");
+  const fontInput = page.getByRole("spinbutton", { name: "Editor font size" });
+  await fontInput.press("Control+a");
+  await fontInput.pressSequentially("16");
   await page.getByRole("checkbox", { name: "Reduce motion" }).check();
   await page.getByRole("button", { name: "Save layout", exact: true }).click();
   await page.keyboard.press("Escape");
