@@ -358,10 +358,9 @@ export function CircuitCanvas() {
     <div
       ref={canvasRef}
       className={cn("dot-grid canvas-vignette relative h-full w-full overflow-hidden", spaceDown ? "cursor-grab" : panning ? "cursor-grabbing" : "")}
-      onPointerDown={onBackgroundDown}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <svg id="circuit-scene" viewBox={view.x + " " + view.y + " " + view.w + " " + view.h} className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet">
+      <svg id="circuit-scene" onPointerDown={onBackgroundDown} viewBox={view.x + " " + view.y + " " + view.w + " " + view.h} className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet">
         <Defs />
         <g ref={groupRef} id="scene-group" transform={sceneTransform}>
           <g pointerEvents="none">

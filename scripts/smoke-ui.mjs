@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
 const server = spawn("npm", ["run", "preview", "--", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], { stdio: "pipe", detached: process.platform !== "win32" });
@@ -8,6 +8,8 @@ let serverLog = "";
 server.stdout.on("data", (chunk) => { serverLog += chunk; });
 server.stderr.on("data", (chunk) => { serverLog += chunk; });
 let browser;
+let page;
+const errors = [];
 await mkdir("smoke-results", { recursive: true });
 try {
   let ready = false;
@@ -17,8 +19,7 @@ try {
   }
   assert.ok(ready, `Preview did not start: ${serverLog}`);
   browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
-  const page = await browser.newPage({ viewport: { width: 1728, height: 1080 } });
-  const errors = [];
+  page = await browser.newPage({ viewport: { width: 1728, height: 1080 } });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.goto("http://127.0.0.1:1421");
@@ -46,6 +47,7 @@ try {
     await page.getByPlaceholder("Search components…").fill(search);
     await page.getByRole("button", { name }).click();
     await page.getByPlaceholder("Search components…").waitFor({ state: "hidden" });
+    await page.locator(`[data-component-kind="${search === "BME280" ? "bme280" : "oled"}"]`).waitFor();
   }
   assert.equal(await page.locator("[data-component-kind]").count(), 3);
   const part = page.locator('[data-component-kind="bme280"]');
@@ -56,7 +58,7 @@ try {
   await page.mouse.up();
   await page.getByRole("tab", { name: "main.py", exact: true }).click();
   await page.locator(".monaco-editor .view-lines").first().waitFor();
-  await page.locator(".monaco-editor textarea.inputarea").first().focus();
+  await page.locator(".monaco-editor .view-lines").first().click();
   await page.keyboard.press("Control+End");
   await page.keyboard.type("\n# smoke: persisted edit\n");
   await page.keyboard.press("Control+s");
@@ -100,6 +102,12 @@ try {
   await page.getByRole("heading", { name: "Demo Simulation", exact: true }).waitFor();
   assert.deepEqual(errors, [], "no browser console errors");
   console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, no console errors");
+} catch (error) {
+  if (page && !page.isClosed()) {
+    await page.screenshot({ path: "smoke-results/failure.png", fullPage: true });
+    await writeFile("smoke-results/failure.txt", `${error.stack}\n\nConsole errors:\n${errors.join("\n")}\n\n${await page.locator("body").innerText()}`);
+  }
+  throw error;
 } finally {
   await browser?.close();
   if (process.platform === "win32") server.kill();
