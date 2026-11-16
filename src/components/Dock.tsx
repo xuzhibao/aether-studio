@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useTransport } from "../store/transport";
+import { useEffect, useState } from "react";
 import {
   Activity,
   Braces,
@@ -76,10 +77,13 @@ export function Dock() {
     addToast,
   } = useStudio();
   const [follow, setFollow] = useState(true);
+  const io = useTransport();
+  const [serialSource, setSerialSource] = useState<"demo" | "device">(() => io.status === "connected" ? "device" : "demo");
+  useEffect(() => { if (io.status === "connected") setSerialSource("device"); }, [io.status]);
   if (!dockOpen) return null;
 
   const clear = () => {
-    if (dockTab === "serial") useStudio.setState({ serial: [] });
+    if (dockTab === "serial") { if (serialSource === "demo") useStudio.setState({ serial: [] }); else io.clear(); }
     else if (dockTab === "console") useStudio.setState({ console: [] });
     else addToast({ title: "Nothing to clear", tone: "default" });
   };
@@ -98,6 +102,7 @@ export function Dock() {
           );
         })}
         <div className="ml-auto flex flex-none items-center gap-1.5">
+          {dockTab === "serial" && <select aria-label="Dock serial source" value={serialSource} onChange={(event) => setSerialSource(event.target.value as typeof serialSource)} className="bg-transparent text-[9px]"><option value="demo">Demo Simulation</option><option value="device">Device transport</option></select>}
           {(dockTab === "serial" || dockTab === "console") && (
             <>
               <button className="flex h-[20px] items-center gap-1 rounded-[4px] px-1.5 text-[8.5px] text-[#8A9098] hover:bg-[#F0F2F4]" onClick={() => setFollow(!follow)}>
@@ -141,7 +146,7 @@ export function Dock() {
         )}
         {dockTab === "serial" && (
           <div className="min-h-0 flex-1">
-            <SerialList lines={serial} compact follow={follow} />
+            <SerialList lines={serialSource === "demo" ? serial : io.lines} compact follow={follow} />
           </div>
         )}
         {dockTab === "console" && (

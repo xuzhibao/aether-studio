@@ -14,6 +14,11 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "fs:allow-read-text-file",
-    "fs:allow-write-text-file"
+    "fs:allow-write-text-file",
+    "serial:allow-list",
+    "serial:allow-open",
+    "serial:allow-read",
+    "serial:allow-write",
+    "serial:allow-close"
   ]
 }

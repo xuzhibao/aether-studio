@@ -46,7 +46,12 @@ export interface SimulationFrame {
 export interface AIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 export interface AIMessage { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: AIToolCall[]; tool_call_id?: string }
 export interface AgentResult { text: string; proposals?: EditProposal[]; toolRuns?: ToolRun[] }
+export interface TransportPort { path: string; label: string }
+export interface TransportOptions { path: string; baudRate: number }
+export interface TransportHandlers { data: (bytes: Uint8Array) => void; error: (message: string) => void }
+export interface TransportConnection { write: (bytes: Uint8Array) => Promise<void>; close: () => Promise<void> }
 export interface CapabilityMap {
+  transports: { id: string; name: string; unavailable?: string; list: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers) => Promise<TransportConnection> };
   boards: { id: string; name: string; component: string; description: string };
   components: PartDefinition;
   editors: { id: string; name: string; render: ComponentType<{ file: string }> };

@@ -1,3 +1,4 @@
+import { useTransport } from "../store/transport";
 import { usePlugins } from "../plugins/usePlugins";
 import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -70,6 +71,7 @@ export function CommandPalette() {
       { id: "save", label: "Save workspace", group: "Workspace", icon: Save, shortcut: "⌘S", run: () => s().saveProject() },
       { id: "new", label: "Create new project", group: "Project", icon: FolderPlus, shortcut: "⇧⌘N", run: () => s().setDialog("new-project") },
       { id: "overview", label: "Project overview", group: "Project", icon: Box, run: () => s().setDialog("overview") },
+      { id: "disconnect-transport", label: "Disconnect device transport", group: "Project", icon: Radio, run: () => { void useTransport.getState().disconnect(); } },
       { id: "devices", label: "Manage devices", group: "Project", icon: Radio, run: () => s().setDialog("devices") },
       { id: "tests", label: "Open test reports", group: "Project", icon: FlaskConical, run: () => s().setDialog("tests") },
     ];

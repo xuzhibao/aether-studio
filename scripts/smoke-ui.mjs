@@ -26,7 +26,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 9 / 9 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 10 / 10 已启用", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -195,6 +195,18 @@ try {
   await page.getByRole("button", { name: "Stop", exact: true }).click();
   await page.getByText("请求已取消；未自动应用文件修改。", { exact: true }).waitFor();
   finishHeldRequest?.();
+  await nav.getByRole("button", { name: "Devices", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByText("请在 Tauri 桌面端使用原生串口；浏览器不提供此能力。", { exact: true }).waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "连接端口", exact: true }).isDisabled(), true);
+  await dialog.getByRole("button", { name: "管理插件", exact: true }).click();
+  await dialog.getByRole("button", { name: /^桌面串口/ }).click();
+  await dialog.getByText("transports/native-serial", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "停用", exact: true }).click();
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
+  await nav.getByRole("button", { name: "Devices", exact: true }).click();
+  await dialog.getByText("没有已启用的通信插件。", { exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
   assert.deepEqual(errors, [], "no browser console errors");
   console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, no console errors");
 } catch (error) {

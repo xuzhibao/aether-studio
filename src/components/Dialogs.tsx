@@ -36,17 +36,19 @@ export function Modal({
   onOpenChange,
   children,
   width = 560,
+  onOpenAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   children: React.ReactNode;
   width?: number;
+  onOpenAutoFocus?: (event: Event) => void;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="overlay" />
-        <Dialog.Content className="dialog" style={{ width, maxWidth: "calc(100vw - 64px)" }}>
+        <Dialog.Content onOpenAutoFocus={onOpenAutoFocus} className="dialog" style={{ width, maxWidth: "calc(100vw - 64px)" }}>
           {children}
         </Dialog.Content>
       </Dialog.Portal>

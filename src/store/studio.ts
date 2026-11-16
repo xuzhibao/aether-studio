@@ -1,3 +1,4 @@
+import { useTransport } from "./transport";
 import { readLayout, writeLayout, defaultLayout } from "../lib/workspacePreferences";
 import { create } from "zustand";
 import type {
@@ -73,7 +74,6 @@ interface StudioState {
   warnings: number;
   cpu: number;
   memory: number;
-  deviceConnected: boolean;
 
   agentMessages: AgentMessage[];
   agentRunning: boolean;
@@ -220,7 +220,6 @@ export const useStudio = create<StudioState>((set, get) => ({
   warnings: 0,
   cpu: 38,
   memory: 38,
-  deviceConnected: false,
 
   agentMessages: [welcomeMessage],
   agentRunning: false,
@@ -475,6 +474,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const s = get();
     if (id === s.activeProjectId) return;
     get().cancelAgent();
+    void useTransport.getState().disconnect();
     const currentSnapshot = snapshot(s);
     const existing = s.workspaces[id];
     const target = existing!;
@@ -513,6 +513,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const workspaces = { ...s.workspaces, [s.activeProjectId]: snapshot(s), [id]: workspace };
     localStorage.setItem(storageKey, JSON.stringify({ version: 1, projects, activeProjectId: id, workspaces }));
     get().cancelAgent();
+    void useTransport.getState().disconnect();
     set({ agentMessages: [welcomeMessage], proposalReview: null, projects, workspaces, activeProjectId: id, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(files).filter((f) => f !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [] });
     plugins.emit("project:imported", { id });
   },
@@ -535,6 +536,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const currentSnapshot = snapshot(s);
     const workspace = selectedTemplate.create();
     get().cancelAgent();
+    void useTransport.getState().disconnect();
     set({
       projects: [...s.projects, meta],
       workspaces: { ...s.workspaces, [s.activeProjectId]: currentSnapshot, [id]: workspace },
@@ -569,11 +571,11 @@ plugins.connect({
   getProject: () => useStudio.getState().getProjectContext(),
   importProject: (project) => useStudio.getState().importProject(project),
   notify: (title, detail) => useStudio.getState().addToast({ title, detail }),
-  log: (text) => useStudio.setState((s) => ({ console: [...s.console, { id: uid("plugin"), source: "Simulator", text }], dockOpen: true, dockTab: "console" })),
+  log: (text) => useStudio.setState((s) => ({ console: [...s.console, { id: uid("plugin"), source: "Plugin", text }], dockOpen: true, dockTab: "console" })),
   runSimulation: () => useStudio.getState().runSimulation(),
   createProject: (board, template) => useStudio.getState().createProject({ name: "ESP32-S3 Demo", board, template }),
 });
 plugins.on("plugin:disabled", () => {
-  useStudio.setState({ runState: "idle" });
+  if (!plugins.get("simulators", useStudio.getState().capabilities.simulator)) useStudio.setState({ runState: "idle" });
   if (!plugins.get("agents", useStudio.getState().activeAgentId)) useStudio.getState().cancelAgent();
 });

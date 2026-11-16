@@ -44,6 +44,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cargo build --manifest-path src-tauri/Cargo.toml --locked
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --lib serial_round_trip_and_stale_session
       - name: Launch Tauri window
         run: |
           mkdir -p smoke-results
@@ -64,6 +65,7 @@ jobs:
               kill -0 "$app_pid"
               import -window root smoke-results/tauri-window.png
               timeout 120 bash scripts/smoke-desktop-files.sh
+              timeout 90 bash scripts/smoke-desktop-serial.sh
               echo 'PASS Tauri: native window opened and remained alive'
               exit 0
             fi

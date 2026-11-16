@@ -15,6 +15,7 @@ Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发
 - 保存工程后，可切换工程、刷新页面或重启应用再打开，恢复电路、代码和能力绑定。
 - 导出和导入 `.aether` 工程文件，在不同浏览器、设备和桌面端之间迁移代码、电路和能力绑定。
 - 保存面板布局、分屏比例、编辑器字号和减少动画设置。
+- 桌面串口插件支持枚举端口、手动输入路径、配置波特率、连接、UTF-8 文本收发和断开。设备数据与演示日志分开显示。
 - AI 面板可调用用户配置的 OpenAI Compatible Chat Completions API。支持问答与工程工具调用；文件修改先预览，再由用户应用，不自动执行硬件操作。
 
 **Demo Simulation 使用生成数据，不执行 Python、不验证电气接线、不连接真实硬件。修改 Python 代码不会改变演示数据。**
@@ -110,6 +111,7 @@ GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原�
 | `aether.templates` | template | 环境监测、空白开发板工程模板 |
 | `aether.project-files` | workspace | `.aether` 工程导入导出、原生文件对话框、命令和菜单 |
 | `aether.project-tools` | tool | 文件读取、电路定义检查与文件修改建议 |
+| `aether.serial.native` | transport | 桌面原生串口枚举、打开、收发字节和关闭 |
 
 停用被其他已启用插件依赖的插件时，界面会提示先停用依赖者。重新启用插件会加载依赖。停用不会删除工程内容；对应能力会停止提供，画布或编辑器显示不可用提示。
 
@@ -123,7 +125,7 @@ GitHub Actions 的 `MVP smoke` 工作流检查前端端到端流程、Linux 原�
 
 `entry` 是入口元数据；当前入口由 TypeScript 静态导入，不从字符串动态执行，也不扫描用户目录。插件在同一进程内运行。类型可注册多个能力，不各建一套管理系统。生命周期目前是同步 `activate(api)` 和可选的 `deactivate()`；异步 API 调用放在注册的命令或能力内。
 
-插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`tools`、`templates`、`commands`、`projectFormats`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
+插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`tools`、`transports`、`templates`、`commands`、`projectFormats`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
 
 ## 开发一个简单插件
 
@@ -177,8 +179,20 @@ export const helloPlugin: StudioPlugin = {
 
 新增工具时，在插件中注册 `tools` 能力，提供 `id`、`name`、`description`、JSON Schema `parameters` 和 `execute(args, project)`。返回 `{ output }` 提供执行结果，返回 `{ output, proposal }` 可提供待审阅文件修改。普通问答不会调用工具。
 
+## 桌面串口
+
+在 Tauri 桌面端打开 **Devices**，选择 **Native Serial**，从端口列表选择或手动填写 `COM3`、`/dev/ttyUSB0`、`/dev/cu.usbserial…` 等路径。设置波特率后点击 **连接端口**。当前参数为 8N1、无流控；更改参数需先断开再连接。
+
+打开 **Serial Monitor**，选择 **Device transport** 查看设备数据。底部输入框发送 UTF-8 文本，可选择不附加换行、LF 或 CRLF。`RX` 表示收到的字节，`TX` 在写入成功后记录，不代表设备已执行命令。暂停显示不会暂停接收；记录保留最近 500 项，支持筛选和清空。底部调试区的 Serial Monitor 也可切换数据来源。
+
+**Demo Simulation** 始终使用独立演示日志，不会把模拟读数写入真实串口。打开端口只表示操作系统连接成功，不检测开发板型号、固件或传感器，也不发送烧录或 Python 执行指令。部分开发板可能因操作系统在打开端口时改变控制线而复位。设备连接不保存，切换工程或停用通信插件会断开。断开时保留历史记录；错误会显示实际原因。
+
+浏览器中原生串口入口会显示不可用，当前没有 Web Serial 适配器。Linux 用户需要端口访问权限；被其他程序占用的端口需先释放。CI 使用操作系统虚拟串口检查收发与关闭，不替代开发板验证。
+
+开发通信插件时，注册 `transports` 能力，提供 `list()` 和 `connect(options, handlers)`；连接返回 `write(bytes)`、`close()`，接收字节与连接错误通过 handlers 回传。原生串口代码位于 `src-tauri/src/plugins/serial.rs`，通过 Tauri 插件注册并声明对应命令权限。
+
 ## 尚未实现
 
-真实 MicroPython 执行器、编译器集成、物理电路仿真、串口/USB、真实烧录、网络协议、终端命令工具、无需审阅的自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
+真实 MicroPython 执行器、编译器集成、物理电路仿真、通用 USB 协议、真实烧录、网络协议、终端命令工具、无需审阅的自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
 
 外部插件安装、市场、版本依赖解析、跨进程 RPC、沙箱与完整权限系统当前尚未提供。

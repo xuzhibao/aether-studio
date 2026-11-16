@@ -42,8 +42,8 @@ console.log("PASS registry: lifecycle, cleanup, duplicate IDs, dependency cycle,
 const { useStudio } = await import("../src/store/studio");
 const { plugins } = await import("../src/plugins/runtime");
 const state = () => useStudio.getState();
-assert.equal(plugins.list().length, 9);
-assert.equal(plugins.list().filter((p) => p.enabled).length, 9);
+assert.equal(plugins.list().length, 10);
+assert.equal(plugins.list().filter((p) => p.enabled).length, 10);
 assert.throws(() => plugins.disable("aether.esp32-s3"), /请先停用/);
 state().createProject({ name: "Smoke hardware project", board: "esp32-s3", template: "Blank workspace" });
 const projectId = state().activeProjectId;
@@ -220,3 +220,58 @@ assert.equal(plugins.all("tools").length, 0);
 plugins.enable("aether.project-tools");
 globalThis.fetch = originalFetch;
 console.log("PASS Agent tools: real tool-result protocol, read/inspect, pending proposal, conflict refusal, reject/apply, path validation, cancellation and plugin disable (HTTP fixtures only)");
+
+// Explicit backend fixture verifies frontend lifecycle; real OS PTY I/O runs in desktop CI.
+const { createNativeSerialPlugin, nativeSerialPlugin } = await import("../src/plugins/builtin/nativeSerial");
+const { useTransport } = await import("../src/store/transport");
+const io = () => useTransport.getState();
+const received: number[][] = [];
+const written: number[][] = [];
+const closed: number[] = [];
+let nextSession = 0;
+let readFailure = false;
+let openGate: Promise<void> | undefined;
+const serialFixture = createNativeSerialPlugin({
+  list: async () => [{ path: "fixture-port", label: "Backend fixture (not hardware)" }],
+  open: async () => { await openGate; return ++nextSession; },
+  read: async () => { if (readFailure) throw new Error("fixture unplugged"); return received.shift() ?? []; },
+  write: async (_id, bytes) => { written.push(bytes); }, close: async (id) => { closed.push(id); },
+}, true);
+const until = async (condition: () => boolean) => { for (let n = 0; n < 100 && !condition(); n++) await new Promise((resolve) => setTimeout(resolve, 10)); assert.ok(condition()); };
+plugins.unregister("aether.serial.native");
+plugins.register(serialFixture); plugins.enable("aether.serial.native");
+assert.equal(plugins.require("transports", "native-serial").id, "native-serial");
+assert.equal((await plugins.require("transports", "native-serial").list())[0].path, "fixture-port");
+await io().connect("native-serial", { path: "fixture-port", baudRate: 115200 });
+assert.equal(io().status, "connected");
+const bytes = Array.from(new TextEncoder().encode("温度:24.6\n"));
+received.push(bytes.slice(0, 1), bytes.slice(1));
+await until(() => io().receivedBytes === bytes.length);
+assert.ok(io().lines.some((line) => line.text.includes("温度:24.6")), "UTF-8 decoding survives byte boundaries");
+await io().send("status\r\n");
+assert.equal(new TextDecoder().decode(Uint8Array.from(written[0])), "status\r\n");
+assert.equal(io().sentBytes, 8);
+plugins.disable("aether.serial.native");
+await until(() => io().status === "disconnected" && closed.includes(1));
+await assert.rejects(() => io().send("not sent"), /请先连接/);
+assert.equal(written.length, 1);
+plugins.enable("aether.serial.native");
+let releaseOpen!: () => void;
+openGate = new Promise<void>((resolve) => { releaseOpen = resolve; });
+const pendingConnect = io().connect("native-serial", { path: "fixture-port", baudRate: 115200 });
+assert.equal(io().status, "connecting");
+plugins.disable("aether.serial.native");
+releaseOpen(); await pendingConnect;
+await until(() => closed.includes(2));
+assert.equal(io().status, "disconnected", "a late open after disable must not resurrect the connection");
+openGate = undefined;
+plugins.enable("aether.serial.native");
+await io().connect("native-serial", { path: "fixture-port", baudRate: 115200 });
+readFailure = true;
+await until(() => io().status === "error");
+assert.match(io().error, /unplugged/);
+assert.ok(closed.includes(3));
+readFailure = false;
+plugins.unregister("aether.serial.native");
+plugins.register(nativeSerialPlugin); plugins.enable("aether.serial.native");
+console.log("PASS transport: capability registration, split UTF-8 bytes, actual write contract, disable cleanup, late open cancellation and read error (backend fixtures; OS PTY tested separately)");

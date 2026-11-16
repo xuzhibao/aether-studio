@@ -262,7 +262,7 @@ export function Sidebar() {
         <div className="flex-none border-t border-[#E9EBEE] px-2.5 pb-2.5 pt-2">
           <div className="mb-1 flex items-center justify-between px-1">
             <SectionLabel>Demo Simulation</SectionLabel>
-            <button className="flex h-[18px] w-[18px] items-center justify-center rounded text-[#9BA0A8] hover:bg-[#ECEEF1] hover:text-[#565B63]" onClick={() => addToast({ title: "Devices refreshed", detail: "没有真实硬件或云端连接。", tone: "default" })}>
+            <button className="flex h-[18px] w-[18px] items-center justify-center rounded text-[#9BA0A8] hover:bg-[#ECEEF1] hover:text-[#565B63]" onClick={() => setDialog("devices")}>
               <RefreshCw size={10.5} />
             </button>
           </div>

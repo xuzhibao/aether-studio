@@ -1,3 +1,4 @@
+import { useTransport } from "../store/transport";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -9,6 +10,7 @@ import { useStudio } from "../store/studio";
 import { cn, formatElapsed } from "../lib/utils";
 
 export function StatusBar() {
+  const io = useTransport();
   const {
     runState,
     elapsed,
@@ -44,7 +46,7 @@ export function StatusBar() {
       </button>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => setTab("serial")}>
-        <Usb size={10} className="text-[#7C838B]" /> Demo output · 无真实设备
+        <Usb size={10} className="text-[#7C838B]" /> {io.status === "connected" ? "Serial · " + io.path : "Demo output · 无端口连接"}
       </button>
 
       <span className="flex-1" />

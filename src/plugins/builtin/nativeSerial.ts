@@ -1,0 +1,71 @@
+import { isTauri } from "../../lib/desktop";
+import type { StudioPlugin, TransportConnection, TransportPort } from "../api";
+
+export interface SerialBackend {
+  list: () => Promise<TransportPort[]>;
+  open: (path: string, baudRate: number) => Promise<number>;
+  read: (id: number) => Promise<number[]>;
+  write: (id: number, data: number[]) => Promise<void>;
+  close: (id: number) => Promise<void>;
+}
+const invoke = async <T>(command: string, args?: Record<string, unknown>) => (await import("@tauri-apps/api/core")).invoke<T>("plugin:serial|" + command, args);
+const desktopBackend: SerialBackend = {
+  list: () => invoke("list"), open: (path, baudRate) => invoke("open", { path, baudRate }),
+  read: (id) => invoke("read", { id }), write: (id, data) => invoke("write", { id, data }), close: (id) => invoke("close", { id }),
+};
+export function createNativeSerialPlugin(backend = desktopBackend, supported = isTauri()): StudioPlugin {
+  let enabled = false;
+  let active: TransportConnection | undefined;
+  return {
+    manifest: { id: "aether.serial.native", name: "桌面串口", version: "0.1.0", type: "transport", entry: "builtin/nativeSerial.ts", enabled: true, description: "通过 Tauri 原生串口插件枚举和打开端口，收发原始字节。8N1、无流控；需手动连接，不自动烧录或执行固件。浏览器中不可用。" },
+    activate(api) {
+      enabled = true;
+      api.register("transports", {
+        id: "native-serial", name: "Native Serial", unavailable: supported ? undefined : "请在 Tauri 桌面端使用原生串口；浏览器不提供此能力。",
+        list: async () => { if (!supported) throw new Error("原生串口仅支持桌面端"); return backend.list(); },
+        connect: async ({ path, baudRate }, handlers) => {
+          if (!enabled || !supported) throw new Error("桌面串口插件不可用");
+          if (active) throw new Error("串口正在使用或关闭中，请稍后重试");
+          let closed = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let closing: Promise<void> | undefined;
+          const opened = backend.open(path, baudRate);
+          const connection: TransportConnection = {
+            write: async (bytes) => { if (closed) throw new Error("串口连接已关闭"); await backend.write(await opened, Array.from(bytes)); },
+            close: () => {
+              if (closing) return closing;
+              closed = true; clearTimeout(timer);
+              closing = opened.then((id) => backend.close(id), () => {}).finally(() => { if (active === connection) active = undefined; });
+              return closing;
+            },
+          };
+          active = connection;
+          let id: number;
+          try { id = await opened; }
+          catch (error) { if (active === connection) active = undefined; throw error; }
+          if (closed || !enabled) { await connection.close(); throw new Error("串口连接已取消"); }
+          const poll = async () => {
+            try {
+              const bytes = await backend.read(id);
+              if (closed) return;
+              if (bytes.length) handlers.data(Uint8Array.from(bytes));
+              timer = setTimeout(poll, 100);
+            } catch (error) {
+              if (closed) return;
+              await connection.close().catch((closeError) => api.host.log("关闭串口失败：" + String(closeError)));
+              handlers.error(String(error));
+            }
+          };
+          timer = setTimeout(poll, 100);
+          return connection;
+        },
+      });
+    },
+    deactivate() {
+      enabled = false;
+      // Stop polling immediately; close the native session when a pending open completes.
+      void active?.close().catch((error) => console.error("关闭串口失败", error));
+    },
+  };
+}
+export const nativeSerialPlugin = createNativeSerialPlugin();

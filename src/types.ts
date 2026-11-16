@@ -49,7 +49,7 @@ export interface SerialLine {
 
 export interface ConsoleLine {
   id: string;
-  source: "Build" | "Agent" | "Simulator" | "Deploy";
+  source: "Build" | "Agent" | "Simulator" | "Deploy" | "Plugin";
   text: string;
   tone?: "normal" | "muted" | "success" | "warn";
 }
