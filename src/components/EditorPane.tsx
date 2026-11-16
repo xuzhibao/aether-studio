@@ -101,7 +101,7 @@ export function EditorPane({ file }: { file: string }) {
         {dirty && <span className="ml-0.5 h-[4px] w-[4px] rounded-full bg-[#C08A2E]" />}
         <span className="mx-1.5 h-[12px] w-px bg-[#ECEEF1]" />
         {aiModified && (
-          <button className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#EEF5FF] px-1.5 text-[8.5px] font-medium text-[#2F6BAE] hover:bg-[#E4EFFF]" onClick={() => useStudio.getState().addToast({ title: "Aether changes", detail: aiModified ? "3 agent edits in " + file + " · verified" : "No agent edits", tone: "default" })}>
+          <button className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#EEF5FF] px-1.5 text-[8.5px] font-medium text-[#2F6BAE] hover:bg-[#E4EFFF]" onClick={() => useStudio.getState().addToast({ title: "Aether changes", detail: aiModified ? "此文件有修改标记；尚未进行编译或硬件验证。" : "No agent edits", tone: "default" })}>
             <Sparkles size={9} fill="currentColor" strokeWidth={0} />
             Agent modified
           </button>

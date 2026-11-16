@@ -273,7 +273,7 @@ export function AgentPanel() {
     if (agentRunning) return;
     if (!agentDraft.trim()) {
       inputRef.current?.focus();
-      addToast({ title: "Describe a change", detail: "Tell Aether what to build, modify or debug.", tone: "default" });
+      addToast({ title: "写下问题", detail: "可以询问当前工程的代码、电路或调试思路。", tone: "default" });
       return;
     }
     runAgent();
@@ -342,8 +342,8 @@ export function AgentPanel() {
           {agentMessages.length === 0 ? (
             <div className="mt-12 flex flex-col items-center px-6 text-center">
               <Orb size={44} />
-              <div className="mt-3 text-[12px] font-semibold text-[#33383E]">What should we build?</div>
-              <p className="mt-1 text-[10px] leading-[1.6] text-[#8F959D]">Aether can edit the circuit, write firmware, run the simulator and deploy to hardware.</p>
+              <div className="mt-3 text-[12px] font-semibold text-[#33383E]">询问当前工程</div>
+              <p className="mt-1 text-[10px] leading-[1.6] text-[#8F959D]">配置 API 后可进行工程问答；自动修改和执行尚未实现。</p>
             </div>
           ) : (
             agentMessages.map((message) => <Message key={message.id} message={message} />)
@@ -387,7 +387,7 @@ export function AgentPanel() {
               }}
               rows={1}
               ref={inputRef}
-              placeholder="Ask Aether to build, modify or debug…"
+              placeholder="Ask about the code, circuit or debugging…"
               className="max-h-[90px] min-h-[32px] w-full resize-none bg-transparent text-[10.5px] leading-[1.55] text-[#343940] outline-none placeholder:text-[#A8ADB4]"
             />
             <div className="flex items-center gap-0.5 pt-1">
@@ -428,7 +428,7 @@ export function AgentPanel() {
             </div>
           </div>
           <div className="mt-1.5 flex items-center justify-center gap-1 text-[8px] text-[#939AA2]">
-            <Sparkles size={7.5} /> Aether can edit files and hardware · Review before deploying
+            <Sparkles size={7.5} /> API 工程问答 · 不自动修改文件或执行硬件操作
           </div>
         </div>
       </aside>
