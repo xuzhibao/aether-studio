@@ -170,6 +170,13 @@ function Message({ message }: { message: AgentMessage }) {
         <p className="mt-2.5 select-text text-[11px] leading-[1.63] text-[#5B6169]">{message.summary}</p>
       )}
 
+      {message.toolRuns && message.toolRuns.length > 0 && <div className="mt-3 space-y-1">
+        {message.toolRuns.map((tool, index) => <details key={tool.id + index} className="rounded border border-[#E4E7EB] p-2 text-[10px]"><summary className={tool.status === "error" ? "text-[#B35C42]" : "text-[#637B6B]"}>{tool.status === "error" ? "工具失败" : "工具已执行"} · {tool.name}</summary><pre className="mt-2 max-h-[180px] overflow-auto whitespace-pre-wrap text-[9px] text-[#8A9098]">{tool.detail}</pre></details>)}
+      </div>}
+      {message.proposals?.map((proposal) => <div key={proposal.id} className="mt-3 rounded-lg border border-[#CFE0F5] bg-[#F6FAFF] p-3 text-[11px]">
+        <div className="font-medium">{proposal.summary}</div><div className="my-2 break-all font-mono text-[9px] text-[#8A9098]">{proposal.changes.map((c) => c.path).join(", ")}</div>
+        {proposal.status === "pending" ? <button className="btn px-2 py-1" onClick={() => useStudio.getState().reviewProposal(message.id, proposal.id)}>预览文件修改</button> : <span>{proposal.status === "applied" ? "已应用到工作区" : "已拒绝 · 文件未改变"}</span>}
+      </div>)}
       {message.actions && (
         <div className="mt-2.5 flex items-center gap-1.5">
           <button
@@ -233,7 +240,8 @@ export function AgentPanel() {
     addToast,
   } = useStudio();
   const registry = usePlugins();
-  const configuredModel = registry.all("agents")[0]?.name;
+  const activeAgentId = useStudio((s) => s.activeAgentId);
+  const configuredModel = registry.get("agents", activeAgentId)?.name;
   const [mode, setMode] = useState("Ask");
   const [model, setModel] = useState("Hardware Agent");
   const [listening, setListening] = useState(false);
@@ -296,7 +304,7 @@ export function AgentPanel() {
               </div>
               <div className="mt-[2px] flex items-center gap-1 text-[8.5px] text-[#858C94]">
                 <span className="h-[3px] w-[3px] rounded-full bg-[#B9BEC5]" />
-                API 工程问答 · 自动执行尚未实现
+                工程问答与文件修改建议
               </div>
             </div>
             <IconButton label="Collapse agent" className="h-[24px] w-[24px]" onClick={() => setAgentCollapsed(true)}>
@@ -309,17 +317,17 @@ export function AgentPanel() {
                 </button>
               </DropdownMenu.Trigger>
               <DropdownMenu.Content align="end" sideOffset={6} className="menu-content w-[224px]">
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.setState({ agentMessages: [] })}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => { useStudio.getState().cancelAgent(); useStudio.setState({ agentMessages: [] }); }}>
                   <RotateCcw size={12} /> New session
                 </DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.setState({ agentMessages: [] })}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => { useStudio.getState().cancelAgent(); useStudio.setState({ agentMessages: [] }); }}>
                   <History size={12} /> Clear conversation
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator className="menu-sep" />
                 <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Agent settings", detail: "问答会发送当前工程上下文；自动执行工具尚未实现。", tone: "default" })}>
                   <Settings2 size={12} /> Agent permissions
                 </DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "No active run", detail: "请求最长等待 60 秒；暂未实现主动取消。", tone: "default" })}>
+                <DropdownMenu.Item className="menu-item" disabled={!agentRunning} onSelect={() => useStudio.getState().cancelAgent()}>
                   <Square size={11} /> Stop current run
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
@@ -327,7 +335,7 @@ export function AgentPanel() {
           </div>
 
           <div className="mt-2 flex items-center gap-1.5 text-[9px] text-[#858C94]">
-            <span className="rounded border border-[#E4E7EB] bg-white px-2 py-1">Ask · {configuredModel || "未配置模型"}</span>
+            <select aria-label="Agent mode" className="rounded border border-[#E4E7EB] bg-white px-2 py-1" value={activeAgentId} onChange={(e) => useStudio.getState().setAgent(e.target.value)}>{!configuredModel && <option value="">未启用 Agent</option>}{registry.all("agents").map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select>
             <button className="btn ml-auto px-2 py-1" onClick={() => useStudio.getState().setDialog("plugins")}>配置 API</button>
           </div>
         </div>
@@ -343,7 +351,7 @@ export function AgentPanel() {
             <div className="mt-12 flex flex-col items-center px-6 text-center">
               <Orb size={44} />
               <div className="mt-3 text-[12px] font-semibold text-[#33383E]">询问当前工程</div>
-              <p className="mt-1 text-[10px] leading-[1.6] text-[#8F959D]">配置 API 后可进行工程问答；自动修改和执行尚未实现。</p>
+              <p className="mt-1 text-[10px] leading-[1.6] text-[#8F959D]">配置 API 后可进行工程问答；Project Tools 可提出文件修改，预览后手动应用。</p>
             </div>
           ) : (
             agentMessages.map((message) => <Message key={message.id} message={message} />)
@@ -418,17 +426,16 @@ export function AgentPanel() {
               </button>
               <span className="ml-auto mr-2 hidden items-center gap-1 text-[8px] text-[#9AA0A8] min-[1500px]:flex">⌘↵ to run</span>
               <button
-                onClick={submit}
-                disabled={agentRunning}
+                onClick={() => agentRunning ? useStudio.getState().cancelAgent() : submit()}
                 className="flex h-[24px] items-center gap-1.5 rounded-[5.5px] bg-[#007AFF] px-2 text-[9.5px] font-medium text-white shadow-[0_1px_2px_rgba(0,84,178,0.24)] transition-colors hover:bg-[#006FE8] disabled:bg-[#C9D9EA] disabled:text-white/80 disabled:shadow-none"
               >
-                {agentRunning ? <Spinner size={10} /> : <ArrowUp size={11} strokeWidth={2.2} />}
-                {agentRunning ? "Working" : "Run"}
+                {agentRunning ? <Square size={10} /> : <ArrowUp size={11} strokeWidth={2.2} />}
+                {agentRunning ? "Stop" : "Run"}
               </button>
             </div>
           </div>
           <div className="mt-1.5 flex items-center justify-center gap-1 text-[8px] text-[#939AA2]">
-            <Sparkles size={7.5} /> API 工程问答 · 不自动修改文件或执行硬件操作
+            <Sparkles size={7.5} /> 文件修改需预览后应用 · 不执行真实硬件操作
           </div>
         </div>
       </aside>

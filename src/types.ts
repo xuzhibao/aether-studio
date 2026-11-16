@@ -68,6 +68,15 @@ export interface AgentRef {
   meta?: string;
 }
 
+export interface ToolRun { id: string; name: string; status: "done" | "error"; detail: string }
+export interface EditProposal {
+  id: string;
+  projectId: string;
+  summary: string;
+  changes: { path: string; before: string | null; after: string }[];
+  status: "pending" | "applied" | "rejected";
+}
+
 export interface AgentMessage {
   id: string;
   role: "user" | "agent";
@@ -78,6 +87,9 @@ export interface AgentMessage {
   summary?: string;
   actions?: boolean;
   live?: boolean;
+  error?: boolean;
+  toolRuns?: ToolRun[];
+  proposals?: EditProposal[];
 }
 
 export interface ProjectMeta {

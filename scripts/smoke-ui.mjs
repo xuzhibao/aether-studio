@@ -26,7 +26,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 8 / 8 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 9 / 9 已启用", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -136,8 +136,65 @@ try {
   assert.equal(await page.getByRole("spinbutton", { name: "Editor font size" }).inputValue(), "12.5");
   await page.keyboard.press("Escape");
   await page.screenshot({ path: "smoke-results/imported-project.png", fullPage: true });
+  await nav.getByRole("button", { name: "Plugins", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: /^OpenAI Compatible API/ }).click();
+  await dialog.getByLabel("完整 Chat Completions URL").fill("https://agent-fixture.example/v1/chat/completions");
+  await dialog.getByLabel("模型名称").fill("tool-fixture");
+  await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
+  let fixtureMode = "apply";
+  let fixtureTurn = 0;
+  let finishHeldRequest;
+  let heldRequestStarted;
+  const requestHeld = new Promise((resolve) => { heldRequestStarted = resolve; });
+  const headers = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "content-type,authorization" };
+  await page.route("https://agent-fixture.example/v1/chat/completions", async (route) => {
+    if (route.request().method() === "OPTIONS") { await route.fulfill({ status: 204, headers }); return; }
+    const body = route.request().postDataJSON();
+    assert.ok(body.tools.some((tool) => tool.function.name === "project_read_file"));
+    if (fixtureMode === "cancel") {
+      await new Promise((resolve) => { finishHeldRequest = resolve; heldRequestStarted(); });
+      await route.fulfill({ headers, json: { choices: [{ message: { content: "Cancelled HTTP fixture" } }] } }).catch(() => {});
+      return;
+    }
+    let message;
+    if (fixtureMode === "apply" && fixtureTurn === 0) message = { content: null, tool_calls: [{ id: "read-main", type: "function", function: { name: "project_read_file", arguments: JSON.stringify({ path: "main.py" }) } }] };
+    else if ((fixtureMode === "apply" && fixtureTurn === 1) || (fixtureMode === "reject" && fixtureTurn === 0)) message = { content: null, tool_calls: [{ id: "propose-files", type: "function", function: { name: "project_propose_files", arguments: JSON.stringify({ summary: "HTTP fixture: review these file edits", files: fixtureMode === "apply" ? [{ path: "main.py", content: portable.workspace.files["main.py"] + "\n# approved fixture\n" }, { path: "notes.py", content: "# new file from reviewed HTTP fixture\n" }] : [{ path: "notes.py", content: "# rejected fixture\n" }] }) } }] };
+    else message = { content: "HTTP fixture: modification is pending review, no files have been written." };
+    fixtureTurn++;
+    await route.fulfill({ headers, json: { choices: [{ message }] } });
+  });
+  await page.getByRole("combobox", { name: "Agent mode" }).selectOption("api-tools");
+  const composer = page.getByPlaceholder("Ask about the code, circuit or debugging…");
+  await composer.fill("Propose a file edit (HTTP fixture test)");
+  await composer.press("Control+Enter");
+  await page.getByRole("button", { name: "预览文件修改", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("aether.projects.v1")).workspaces[JSON.parse(localStorage.getItem("aether.projects.v1")).activeProjectId].files["main.py"]), portable.workspace.files["main.py"]);
+  await page.getByRole("button", { name: "预览文件修改", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "notes.py (新文件)", exact: true }).click();
+  await page.screenshot({ path: "smoke-results/agent-review.png", fullPage: true });
+  await dialog.getByRole("button", { name: "应用修改", exact: true }).click();
+  await page.keyboard.press("Control+s");
+  const approved = await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("aether.projects.v1")); return s.workspaces[s.activeProjectId].files; });
+  assert.ok(approved["main.py"].includes("# approved fixture"));
+  assert.ok(approved["notes.py"].includes("new file from reviewed HTTP fixture"));
+  fixtureMode = "reject"; fixtureTurn = 0;
+  await composer.fill("Reject the next file edit (HTTP fixture test)");
+  await composer.press("Control+Enter");
+  await page.getByRole("button", { name: "预览文件修改", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "拒绝建议", exact: true }).click();
+  await page.keyboard.press("Control+s");
+  assert.equal(await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("aether.projects.v1")); return s.workspaces[s.activeProjectId].files["notes.py"]; }), approved["notes.py"]);
+  fixtureMode = "cancel";
+  await composer.fill("Wait for API (HTTP fixture cancellation test)");
+  await composer.press("Control+Enter");
+  await requestHeld;
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await page.getByText("请求已取消；未自动应用文件修改。", { exact: true }).waitFor();
+  finishHeldRequest?.();
   assert.deepEqual(errors, [], "no browser console errors");
-  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, no console errors");
+  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, no console errors");
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: "smoke-results/failure.png", fullPage: true });

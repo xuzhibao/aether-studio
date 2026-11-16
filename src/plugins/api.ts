@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { HwComponent, ProjectMeta, Wire } from "../types";
+import type { HwComponent, ProjectMeta, Wire, EditProposal, ToolRun } from "../types";
 
 export interface ProjectWorkspace {
   components: HwComponent[];
@@ -43,15 +43,18 @@ export interface SimulationFrame {
   readings: PartViewProps["readings"];
   lines: string[];
 }
-export interface AIMessage { role: "system" | "user" | "assistant"; content: string }
+export interface AIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
+export interface AIMessage { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: AIToolCall[]; tool_call_id?: string }
+export interface AgentResult { text: string; proposals?: EditProposal[]; toolRuns?: ToolRun[] }
 export interface CapabilityMap {
   boards: { id: string; name: string; component: string; description: string };
   components: PartDefinition;
   editors: { id: string; name: string; render: ComponentType<{ file: string }> };
   toolchains: { id: string; name: string; files: () => Record<string, string>; check: (project: ProjectContext) => string[] };
   simulators: { id: string; name: string; start: (project: ProjectContext) => string[]; tick: (project: ProjectContext, elapsed: number) => SimulationFrame };
-  agents: { id: string; name: string; run: (project: ProjectContext, messages: AIMessage[], signal?: AbortSignal) => Promise<string> };
-  providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string> };
+  agents: { id: string; name: string; run: (project: ProjectContext, messages: AIMessage[], signal?: AbortSignal, onTool?: (run: ToolRun) => void) => Promise<AgentResult> };
+  tools: { id: string; name: string; description: string; parameters: Record<string, unknown>; execute: (args: unknown, project: ProjectContext) => { output: unknown; proposal?: EditProposal } | Promise<{ output: unknown; proposal?: EditProposal }> };
+  providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string>; chat: (messages: AIMessage[], tools: CapabilityMap["tools"][], signal?: AbortSignal) => Promise<AIMessage> };
   templates: { id: string; name: string; description: string; board: string; create: () => ProjectWorkspace };
   projectFormats: { id: string; name: string; encode: (project: ProjectContext) => string; decode: (content: string) => ProjectContext };
   commands: { id: string; name: string; shortcut?: string; run: () => void | Promise<void> };
@@ -70,7 +73,7 @@ export interface PluginHost {
 export interface PluginAPI {
   readonly manifest: PluginManifest;
   readonly project: { get: () => ProjectContext };
-  capabilities: { require: <K extends keyof CapabilityMap>(kind: K, id: string) => CapabilityMap[K] };
+  capabilities: { all: <K extends keyof CapabilityMap>(kind: K) => CapabilityMap[K][]; require: <K extends keyof CapabilityMap>(kind: K, id: string) => CapabilityMap[K] };
   register: <K extends keyof CapabilityMap>(kind: K, value: CapabilityMap[K]) => void;
   events: { emit: (event: string, data?: unknown) => void; on: (event: string, listener: (data: unknown) => void) => () => void };
   settings: { get: (key: string) => string; set: (key: string, value: string, persist?: boolean) => void };

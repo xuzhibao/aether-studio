@@ -19,7 +19,7 @@ import { plugins } from "../plugins/runtime";
 import type { ProjectContext, ProjectWorkspace } from "../plugins/api";
 import { clamp, simTime, uid } from "../lib/utils";
 
-export type DialogKind = "new-project" | "deploy" | "devices" | "tests" | "overview" | "plugins" | null;
+export type DialogKind = "new-project" | "deploy" | "devices" | "tests" | "overview" | "plugins" | "review-changes" | null;
 
 type WorkspaceSnapshot = ProjectWorkspace;
 
@@ -77,6 +77,8 @@ interface StudioState {
 
   agentMessages: AgentMessage[];
   agentRunning: boolean;
+  activeAgentId: string;
+  proposalReview: { messageId: string; proposalId: string } | null;
   agentDraft: string;
   aiModifiedFiles: string[];
   appliedFixIds: string[];
@@ -135,6 +137,10 @@ interface StudioState {
   setAgentDraft: (v: string) => void;
   runAgent: (prompt?: string) => Promise<void>;
   applyFix: (messageId: string) => void;
+  setAgent: (id: string) => void;
+  cancelAgent: () => void;
+  reviewProposal: (messageId: string, proposalId: string) => void;
+  resolveProposal: (messageId: string, proposalId: string, apply: boolean) => void;
   addToast: (toast: Omit<Toast, "id">) => void;
   dismissToast: (id: string) => void;
   importProject: (project: ProjectContext) => void;
@@ -180,6 +186,9 @@ const initial = saved.workspaces[saved.activeProjectId];
 const reportError = (error: unknown) => useStudio.getState().addToast({ title: "操作失败", detail: error instanceof Error ? error.message : String(error), tone: "warn" });
 function withCapability(action: () => void) { try { action(); } catch (error) { reportError(error); } }
 
+let currentAgentRun: { controller: AbortController; messageId: string } | null = null;
+const welcomeMessage: AgentMessage = { id: "welcome", role: "agent", time: "now", text: "在 Plugins 配置 AI API 后可进行工程问答。Project Tools 模式可以读取工程并提出文件修改，修改需预览后手动应用。发送时会将当前工程上下文传给配置的 API。" };
+
 export const useStudio = create<StudioState>((set, get) => ({
   projects: saved.projects,
   activeProjectId: saved.activeProjectId,
@@ -213,8 +222,10 @@ export const useStudio = create<StudioState>((set, get) => ({
   memory: 38,
   deviceConnected: false,
 
-  agentMessages: [{ id: "welcome", role: "agent", time: "now", text: "请在 Plugins 配置 AI Provider。此面板通过真实 API 提供工程问答；自动改码和执行工具尚未实现。发送时会把当前工程的代码和电路上下文传给配置的 API。" }],
+  agentMessages: [welcomeMessage],
   agentRunning: false,
+  activeAgentId: plugins.all("agents")[0]?.id ?? "",
+  proposalReview: null,
   agentDraft: "",
   aiModifiedFiles: [],
   appliedFixIds: [],
@@ -399,24 +410,60 @@ export const useStudio = create<StudioState>((set, get) => ({
   }),
   deployDone: () => get().addToast({ title: "尚未实现", detail: "没有已接入的真实烧录插件。", tone: "warn" }),
   setAgentDraft: (v) => set({ agentDraft: v }),
+  setAgent: (id) => { get().cancelAgent(); set({ activeAgentId: id }); },
+  cancelAgent: () => {
+    const run = currentAgentRun;
+    if (!run) return;
+    currentAgentRun = null;
+    run.controller.abort();
+    set((s) => ({ agentRunning: false, agentMessages: s.agentMessages.map((m) => m.id === run.messageId ? { ...m, text: "请求已取消；未自动应用文件修改。", error: true } : m) }));
+  },
   runAgent: async (prompt) => {
     const s = get();
     const text = (prompt ?? s.agentDraft).trim();
     if (!text || s.agentRunning) return;
     const id = uid("msg");
+    const run = { controller: new AbortController(), messageId: id };
+    currentAgentRun = run;
+    const timeout = window.setTimeout(() => run.controller.abort(new Error("AI 请求超时")), 60000);
     set({ agentRunning: true, agentDraft: "", agentMessages: [...s.agentMessages, { id: uid("msg"), role: "user", time: "now", text }, { id, role: "agent", time: "now", text: "正在请求配置的 AI API…" }] });
     try {
-      const agent = plugins.all("agents")[0];
-      if (!agent) throw new Error("请先在 Plugins 启用提供工程问答的插件。");
-      const history = s.agentMessages.filter((m) => m.id !== "welcome" && m.id !== "api-error").map((m) => ({ role: m.role === "agent" ? "assistant" as const : "user" as const, content: m.text }));
-      const reply = await agent.run(s.getProjectContext(), [...history, { role: "user", content: text }], AbortSignal.timeout(60000));
-      set((state) => ({ agentMessages: state.agentMessages.map((m) => m.id === id ? { ...m, text: reply } : m) }));
+      const agent = plugins.get("agents", s.activeAgentId);
+      if (!agent) throw new Error("请先在 Plugins 启用并选择 Agent。");
+      const history = s.agentMessages.filter((m) => m.id !== "welcome" && !m.error).map((m) => ({ role: m.role === "agent" ? "assistant" as const : "user" as const, content: m.text }));
+      const reply = await agent.run(s.getProjectContext(), [...history, { role: "user", content: text }], run.controller.signal, (tool) => {
+        if (currentAgentRun !== run) return;
+        set((state) => ({ agentMessages: state.agentMessages.map((m) => m.id === id ? { ...m, toolRuns: [...(m.toolRuns ?? []), tool] } : m) }));
+      });
+      if (currentAgentRun !== run) return;
+      set((state) => ({ agentMessages: state.agentMessages.map((m) => m.id === id ? { ...m, text: reply.text, proposals: reply.proposals, toolRuns: reply.toolRuns } : m) }));
     } catch (error) {
+      if (currentAgentRun !== run) return;
       const message = error instanceof Error ? error.message : String(error);
-      set((state) => ({ agentMessages: state.agentMessages.map((m) => m.id === id ? { ...m, id: "api-error", text: `请求未完成：${message}` } : m) }));
-    } finally { set({ agentRunning: false }); }
+      set((state) => ({ agentMessages: state.agentMessages.map((m) => m.id === id ? { ...m, error: true, text: `请求未完成：${message}` } : m) }));
+    } finally {
+      window.clearTimeout(timeout);
+      if (currentAgentRun === run) { currentAgentRun = null; set({ agentRunning: false }); }
+    }
   },
-  applyFix: () => get().addToast({ title: "尚未实现", detail: "AI 自动改码和工具执行尚未接入。", tone: "warn" }),
+  applyFix: () => get().addToast({ title: "请选择修改建议", detail: "在 Agent 回复中打开文件修改预览。" }),
+  reviewProposal: (messageId, proposalId) => set({ dialog: "review-changes", proposalReview: { messageId, proposalId } }),
+  resolveProposal: (messageId, proposalId, apply) => withCapability(() => {
+    const s = get();
+    const proposal = s.agentMessages.find((m) => m.id === messageId)?.proposals?.find((p) => p.id === proposalId);
+    if (!proposal || proposal.status !== "pending") return;
+    if (apply) {
+      if (proposal.projectId !== s.activeProjectId) throw new Error("修改建议不属于当前工程");
+      for (const change of proposal.changes) if ((Object.hasOwn(s.files, change.path) ? s.files[change.path] : null) !== change.before) throw new Error(change.path + " 已被修改，请重新生成建议，避免覆盖现有编辑。");
+    }
+    const updates = Object.fromEntries(proposal.changes.map((c) => [c.path, c.after]));
+    set({
+      ...(apply ? { files: { ...s.files, ...updates }, dirty: true, aiModifiedFiles: [...new Set([...s.aiModifiedFiles, ...Object.keys(updates)])] } : {}),
+      dialog: null, proposalReview: null,
+      agentMessages: s.agentMessages.map((m) => m.id === messageId ? { ...m, proposals: m.proposals!.map((p) => p.id === proposalId ? { ...p, status: apply ? "applied" : "rejected" } : p) } : m),
+      console: [...s.console, { id: uid("c"), source: "Agent", text: apply ? "已应用审阅后的文件修改：" + Object.keys(updates).join(", ") + "；尚未保存、编译或执行。" : "已拒绝文件修改建议。", tone: "normal" }],
+    });
+  }),
   addToast: (toast) => {
     const id = uid("toast");
     set((s) => ({ toasts: [...s.toasts, { ...toast, id }].slice(-3) }));
@@ -427,6 +474,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   switchProject: (id) => {
     const s = get();
     if (id === s.activeProjectId) return;
+    get().cancelAgent();
     const currentSnapshot = snapshot(s);
     const existing = s.workspaces[id];
     const target = existing!;
@@ -434,6 +482,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     set({
       workspaces: { ...s.workspaces, [s.activeProjectId]: currentSnapshot, [id]: target },
       activeProjectId: id,
+      agentMessages: [welcomeMessage],
+      proposalReview: null,
       components: clone(target.components),
       wires: clone(target.wires),
       files: { ...target.files },
@@ -462,7 +512,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     const projects = [...s.projects, meta];
     const workspaces = { ...s.workspaces, [s.activeProjectId]: snapshot(s), [id]: workspace };
     localStorage.setItem(storageKey, JSON.stringify({ version: 1, projects, activeProjectId: id, workspaces }));
-    set({ projects, workspaces, activeProjectId: id, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(files).filter((f) => f !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [] });
+    get().cancelAgent();
+    set({ agentMessages: [welcomeMessage], proposalReview: null, projects, workspaces, activeProjectId: id, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(files).filter((f) => f !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [] });
     plugins.emit("project:imported", { id });
   },
 
@@ -483,10 +534,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     };
     const currentSnapshot = snapshot(s);
     const workspace = selectedTemplate.create();
+    get().cancelAgent();
     set({
       projects: [...s.projects, meta],
       workspaces: { ...s.workspaces, [s.activeProjectId]: currentSnapshot, [id]: workspace },
       activeProjectId: id,
+      agentMessages: [welcomeMessage],
+      proposalReview: null,
       components: clone(workspace.components),
       wires: clone(workspace.wires),
       files: { ...workspace.files },
@@ -519,4 +573,7 @@ plugins.connect({
   runSimulation: () => useStudio.getState().runSimulation(),
   createProject: (board, template) => useStudio.getState().createProject({ name: "ESP32-S3 Demo", board, template }),
 });
-plugins.on("plugin:disabled", () => { useStudio.setState({ runState: "idle" }); });
+plugins.on("plugin:disabled", () => {
+  useStudio.setState({ runState: "idle" });
+  if (!plugins.get("agents", useStudio.getState().activeAgentId)) useStudio.getState().cancelAgent();
+});

@@ -59,7 +59,7 @@ export class PluginRegistry {
       plugin.activate({
         manifest: plugin.manifest,
         project: { get: () => this.host.getProject() },
-        capabilities: { require: (kind, id) => this.require(kind, id) },
+        capabilities: { all: (kind) => this.all(kind), require: (kind, id) => this.require(kind, id) },
         host: {
           getProject: () => this.host.getProject(), log: (text) => this.host.log(text),
           importProject: (project) => this.host.importProject(project), notify: (title, detail) => this.host.notify(title, detail),

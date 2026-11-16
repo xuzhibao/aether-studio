@@ -7,6 +7,7 @@ const LazyEditor = lazy(() => import("../../components/EditorPane").then((m) => 
 function EditorPane({ file }: { file: string }) { return <Suspense fallback={<div className="p-4 text-xs">Loading editor…</div>}><LazyEditor file={file} /></Suspense>; }
 import { micropythonPlugin } from "./micropython";
 import { demoPlugin } from "./demo";
+import { projectToolsPlugin } from "./projectTools";
 import { projectFilesPlugin } from "./projectFiles";
 import { providerPlugin } from "./provider";
 const boardPlugin: StudioPlugin = {
@@ -40,4 +41,4 @@ const templatePlugin: StudioPlugin = {
     api.register("commands", { id: "esp32.example", name: "ESP32-S3: 创建环境监测示例", run: () => api.host.createProject("esp32-s3", "Environment monitor") });
   },
 };
-export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin];
+export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin];

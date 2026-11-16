@@ -5,7 +5,26 @@ export_path="$PWD/smoke-results/native-export.aether"
 import_path="$PWD/smoke-results/native-import.aether"
 roundtrip_path="$PWD/smoke-results/native-roundtrip.aether"
 choose_path() {
-  sleep 2
+  local dialog=""
+  local parent_hex
+  printf -v parent_hex '0x%x' "$window"
+  for attempt in $(seq 1 20); do
+    for candidate in $(xdotool search --onlyvisible --pid "$AETHER_APP_PID"); do
+      if [[ "$candidate" != "$window" && "$(xprop -id "$candidate" WM_TRANSIENT_FOR)" == *"$parent_hex"* ]]; then
+        dialog="$candidate"
+        break
+      fi
+    done
+    if [[ -n "$dialog" ]]; then break; fi
+    sleep 1
+  done
+  if [[ -z "$dialog" ]]; then
+    xwininfo -root -tree
+    import -window root smoke-results/native-files-failure.png
+    echo 'Native file dialog did not appear' >&2
+    exit 1
+  fi
+  xdotool windowfocus --sync "$dialog"
   xdotool key --clearmodifiers ctrl+l
   xdotool type --clearmodifiers --delay 1 "$1"
   xdotool key --clearmodifiers Return

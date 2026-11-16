@@ -15,7 +15,7 @@ Aether Studio 是一个使用 Tauri、React 和 TypeScript 开发的硬件开发
 - 保存工程后，可切换工程、刷新页面或重启应用再打开，恢复电路、代码和能力绑定。
 - 导出和导入 `.aether` 工程文件，在不同浏览器、设备和桌面端之间迁移代码、电路和能力绑定。
 - 保存面板布局、分屏比例、编辑器字号和减少动画设置。
-- AI 面板可调用用户配置的 OpenAI Compatible Chat Completions API。只提供问答，不自动修改或执行工程。
+- AI 面板可调用用户配置的 OpenAI Compatible Chat Completions API。支持问答与工程工具调用；文件修改先预览，再由用户应用，不自动执行硬件操作。
 
 **Demo Simulation 使用生成数据，不执行 Python、不验证电气接线、不连接真实硬件。修改 Python 代码不会改变演示数据。**
 
@@ -109,6 +109,7 @@ GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以�
 | `aether.ai.openai` | ai-provider | 可配置的 Chat Completions HTTP 适配器和 Ask Agent |
 | `aether.templates` | template | 环境监测、空白开发板工程模板 |
 | `aether.project-files` | workspace | `.aether` 工程导入导出、原生文件对话框、命令和菜单 |
+| `aether.project-tools` | tool | 文件读取、电路定义检查与文件修改建议 |
 
 停用被其他已启用插件依赖的插件时，界面会提示先停用依赖者。重新启用插件会加载依赖。停用不会删除工程内容；对应能力会停止提供，画布或编辑器显示不可用提示。
 
@@ -122,7 +123,7 @@ GitHub Actions 的 `MVP smoke` 工作流分别检查前端端到端流程，以�
 
 `entry` 是入口元数据；当前入口由 TypeScript 静态导入，不从字符串动态执行，也不扫描用户目录。插件在同一进程内运行。类型可注册多个能力，不各建一套管理系统。生命周期目前是同步 `activate(api)` 和可选的 `deactivate()`；异步 API 调用放在注册的命令或能力内。
 
-插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`templates`、`commands`、`projectFormats`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
+插件可以贡献 `boards`、`components`、`editors`、`toolchains`、`simulators`、`providers`、`agents`、`tools`、`templates`、`commands`、`projectFormats`、`panels`、`menus` 和画布 `overlays`。`api.project.get()` 在操作时读取当前工程，`api.capabilities.require()` 获取另一个插件的能力。`api.events` 用于工程和插件事件；通过 API 添加的订阅在插件停用时自动清理。`api.settings` 按插件 ID 保存设置，Manifest 可声明设置字段。
 
 ## 开发一个简单插件
 
@@ -162,8 +163,22 @@ export const helloPlugin: StudioPlugin = {
 
 地址和模型自动保存，API Key 只保留在本次应用会话内。请求直接从浏览器/WebView 发出，服务需允许 CORS。发送时会把当前工程的代码和电路上下文传给所配置的服务。未配置、网络失败或 HTTP 错误会明确显示，不生成预设成功回复。
 
+## Agent 工具与文件修改
+
+配置 API 后，可在右侧 **Agent mode** 选择普通问答或 **Project Tools**。工具模式要求所配置的服务和模型支持 Chat Completions function calling。工具来自已启用插件，停用工程工具插件后不会再提供这些能力。
+
+- `project_read_file`：读取工程中的文件内容。
+- `project_inspect_circuit`：查看元器件和连线定义，不执行电气校验或硬件测量。
+- `project_propose_files`：对已有文件或新文件提出完整内容建议，不直接写入。
+
+工具调用结果显示在对话中。点击 **预览文件修改** 查看生成时的原文与建议版本，可切换文件，选择 **应用修改** 或 **拒绝建议**。应用只更新当前工作区，仍需保存；不会自动编译、运行或烧录。若工程或相关文件在建议生成后已改变，应用会被阻止，避免覆盖手动编辑。`circuit.json` 由画布生成，工具不能修改它。
+
+请求期间可点击 **Stop** 取消。切换工程、重新选择 Agent 或关闭提供当前 Agent 的插件也会取消未完成的请求。单次请求最长 60 秒，工具模式最多进行 6 轮 API 交互。网络错误和工具错误会显示实际原因。
+
+新增工具时，在插件中注册 `tools` 能力，提供 `id`、`name`、`description`、JSON Schema `parameters` 和 `execute(args, project)`。返回 `{ output }` 提供执行结果，返回 `{ output, proposal }` 可提供待审阅文件修改。普通问答不会调用工具。
+
 ## 尚未实现
 
-真实 MicroPython 执行器、编译器集成、物理电路仿真、串口/USB、真实烧录、网络协议、Agent 工具执行和自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
+真实 MicroPython 执行器、编译器集成、物理电路仿真、串口/USB、真实烧录、网络协议、终端命令工具、无需审阅的自动改码、真实硬件测试、云同步、账号和分享、语音及附件上传。
 
 外部插件安装、市场、版本依赖解析、跨进程 RPC、沙箱与完整权限系统当前尚未提供。

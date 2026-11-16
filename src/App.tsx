@@ -1,3 +1,4 @@
+import { ReviewChangesDialog } from "./components/ReviewChangesDialog";
 import { MotionConfig } from "motion/react";
 import { PluginsDialog } from "./components/PluginsDialog";
 import { plugins } from "./plugins/runtime";
@@ -96,6 +97,7 @@ export default function App() {
         </div>
         <StatusBar />
         <CommandPalette />
+        <ReviewChangesDialog />
         <PluginsDialog />
         <NewProjectDialog />
         <DeployDialog />

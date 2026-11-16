@@ -42,8 +42,8 @@ console.log("PASS registry: lifecycle, cleanup, duplicate IDs, dependency cycle,
 const { useStudio } = await import("../src/store/studio");
 const { plugins } = await import("../src/plugins/runtime");
 const state = () => useStudio.getState();
-assert.equal(plugins.list().length, 8);
-assert.equal(plugins.list().filter((p) => p.enabled).length, 8);
+assert.equal(plugins.list().length, 9);
+assert.equal(plugins.list().filter((p) => p.enabled).length, 9);
 assert.throws(() => plugins.disable("aether.esp32-s3"), /请先停用/);
 state().createProject({ name: "Smoke hardware project", board: "esp32-s3", template: "Blank workspace" });
 const projectId = state().activeProjectId;
@@ -163,3 +163,60 @@ assert.ok(state().agentMessages.at(-1)!.text.includes("HTTP 503"));
 globalThis.fetch = originalFetch;
 assert.equal(state().files["main.py"], code);
 console.log("PASS AI adapter: configuration error, HTTP request/response contract, HTTP failure, ephemeral key (mock HTTP only)");
+
+state().setAgent("api-tools");
+let toolTurn = 0;
+const updatedCode = code + "\n# suggested by tool fixture\n";
+globalThis.fetch = async (_input, init) => {
+  const body = JSON.parse(String(init?.body));
+  assert.ok(body.tools.some((t: { function: { name: string } }) => t.function.name === "project_read_file"));
+  const reply = toolTurn++ === 0
+    ? { content: null, tool_calls: [{ id: "read", type: "function", function: { name: "project_read_file", arguments: JSON.stringify({ path: "main.py" }) } }, { id: "circuit", type: "function", function: { name: "project_inspect_circuit", arguments: "{}" } }] }
+    : toolTurn === 2
+      ? { content: null, tool_calls: [{ id: "propose", type: "function", function: { name: "project_propose_files", arguments: JSON.stringify({ summary: "Test proposal (fixture only)", files: [{ path: "main.py", content: updatedCode }] }) } }] }
+      : { content: "Test fixture: modification is pending review." };
+  if (toolTurn === 2) {
+    assert.ok(body.messages.some((m: {role: string; tool_call_id: string; content: string}) => m.role === "tool" && m.tool_call_id === "read" && JSON.parse(m.content).content === code));
+  }
+  return new Response(JSON.stringify({ choices: [{ message: reply }] }));
+};
+await state().runAgent("Propose a code change");
+const message = state().agentMessages.at(-1)!;
+assert.equal(message.toolRuns!.length, 3);
+assert.ok(message.toolRuns!.every((run) => run.status === "done"));
+assert.equal(message.proposals!.length, 1);
+assert.equal(state().files["main.py"], code, "tool proposals must not write files");
+const proposal = message.proposals![0];
+state().updateFile("main.py", code + "# manual edit");
+state().resolveProposal(message.id, proposal.id, true);
+assert.equal(state().files["main.py"], code + "# manual edit", "stale proposal cannot overwrite manual edits");
+state().updateFile("main.py", code);
+state().resolveProposal(message.id, proposal.id, false);
+assert.equal(state().files["main.py"], code);
+toolTurn = 0;
+await state().runAgent("Propose again");
+const accepted = state().agentMessages.at(-1)!;
+state().resolveProposal(accepted.id, accepted.proposals![0].id, true);
+assert.equal(state().files["main.py"], updatedCode);
+assert.equal(state().dirty, true);
+const proposalTool = plugins.require("tools", "project_propose_files");
+assert.throws(() => proposalTool.execute({ summary: "invalid", files: [{ path: "../bad.py", content: "x" }] }, state().getProjectContext()), /路径/);
+assert.throws(() => proposalTool.execute({ summary: "invalid", files: [{ path: "circuit.json", content: "{}" }] }, state().getProjectContext()), /circuit.json/);
+let started!: () => void;
+const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+globalThis.fetch = (_input, init) => new Promise((_resolve, reject) => {
+  started();
+  init!.signal!.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")), { once: true });
+});
+const pending = state().runAgent("Wait for API");
+await requestStarted;
+state().cancelAgent();
+await pending;
+assert.equal(state().agentRunning, false);
+assert.match(state().agentMessages.at(-1)!.text, /已取消/);
+assert.equal(state().files["main.py"], updatedCode);
+plugins.disable("aether.project-tools");
+assert.equal(plugins.all("tools").length, 0);
+plugins.enable("aether.project-tools");
+globalThis.fetch = originalFetch;
+console.log("PASS Agent tools: real tool-result protocol, read/inspect, pending proposal, conflict refusal, reject/apply, path validation, cancellation and plugin disable (HTTP fixtures only)");
