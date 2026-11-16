@@ -1,3 +1,4 @@
+import { usePlugins } from "../plugins/usePlugins";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Popover from "@radix-ui/react-popover";
 import {
@@ -60,6 +61,7 @@ export function TopBar() {
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0];
   const { runSimulation, pauseSimulation, resetSimulation, build, setDialog, setCommandOpen, setAgentCollapsed, saveProject, switchProject, setActiveNav, addToast } = useStudio();
 
+  const registry = usePlugins();
   const traffic = async (action: "close" | "minimize" | "maximize") => {
     const handled = await windowAction(action);
     if (!handled) addToast({ title: "Desktop window", detail: "Window controls are enabled in the Tauri build.", tone: "default" });
@@ -77,6 +79,13 @@ export function TopBar() {
           <button className="traffic max" aria-label="Zoom window" title="Zoom" onClick={() => void traffic("maximize")} />
         </div>
         <div className="h-[22px] w-px bg-[#E6E8EB]" />
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger className="btn px-2 py-1 text-[10px]">Plugins</DropdownMenu.Trigger>
+          <DropdownMenu.Portal><DropdownMenu.Content className="menu-content" sideOffset={8}>
+            <DropdownMenu.Item className="menu-item" onSelect={() => setDialog("plugins")}>管理插件</DropdownMenu.Item>
+            {registry.all("menus").map((menu) => <DropdownMenu.Item key={menu.id} className="menu-item" onSelect={() => { void Promise.resolve().then(() => registry.require("commands", menu.command).run()).catch((error) => addToast({ title: "插件命令失败", detail: String(error), tone: "warn" })); }}>{menu.name}</DropdownMenu.Item>)}
+          </DropdownMenu.Content></DropdownMenu.Portal>
+        </DropdownMenu.Root>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <button className="group -ml-1 flex min-w-0 items-center gap-2.5 rounded-[7px] px-1.5 py-1 text-left outline-none hover:bg-[#F3F4F6] data-[state=open]:bg-[#F3F4F6]">
@@ -138,8 +147,8 @@ export function TopBar() {
           <DropdownMenu.Trigger asChild>
             <button className="btn h-[27px] gap-1.5 rounded-[6.5px] pl-2 pr-1.5 text-[10.5px] font-medium text-[#3B3F45]">
               <Cpu size={13} strokeWidth={1.7} className="text-[#70767E]" />
-              <span className="hidden min-[1360px]:inline">ESP32-S3 DevKitC-1</span>
-              <span className="min-[1360px]:hidden">ESP32-S3</span>
+              <span className="hidden min-[1360px]:inline">{project.board}</span>
+              <span className="min-[1360px]:hidden">{project.board}</span>
               <span className="mx-0.5 h-3 w-px bg-[#ECEEF1]" />
               <span className="h-[5px] w-[5px] rounded-full bg-[#2B9661]" />
               <ChevronDown size={10} className="text-[#9AA0A8]" />
@@ -148,22 +157,11 @@ export function TopBar() {
           <DropdownMenu.Portal>
           <DropdownMenu.Content align="center" sideOffset={8} className="menu-content w-[286px]">
             <div className="menu-label">Target board</div>
-            {[
-              ["ESP32-S3 DevKitC-1", "Dual-core LX7 · 240 MHz", true],
-              ["Arduino Nano ESP32", "u-blox NORA-W106", false],
-              ["STM32 Nucleo-F411RE", "Arm Cortex-M4 · 100 MHz", false],
-            ].map(([name, meta, active]) => (
-              <DropdownMenu.Item key={name as string} className="menu-item" onSelect={() => addToast({ title: "Board target", detail: name + " selected for the virtual bench.", tone: "default" })}>
-                <Cpu size={13} className={active ? "text-[#007AFF]" : "text-[#858B93]"} />
-                <div className="flex flex-col">
-                  <span>{name}</span>
-                  <span className="text-[9px] text-[#A0A5AC]">{meta}</span>
-                </div>
-                {active && <Check size={12} className="ml-auto text-[#007AFF]" />}
-              </DropdownMenu.Item>
-            ))}
+            {registry.all("boards").map((definition) => <DropdownMenu.Item key={definition.id} className="menu-item" onSelect={() => setDialog("plugins")}>
+              <Cpu size={13} className="text-[#007AFF]" /><div className="flex flex-col"><span>{definition.name}</span><span className="text-[9px] text-[#A0A5AC]">{definition.description}</span></div>
+            </DropdownMenu.Item>)}
             <DropdownMenu.Separator className="menu-sep" />
-            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Board manager", detail: "3 board definitions installed.", tone: "default" })}>
+            <DropdownMenu.Item className="menu-item" onSelect={() => setDialog("plugins")}>
               <Terminal size={13} /> Manage board packages…
             </DropdownMenu.Item>
           </DropdownMenu.Content>
@@ -190,7 +188,7 @@ export function TopBar() {
 
         <button onClick={build} className="btn btn-ghost h-[27px] gap-1.5 px-2 text-[10.5px] text-[#4D545C]">
           <Hammer size={12.5} strokeWidth={1.75} className="text-[#70767E]" />
-          Build
+          Check Files
         </button>
         <button onClick={() => setDialog("deploy")} className="btn h-[27px] gap-1.5 border-[#D9DDE3] px-2.5 text-[10.5px] font-[520] text-[#2F3339]">
           <ArrowUpToLine size={12.5} strokeWidth={1.9} className="text-[#007AFF]" />
@@ -237,20 +235,20 @@ export function TopBar() {
                 <div className="flex h-7 w-7 items-center justify-center rounded-[7px] bg-[#EDF5FF] text-[#007AFF]"><Link2 size={14} /></div>
                 <div>
                   <div className="text-[11.5px] font-semibold">Share workspace</div>
-                  <div className="text-[10px] text-[#8A8F97]">Anyone with the link can view the bench.</div>
+                  <div className="text-[10px] text-[#8A8F97]">当前工程仅保存在本机。</div>
                 </div>
               </div>
               <div className="mt-3 flex items-center gap-1.5 rounded-[7px] border border-[#E5E8EC] bg-[#FAFBFC] p-1 pl-2.5">
-                <span className="truncate text-[10px] text-[#697079]">aether.studio/s/env-monitor-2f8c</span>
-                <button className="ml-auto flex h-[22px] items-center gap-1 rounded-[5px] bg-white px-2 text-[9.5px] font-medium shadow-sm ring-1 ring-[#E1E4E8]" onClick={() => addToast({ title: "Link copied", detail: "Workspace link is on your clipboard.", tone: "success" })}>
+                <span className="truncate text-[10px] text-[#697079]">分享尚未实现</span>
+                <button className="ml-auto flex h-[22px] items-center gap-1 rounded-[5px] bg-white px-2 text-[9.5px] font-medium shadow-sm ring-1 ring-[#E1E4E8]" onClick={() => addToast({ title: "尚未实现", detail: "分享链接尚未实现。", tone: "default" })}>
                   <Copy size={10} /> Copy
                 </button>
               </div>
-              <button className="menu-item mt-1.5 h-[27px] w-full px-1.5" onClick={() => addToast({ title: "Bundle exported", detail: "env-monitor.aether · 1.8 MB", tone: "success" })}>
+              <button className="menu-item mt-1.5 h-[27px] w-full px-1.5" onClick={() => addToast({ title: "尚未实现", detail: "工程文件导出尚未实现。", tone: "default" })}>
                 <Download size={12} /> Export project bundle
                 <span className="menu-meta">.aether</span>
               </button>
-              <button className="menu-item h-[27px] w-full px-1.5" onClick={() => addToast({ title: "Opening in browser", detail: "Live preview is read-only.", tone: "default" })}>
+              <button className="menu-item h-[27px] w-full px-1.5" onClick={() => addToast({ title: "尚未实现", detail: "在线工程预览尚未实现。", tone: "default" })}>
                 <ExternalLink size={12} /> Open read-only preview
               </button>
             </Popover.Content>
@@ -267,13 +265,13 @@ export function TopBar() {
             <Popover.Content align="end" sideOffset={9} className="popover w-[300px] p-3">
               <div className="flex items-center justify-between pb-2">
                 <div className="text-[11.5px] font-semibold">Workspace settings</div>
-                <span className="text-[9px] text-[#9CA1A8]">Aether 0.9.4</span>
+                <span className="text-[9px] text-[#9CA1A8]">Aether 0.1.0</span>
               </div>
               <div className="space-y-0.5">
                 {[
                   ["Appearance", "Light", false],
                   ["Editor font", "JetBrains Mono 12.5", false],
-                  ["Agent autopilot", "On", true],
+                  ["Agent autopilot", "尚未实现", true],
                 ].map(([label, value]) => (
                   <div key={label as string} className="flex h-[29px] items-center justify-between rounded-[5px] px-1.5 text-[10.5px] hover:bg-[#F6F7F9]">
                     <span className="text-[#5C626A]">{label}</span>
@@ -282,7 +280,7 @@ export function TopBar() {
                 ))}
               </div>
               <div className="my-2 h-px bg-[#ECEEF1]" />
-              <button className="menu-item h-[27px] w-full" onClick={() => addToast({ title: "Documentation", detail: "Offline docs are bundled with the app.", tone: "default" })}>
+              <button className="menu-item h-[27px] w-full" onClick={() => addToast({ title: "Documentation", detail: "请查看仓库 README.md。", tone: "default" })}>
                 <CircleHelp size={12} /> Documentation
                 <span className="menu-meta">⌘?</span>
               </button>
@@ -304,15 +302,15 @@ export function TopBar() {
             <div className="flex items-center gap-2 px-2 py-2">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#2E3238] text-[10px] font-semibold text-white">AL</div>
               <div>
-                <div className="text-[11.5px] font-semibold">Alex Lin</div>
-                <div className="text-[9.5px] text-[#9AA0A8]">Hardware engineer</div>
+                <div className="text-[11.5px] font-semibold">本地工作区</div>
+                <div className="text-[9.5px] text-[#9AA0A8]">未登录云端账号</div>
               </div>
             </div>
             <DropdownMenu.Separator className="menu-sep" />
-            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Account", detail: "Signed in as alex@aether.studio", tone: "default" })}>
+            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Account", detail: "账号系统尚未实现。", tone: "default" })}>
               <UserRound size={12} /> Account
             </DropdownMenu.Item>
-            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Synced", detail: "Workspace is up to date.", tone: "success" })}>
+            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "尚未实现", detail: "云端同步尚未接入。", tone: "default" })}>
               <Cloud size={12} /> Sync now
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="menu-sep" />

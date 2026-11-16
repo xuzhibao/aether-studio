@@ -7,12 +7,8 @@ import { CloseButton, Modal } from "./Dialogs";
 export function ProjectOverviewDialog() {
   const { dialog, setDialog, setTab, components, wires, activeProjectId, projects, elapsed } = useStudio();
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0];
-  const activity = [
-    ["Aether verified I²C bus", "30 samples · 0 warnings", "12:04"],
-    ["Firmware compiled", "main.py · 1.42 s", "12:03"],
-    ["OLED display connected", "SSD1306 · 0x3C", "12:02"],
-    ["BME280 added to bench", "U2 · I²C 0x76", "12:01"],
-  ];
+  const files = useStudio((s) => s.files);
+  const activity = useStudio((s) => s.console).slice(-4).map((line) => [line.source, line.text, ""]);
 
   return (
     <Modal open={dialog === "overview"} onOpenChange={(open) => !open && setDialog(null)} width={664}>
@@ -27,7 +23,7 @@ export function ProjectOverviewDialog() {
           </div>
           <div className="mt-1 max-w-[470px] text-[10px] leading-[1.55] text-[#8D939B]">{project.description}</div>
           <div className="mt-2 flex items-center gap-1.5">
-            {[project.board, "MicroPython 1.23", "I²C 400 kHz"].map((chip) => (
+            {[project.board, "Demo Simulation", "无真实硬件连接"].map((chip) => (
               <span key={chip} className="rounded-[4px] bg-[#F2F4F7] px-1.5 py-[2px] text-[8.5px] text-[#737B84]">{chip}</span>
             ))}
           </div>
@@ -53,7 +49,7 @@ export function ProjectOverviewDialog() {
           <div className="mt-3 border-t border-[#EEF0F3] pt-2.5">
             <div className="label-caps mb-1.5 text-[8.5px]">Firmware</div>
             <div className="flex flex-wrap gap-1.5">
-              {["main.py", "sensors.py", "config.json"].map((file) => (
+              {Object.keys(files).map((file) => (
                 <button key={file} className="flex h-[23px] items-center gap-1 rounded-[5px] border border-[#E6E9ED] bg-[#FBFBFC] px-1.5 font-mono text-[8.5px] text-[#555C64] hover:border-[#CCD9E6] hover:bg-white" onClick={() => { setDialog(null); useStudio.getState().openFile(file); }}>
                   <FileCode2 size={9.5} className="text-[#527FA4]" /> {file}
                 </button>
@@ -78,7 +74,7 @@ export function ProjectOverviewDialog() {
           </div>
           <div className="mt-3 grid grid-cols-3 gap-2 border-t border-[#EEF0F3] pt-2.5">
             {[
-              ["Sampling", "2.0 s"],
+              ["演示采样", "1 s"],
               ["Nets", String(wires.length)],
               ["Uptime", formatElapsed(elapsed)],
             ].map(([label, value]) => (

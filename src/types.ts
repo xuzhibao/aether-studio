@@ -1,14 +1,4 @@
-export type ComponentKind =
-  | "board"
-  | "bme280"
-  | "oled"
-  | "led"
-  | "resistor"
-  | "buzzer"
-  | "button"
-  | "dht22"
-  | "soil"
-  | "servo";
+export type ComponentKind = string;
 
 export type PinSignal = "power" | "gnd" | "i2c" | "gpio" | "analog" | "pwm";
 export type PinDir = "left" | "right" | "up" | "down";

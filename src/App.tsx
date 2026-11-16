@@ -1,3 +1,4 @@
+import { PluginsDialog } from "./components/PluginsDialog";
 import { useEffect } from "react";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { AgentPanel } from "./components/AgentPanel";
@@ -84,6 +85,7 @@ export default function App() {
         </div>
         <StatusBar />
         <CommandPalette />
+        <PluginsDialog />
         <NewProjectDialog />
         <DeployDialog />
         <DevicesDialog />

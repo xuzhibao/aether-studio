@@ -1,3 +1,4 @@
+import { usePlugins } from "../plugins/usePlugins";
 import { useEffect, useMemo, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
@@ -42,13 +43,17 @@ export function CommandPalette() {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
 
+  const registry = usePlugins();
+  const revision = registry.getRevision();
   const commands = useMemo<Command[]>(() => {
     const s = () => useStudio.getState();
     return [
-      { id: "run", label: "Run simulation", group: "Simulation", icon: Play, shortcut: "⌘R", run: () => s().runSimulation() },
+      { id: "plugins", label: "Manage Plugins", group: "Workspace", icon: Box, run: () => s().setDialog("plugins") },
+      ...registry.all("commands").map((command) => ({ id: command.id, label: command.name, group: "Plugins", icon: Box, run: () => { void Promise.resolve().then(command.run).catch((error) => s().addToast({ title: "插件命令失败", detail: String(error), tone: "warn" })); } })),
+      { id: "run", label: "Run Demo Simulation", group: "Simulation", icon: Play, shortcut: "⌘R", run: () => s().runSimulation() },
       { id: "pause", label: "Pause simulation", group: "Simulation", icon: Pause, run: () => s().pauseSimulation() },
       { id: "reset", label: "Reset virtual board", group: "Simulation", icon: RotateCcw, run: () => s().resetSimulation() },
-      { id: "build", label: "Build firmware", group: "Simulation", icon: Hammer, shortcut: "⌘B", run: () => s().build() },
+      { id: "build", label: "Check project files (not compile)", group: "Simulation", icon: Hammer, shortcut: "⌘B", run: () => s().build() },
       { id: "deploy", label: "Deploy to device", group: "Simulation", icon: ArrowUpToLine, run: () => s().setDialog("deploy") },
       { id: "serial", label: "Open Serial Monitor", group: "Navigate", icon: Terminal, run: () => s().setTab("serial") },
       { id: "main", label: "Open main.py", group: "Navigate", icon: FileCode2, run: () => s().openFile("main.py") },
@@ -68,7 +73,7 @@ export function CommandPalette() {
       { id: "devices", label: "Manage devices", group: "Project", icon: Radio, run: () => s().setDialog("devices") },
       { id: "tests", label: "Open test reports", group: "Project", icon: FlaskConical, run: () => s().setDialog("tests") },
     ];
-  }, []);
+  }, [revision]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

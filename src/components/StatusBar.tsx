@@ -31,7 +31,7 @@ export function StatusBar() {
         onClick={() => (runState === "running" ? pauseSimulation() : runSimulation())}
       >
         <span className={cn("h-[5px] w-[5px] rounded-full", runState === "running" ? "bg-[#2B9661] pulse-dot" : "bg-[#C08A2E]")} />
-        {runState === "running" ? "Simulation Running" : "Simulation Paused"}
+        {runState === "running" ? "Demo Simulation Running" : "Demo Simulation Idle"}
       </button>
       <span className="font-mono text-[9px] tabular text-[#767D85]">{formatElapsed(elapsed)}</span>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
@@ -44,14 +44,14 @@ export function StatusBar() {
       </button>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => setTab("serial")}>
-        <Usb size={10} className="text-[#7C838B]" /> Serial Connected
+        <Usb size={10} className="text-[#7C838B]" /> Demo output · 无真实设备
       </button>
 
       <span className="flex-1" />
 
-      <button className="hidden items-center gap-1.5 text-[#7D848D] hover:text-[#3F454C] min-[1300px]:flex" onClick={() => addToast({ title: "Agent session", detail: agentRunning ? "Aether is executing a task." : "Aether is watching the simulation.", tone: "default" })}>
+      <button className="hidden items-center gap-1.5 text-[#7D848D] hover:text-[#3F454C] min-[1300px]:flex" onClick={() => addToast({ title: "Agent session", detail: agentRunning ? "Aether is executing a task." : "配置 API 后可发送工程问答。", tone: "default" })}>
         <Sparkles size={9.5} className={agentRunning ? "text-[#007AFF]" : "text-[#8A9098]"} />
-        {agentRunning ? "Agent working" : agentCollapsed ? "Agent collapsed" : "Agent · Build & Debug"}
+        {agentRunning ? "Agent working" : agentCollapsed ? "Agent collapsed" : "Agent · Ask"}
       </button>
       <span className="mx-0.5 hidden h-[11px] w-px bg-[#DFE2E6] min-[1300px]:block" />
       <span className="hidden tabular text-[#9CA1A8] min-[1200px]:inline">100%</span>

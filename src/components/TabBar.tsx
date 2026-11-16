@@ -42,6 +42,7 @@ export function TabBar() {
               className={cn("workspace-tab group", active && "active")}
               onClick={() => setTab(tab)}
               role="tab"
+              aria-label={labelFor(tab)}
               aria-selected={active}
             >
               <Icon size={11.5} strokeWidth={1.8} className={active ? "text-[#4D5B6C]" : "text-[#9AA0A8]"} />

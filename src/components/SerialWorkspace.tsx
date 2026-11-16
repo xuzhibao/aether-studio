@@ -56,14 +56,7 @@ export function SerialWorkspace() {
     };
     useStudio.setState((s) => ({ serial: [...s.serial, entry].slice(-90) }));
     setCommand("");
-    window.setTimeout(() => {
-      useStudio.setState((s) => ({
-        serial: [
-          ...s.serial,
-          { id: uid("s"), time: simTime(s.elapsed, 120), level: "success" as const, text: "OK · command accepted by REPL" },
-        ].slice(-90),
-      }));
-    }, 320);
+    addToast({ title: "尚未实现", detail: "输入仅记录到演示日志，未发送或执行命令。" });
   };
 
   return (
@@ -80,7 +73,7 @@ export function SerialWorkspace() {
               {runState === "running" ? "Streaming" : "Paused"}
             </span>
           </div>
-          <div className="mt-[1px] text-[9px] text-[#969CA4]">Virtual ESP32-S3 · USB Serial/JTAG · {formatElapsed(elapsed)} uptime</div>
+          <div className="mt-[1px] text-[9px] text-[#969CA4]">Demo Simulation · Generated data · {formatElapsed(elapsed)} uptime</div>
         </div>
         <div className="ml-auto flex items-center gap-1">
           <DropdownMenu.Root>
@@ -92,7 +85,7 @@ export function SerialWorkspace() {
             <DropdownMenu.Portal>
             <DropdownMenu.Content align="end" sideOffset={5} className="menu-content w-[150px]">
               {bauds.map((rate) => (
-                <DropdownMenu.Item key={rate} className="menu-item" onSelect={() => { setBaud(rate); addToast({ title: "Baud rate changed", detail: rate + " · COM3 reconnected", tone: "default" }); }}>
+                <DropdownMenu.Item key={rate} className="menu-item" onSelect={() => { setBaud(rate); addToast({ title: "Baud rate changed", detail: rate + " · 仅修改显示设置，不连接设备", tone: "default" }); }}>
                   <span className="font-mono text-[10px]">{rate}</span>
                   {baud === rate && <Check size={11} className="ml-auto text-[#007AFF]" />}
                 </DropdownMenu.Item>
@@ -148,7 +141,7 @@ export function SerialWorkspace() {
               value={command}
               onChange={(e) => setCommand(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") sendCommand(); }}
-              placeholder="Send a MicroPython command to the board…"
+              placeholder="演示日志输入（不执行命令）…"
               className="h-full flex-1 bg-transparent font-mono text-[10px] text-[#3B4148] outline-none placeholder:font-sans placeholder:text-[#ADB2B9]"
             />
             <span className="hidden items-center gap-1 text-[8.5px] text-[#AFB3BA] min-[1200px]:flex">
@@ -163,23 +156,23 @@ export function SerialWorkspace() {
         <aside className="hidden w-[236px] flex-none flex-col border-l border-[#E9EBEE] bg-[#FAFBFC] min-[1260px]:flex">
           <div className="flex h-[33px] items-center justify-between border-b border-[#EEF0F3] px-3">
             <span className="label-caps">Connection</span>
-            <span className="flex items-center gap-1 text-[8.5px] text-[#2B9661]"><span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" />Online</span>
+            <span className="flex items-center gap-1 text-[8.5px] text-[#2B9661]"><span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" />Demo only</span>
           </div>
           <div className="px-3 py-3">
             <div className="flex items-center gap-2">
               <span className="flex h-[30px] w-[30px] items-center justify-center rounded-[7px] bg-white text-[#536170] shadow-[0_0_0_0.5px_rgba(20,24,33,0.08),0_1px_2px_rgba(20,24,33,0.04)]"><Usb size={14} /></span>
               <div>
                 <div className="text-[10px] font-[560] text-[#353A41]">ESP32-S3 DevKitC-1</div>
-                <div className="mt-[1px] text-[8.5px] text-[#99A0A8]">USB Serial/JTAG · COM3</div>
+                <div className="mt-[1px] text-[8.5px] text-[#99A0A8]">Demo Simulation · 无真实设备</div>
               </div>
             </div>
 
             <div className="mt-3 space-y-[7px]">
               {[
-                [<Cpu key="c" size={10} />, "Firmware", "MicroPython 1.23"],
+                [<Cpu key="c" size={10} />, "Firmware", "Demo only"],
                 [<Clock3 key="t" size={10} />, "Uptime", formatElapsed(elapsed)],
-                [<Wifi key="w" size={10} />, "Wi-Fi", "AetherLab · −48 dBm"],
-                [<Cloud key="m" size={10} />, "MQTT", "QoS 1 · 42 ms"],
+                [<Wifi key="w" size={10} />, "Wi-Fi", "尚未实现"],
+                [<Cloud key="m" size={10} />, "MQTT", "尚未实现"],
               ].map(([icon, label, value]) => (
                 <div key={label as string} className="flex items-center gap-2 text-[9px]">
                   <span className="text-[#989EA6]">{icon}</span>
@@ -191,8 +184,8 @@ export function SerialWorkspace() {
 
             <div className="mt-3 rounded-[6px] border border-[#EDEFF2] bg-white p-2">
               <div className="flex items-center justify-between text-[8px] text-[#9AA0A8]">
-                <span>Serial throughput</span>
-                <span className="tabular text-[#5F666E]">62 B/s</span>
+                <span>Demo chart (预设图形)</span>
+                <span className="tabular text-[#5F666E]">未采集</span>
               </div>
               <svg viewBox="0 0 190 36" className="mt-1.5 h-[36px] w-full" preserveAspectRatio="none">
                 <path d="M0 28 L10 24 L20 27 L30 18 L40 22 L50 15 L60 20 L70 12 L80 17 L90 9 L100 14 L110 8 L120 15 L130 6 L140 12 L150 10 L160 17 L170 11 L180 16 L190 13 L190 36 L0 36 Z" fill="#E9F3FF" />
@@ -208,7 +201,7 @@ export function SerialWorkspace() {
             </div>
           </div>
           <div className="mt-auto border-t border-[#ECEEF1] px-3 py-2">
-            <button className="flex h-[25px] w-full items-center justify-center gap-1.5 rounded-[5px] border border-[#E1E4E8] bg-white text-[9px] font-medium text-[#5A6169] hover:bg-[#F7F8FA]" onClick={() => addToast({ title: "Device manager", detail: "COM3 is the active virtual serial port.", tone: "default" })}>
+            <button className="flex h-[25px] w-full items-center justify-center gap-1.5 rounded-[5px] border border-[#E1E4E8] bg-white text-[9px] font-medium text-[#5A6169] hover:bg-[#F7F8FA]" onClick={() => addToast({ title: "Device manager", detail: "真实串口插件尚未实现。", tone: "default" })}>
               <Usb size={10} /> Manage connection
             </button>
           </div>

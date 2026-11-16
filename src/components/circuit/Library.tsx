@@ -1,6 +1,8 @@
+import { usePlugins } from "../../plugins/usePlugins";
 import { useState } from "react";
 import { motion } from "motion/react";
 import {
+  Cpu,
   Cable,
   CircleDot,
   Cog,
@@ -17,25 +19,15 @@ import type { ComponentKind } from "../../types";
 import { useStudio } from "../../store/studio";
 import { cn } from "../../lib/utils";
 
-const items: Array<{ kind: ComponentKind; name: string; meta: string; category: string; icon: typeof Thermometer; iconBg: string; iconColor: string }> = [
-  { kind: "bme280", name: "BME280", meta: "Temp · humidity · pressure", category: "Sensors", icon: Thermometer, iconBg: "#EEF2F8", iconColor: "#46658C" },
-  { kind: "dht22", name: "DHT22", meta: "Temp · humidity · 1-Wire", category: "Sensors", icon: Thermometer, iconBg: "#EEF6F1", iconColor: "#3E7D5D" },
-  { kind: "soil", name: "Soil moisture", meta: "Capacitive · analog", category: "Sensors", icon: Droplets, iconBg: "#EDF4FA", iconColor: "#426F96" },
-  { kind: "oled", name: "OLED 0.96″", meta: "SSD1306 · I²C", category: "Displays", icon: Monitor, iconBg: "#EDF3F8", iconColor: "#3E607F" },
-  { kind: "led", name: "LED 5 mm", meta: "Red · 2.0 V", category: "Actuators", icon: Lightbulb, iconBg: "#FBF0ED", iconColor: "#B15B4D" },
-  { kind: "buzzer", name: "Piezo buzzer", meta: "Passive · 2.7 kHz", category: "Actuators", icon: Volume2, iconBg: "#FBF4E9", iconColor: "#A8813B" },
-  { kind: "servo", name: "Micro servo", meta: "SG90 · PWM", category: "Actuators", icon: Cog, iconBg: "#F1F0F9", iconColor: "#6C5DA8" },
-  { kind: "button", name: "Push button", meta: "Momentary · THT", category: "Passives", icon: CircleDot, iconBg: "#F2F3F5", iconColor: "#5F6770" },
-  { kind: "resistor", name: "Resistor", meta: "220 Ω · 0.25 W", category: "Passives", icon: Cable, iconBg: "#F8F4EA", iconColor: "#99783E" },
-];
-
 const categories = ["All", "Sensors", "Displays", "Actuators", "Passives"];
 
 export function ComponentLibrary() {
   const { setLibraryOpen, addComponent, setTool } = useStudio();
   const [category, setCategory] = useState("All");
   const [query, setQuery] = useState("");
-  const filtered = items.filter(
+  const registry = usePlugins();
+  const available = registry.all("components").filter((part) => part.category !== "Boards").map((part) => ({ kind: part.id, name: part.name, meta: part.description, category: part.category, icon: Cpu, iconBg: "#EEF4FB", iconColor: "#3F6FA5" }));
+  const filtered = available.filter(
     (item) =>
       (category === "All" || item.category === category) &&
       (item.name.toLowerCase().includes(query.toLowerCase()) || item.meta.toLowerCase().includes(query.toLowerCase())),
