@@ -13,10 +13,10 @@
     "smoke:network": "node --import tsx scripts/smoke-network.ts",
     "build:desktop": "node scripts/build-desktop.mjs",
     "desktop": "npm run desktop:runtime && node scripts/dev-desktop.mjs",
-    "desktop:package": "npm run desktop:runtime && npm run build && npm run build:desktop && npm run licenses && electron-builder --dir",
+    "desktop:package": "npm run build && npm run build:desktop && npm run licenses && electron-builder --dir",
     "smoke:host": "node --import tsx scripts/smoke-host.ts",
     "smoke:desktop": "node scripts/smoke-electron.mjs",
-    "licenses": "node scripts/licenses.mjs",
+    "licenses": "npm run desktop:runtime && node scripts/licenses.mjs",
     "desktop:runtime": "node node_modules/electron/install.js"
   },
   "dependencies": {
