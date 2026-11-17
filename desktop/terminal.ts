@@ -115,7 +115,8 @@ export class TerminalService {
           if (!live.length) break;
           await sleep(50);
         }
-        for (const pid of verifyOwned(targets.filter(alive), snapshot, owned, await processTable())) signal(pid, "SIGKILL");
+        const current = await processTable();
+        for (const pid of verifyOwned(targets, snapshot, owned, current)) if (alive(pid)) signal(pid, "SIGKILL");
         try { session.process.kill("SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
       }
       await session.done;
