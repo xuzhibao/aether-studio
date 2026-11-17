@@ -127,7 +127,9 @@ export function createLanguageClient() {
     stop: async () => { await Promise.allSettled(starting); if (latest) await api.stop(latest.id); },
     restart: async () => {
       if (!latest) throw new Error("语言服务尚未启动");
-      await api.restart(latest.id, launch());
+      const session = await api.restart(latest.id, launch());
+      // The plugin may have been disabled while the restart was in flight.
+      if (!active) await api.stop(session.id).catch(() => {});
     },
     attach(attachment: EditorAttachment) {
       if (!monaco) install(attachment.monaco);
@@ -153,6 +155,8 @@ export function createLanguageClient() {
     dispose() {
       active = false; offStatus(); offStore(); offEnvironment(); clear(); providers.forEach((item) => item.dispose());
       const id = latest?.id; if (id !== undefined) void api.stop(id).catch(() => {});
+      // A restart triggered just before disabling may already own a newer session; stop whatever the host reports.
+      void api.get().then((current) => current ? api.stop(current.id) : undefined).catch(() => {});
       useLanguage.setState({ snapshot: null, error: "", jump: null });
     },
   };

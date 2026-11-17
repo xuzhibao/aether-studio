@@ -133,7 +133,13 @@ try {
   }
   await pluginDialog.getByRole('button', { name: /^C\/C\+\+ · clangd/ }).click();
   await pluginDialog.getByRole('button', { name: '停用', exact: true }).click();
-  await until(async () => (await page.evaluate(() => window.aether.language.get())) === null);
+  let languageAfterDisable = null;
+  for (let n = 0; n < 300; n++) {
+    languageAfterDisable = await page.evaluate(() => window.aether.language.get());
+    if (languageAfterDisable === null) break;
+    await new Promise((done) => setTimeout(done, 100));
+  }
+  assert.equal(languageAfterDisable, null, 'disabling the plugin must stop the language session: ' + JSON.stringify(languageAfterDisable));
   assert.equal(await page.locator('nav').getByRole('button', { name: 'C/C++ Language', exact: true }).count(), 0);
   await pluginDialog.getByRole('button', { name: '启用', exact: true }).click();
   await pluginDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
