@@ -45,8 +45,10 @@ export class LanguageService {
     if (root !== this.workspace.root) throw new Error("请先打开对应磁盘工程");
     const launchOptions = this.options(options);
     const current = this.session;
+    // An empty requested environment means the UI has not loaded the list yet; keep the environment the process already uses.
+    const sameEnvironment = launchOptions.environment === "" || current?.snapshot.environment === launchOptions.environment;
     if (current && current.snapshot.provider === providerId && current.snapshot.root === root && current.snapshot.status === "ready"
-      && current.snapshot.environment === launchOptions.environment && current.options.queryDriver === launchOptions.queryDriver) return this.get()!;
+      && sameEnvironment && current.options.queryDriver === launchOptions.queryDriver) return this.get()!;
     // Keep the old documents while switching, so the renderer can reopen its unsaved buffers on the new session.
     await this.stop(undefined, { quiet: !!current });
     const provider = this.providers.get(providerId); if (!provider) throw new Error("未注册的语言服务：" + providerId);

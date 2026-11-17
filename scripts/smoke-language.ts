@@ -62,7 +62,7 @@ try {
   const recordText = await fs.readFile(recordPath, "utf8");
   const record = JSON.parse(recordText) as { environment: string };
   record.environment = "another-env"; await fs.writeFile(recordPath, JSON.stringify(record, null, 2));
-  const stale = await service.start("clangd", canonical, { environment: "native" });
+  const stale = await service.restart(session.id, { environment: "native" });
   assert.equal(stale.status, "ready");
   assert.equal(stale.compileDatabase, "stale");
   assert.match(stale.compileDatabaseMessage, /another-env/);
