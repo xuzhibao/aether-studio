@@ -168,7 +168,6 @@ void loop() { char text[16]; snprintf(text, sizeof text, "%d", (int)strlen("aeth
   assert.match(JSON.stringify(toolchainHover.contents), /strlen|size_t/i, "toolchain headers must resolve through query-driver");
   await until(() => service.get()!.diagnosticsReceived > beforeToolchain && document(2) !== undefined && errors(2).length === 0, "query-driver must keep ESP32 diagnostics clean");
 
-  await service.close(authorized.id, file);
-  await service.stop(authorized.id);
+  await service.stop(restored.id);
   console.log("PASS esp32: real ESP32-S3 PlatformIO compiledb pinned to env esp32-s3 with cached compiler metadata, Xtensa flags, clangd " + major + " Arduino/SDK completion, hover, project definition, live diagnostics, toolchain headers and explicit query-driver allow-list; no hardware");
 } finally { await service.stop(); await tasks.stopAll(); await workspace.close(); await fs.rm(root, { recursive: true, force: true }); }
