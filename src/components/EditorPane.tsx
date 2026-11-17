@@ -43,6 +43,12 @@ export function EditorPane({ file }: { file: string }) {
   const diskBusy = useDisk((s) => s.busy);
   const content = useStudio((s) => s.files[file] ?? "");
   const updateFile = useStudio((s) => s.updateFile);
+  // Monaco keeps models per path across tab switches; sync a cached model when the buffer changed while unmounted.
+  useEffect(() => {
+    const model = mounted?.editor.getModel();
+    if (!mounted || !model || model.isDisposed() || model.uri.toString() !== modelUri || model.getValue() === content) return;
+    model.setValue(content);
+  }, [content, mounted, modelUri]);
   const aiModified = useStudio((s) => s.aiModifiedFiles.includes(file));
   const dirty = useStudio((s) => s.dirty);
   const fontSize = useStudio((s) => s.settings.fontSize);
@@ -161,7 +167,8 @@ export function EditorPane({ file }: { file: string }) {
           options={{
             automaticLayout: true,
             // Monaco 0.52 word-highlight timers reject on disposal during definition navigation.
-            occurrencesHighlight: /\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/.test(file) ? "off" : "singleFile",
+            // Monaco 0.52 WordHighlighter cancels its own request on restore/dispose without a handled rejection.
+            occurrencesHighlight: "off",
             readOnly: diskBusy || file === "circuit.json",
             fontFamily: '"JetBrains Mono Variable", "SF Mono", monospace',
             fontSize,

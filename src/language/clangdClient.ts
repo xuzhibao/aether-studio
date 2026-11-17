@@ -6,6 +6,7 @@ import { useLanguage } from "../store/language";
 import { isDesktop } from "../lib/desktop";
 const markerOwner = "aether.clangd";
 const range = (value: Range) => ({ startLineNumber: value.start.line + 1, startColumn: value.start.character + 1, endLineNumber: value.end.line + 1, endColumn: value.end.character + 1 });
+interface LanguageBinding { root: string; file: string; model: Monaco.editor.ITextModel; sessionId: number | null; ready: Promise<LanguageSnapshot>; flush: () => Promise<void>; dispose: () => void }
 const kinds = ["Text", "Method", "Function", "Constructor", "Field", "Variable", "Class", "Interface", "Module", "Property", "Unit", "Value", "Enum", "Keyword", "Snippet", "Color", "File", "Reference", "Folder", "EnumMember", "Constant", "Struct", "Event", "Operator", "TypeParameter"] as const;
 export function createLanguageClient() {
   if (!isDesktop()) return { start: async (_root: string) => { throw new Error("语言服务需要 Electron 桌面端"); }, stop: async () => {}, attach: (_attachment: EditorAttachment) => () => {}, dispose: () => {} };
@@ -13,13 +14,21 @@ export function createLanguageClient() {
   let latest: LanguageSnapshot | null = null;
   const starting = new Set<Promise<LanguageSnapshot>>();
   let active = true; let monaco: typeof Monaco | undefined;
-  const bindings = new Map<string, { root: string; file: string; model: Monaco.editor.ITextModel; ready: Promise<LanguageSnapshot>; flush: () => Promise<void>; dispose: () => void }>();
+  const bindings = new Map<string, LanguageBinding>();
   const providers: Monaco.IDisposable[] = [];
   const report = (error: unknown) => { if (active) useLanguage.setState({ error: String(error) }); };
   const clear = (root?: string) => { for (const [uri, binding] of bindings) if (!root || binding.root === root) { bindings.delete(uri); binding.dispose(); } };
   const apply = (snapshot: LanguageSnapshot) => {
     if (!active) return;
     latest = snapshot; useLanguage.setState({ snapshot, error: snapshot.error });
+    if (snapshot.status === "ready") {
+      // clangd was restarted after a saved tool path change; reopen the buffers this session lost.
+      for (const binding of bindings.values()) {
+        if (binding.root !== snapshot.root || binding.sessionId === null || binding.sessionId === snapshot.id || binding.model.isDisposed()) continue;
+        binding.sessionId = snapshot.id;
+        binding.ready = api.open(snapshot.id, binding.file, binding.model.getValue(), binding.model.getVersionId()).then(() => snapshot).catch((error) => { report(error); return snapshot; });
+      }
+    }
     if (snapshot.status === "stopped" || snapshot.status === "error") clear(snapshot.root);
     for (const binding of bindings.values()) {
       if (binding.root !== snapshot.root || binding.model.isDisposed()) continue;
@@ -109,17 +118,20 @@ export function createLanguageClient() {
       const { model, file, root } = attachment; const uri = model.uri.toString();
       if (bindings.has(uri)) return () => {};
       let live = true; let timer: ReturnType<typeof setTimeout> | undefined; let pending = Promise.resolve();
-      const ready = (async () => { const session = await start(root); if (live && active) await api.open(session.id, file, model.getValue(), model.getVersionId()); return session; })();
-      void ready.catch(report);
+      const binding = { root, file, model, sessionId: null as number | null, ready: null as unknown as Promise<LanguageSnapshot>, flush: async () => {}, dispose: () => {} } as LanguageBinding;
+      const startSession = async () => { const session = await start(root); binding.sessionId = session.id; if (live && active) await api.open(session.id, file, model.getValue(), model.getVersionId()); return session; };
+      binding.ready = startSession();
+      void binding.ready.catch(report);
       const flush = () => {
         clearTimeout(timer);
-        pending = pending.catch(() => {}).then(async () => { const session = await ready; if (live && active && !model.isDisposed()) await api.change(session.id, file, model.getValue(), model.getVersionId()); });
+        pending = pending.catch(() => {}).then(async () => { const session = await binding.ready; if (live && active && !model.isDisposed()) await api.change(session.id, file, model.getValue(), model.getVersionId()); });
         return pending;
       };
       const changed = model.onDidChangeContent(() => { monaco!.editor.setModelMarkers(model, markerOwner, []); clearTimeout(timer); timer = setTimeout(() => { void flush().catch(report); }, 120); });
       const disposed = model.onWillDispose(() => { bindings.delete(uri); dispose(); });
-      function dispose() { if (!live) return; live = false; clearTimeout(timer); changed.dispose(); disposed.dispose(); if (!model.isDisposed()) monaco!.editor.setModelMarkers(model, markerOwner, []); void ready.then((session) => api.close(session.id, file)).catch(() => {}); }
-      bindings.set(uri, { root, file, model, ready, flush, dispose });
+      function dispose() { if (!live) return; live = false; clearTimeout(timer); changed.dispose(); disposed.dispose(); if (!model.isDisposed()) monaco!.editor.setModelMarkers(model, markerOwner, []); void binding.ready.then((session) => api.close(session.id, file)).catch(() => {}); }
+      binding.flush = flush; binding.dispose = dispose;
+      bindings.set(uri, binding);
       return () => {}; // Open tabs retain their language documents when switching to a panel.
     },
     dispose() {

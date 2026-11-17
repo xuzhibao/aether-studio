@@ -39,6 +39,44 @@ try {
   assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
   await command('Open project folder');
   await page.getByText(root, { exact: true }).first().waitFor();
+  // Real disk create/rename/trash through the project-files plugin explorer.
+  await page.getByRole('button', { name: 'New folder', exact: true }).click();
+  let filesDialog = page.getByRole('dialog');
+  await filesDialog.getByRole('textbox', { name: 'New folder path', exact: true }).fill('空 目录');
+  await filesDialog.getByRole('button', { name: 'Create', exact: true }).click();
+  await until(async () => !!(await fs.stat(path.join(root, '空 目录')).catch(() => null)));
+  await page.getByRole('button', { name: 'New file', exact: true }).click();
+  filesDialog = page.getByRole('dialog');
+  await filesDialog.getByRole('textbox', { name: 'New file path', exact: true }).fill('空 目录/说明 文档.txt');
+  await filesDialog.getByRole('button', { name: 'Create', exact: true }).click();
+  await until(async () => !!(await fs.stat(path.join(root, '空 目录/说明 文档.txt')).catch(() => null)));
+  await page.getByRole('treeitem', { name: '空 目录/说明 文档.txt', exact: true }).click();
+  await page.locator('.monaco-editor .view-lines').first().waitFor();
+  await page.locator('.monaco-editor .view-lines').first().click();
+  await page.keyboard.insertText('中文与空格路径\n');
+  await page.keyboard.press('Control+s');
+  await until(async () => (await read('空 目录/说明 文档.txt')).trim() === '中文与空格路径');
+  await page.getByRole('treeitem', { name: '空 目录/说明 文档.txt', exact: true }).click();
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  filesDialog = page.getByRole('dialog');
+  await filesDialog.getByRole('textbox', { name: 'New path', exact: true }).fill('空 目录/新 名字.txt');
+  await filesDialog.getByRole('button', { name: 'Rename', exact: true }).click();
+  await until(async () => !!(await fs.stat(path.join(root, '空 目录/新 名字.txt')).catch(() => null)));
+  assert.equal(await fs.stat(path.join(root, '空 目录/说明 文档.txt')).catch(() => null), null);
+  await page.getByRole('treeitem', { name: '空 目录', exact: true }).click();
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  filesDialog = page.getByRole('dialog');
+  await filesDialog.getByRole('textbox', { name: 'New path', exact: true }).fill('重命名 目录');
+  await filesDialog.getByRole('button', { name: 'Rename', exact: true }).click();
+  await until(async () => !!(await fs.stat(path.join(root, '重命名 目录/新 名字.txt')).catch(() => null)));
+  assert.equal(await fs.stat(path.join(root, '空 目录')).catch(() => null), null);
+  await page.getByRole('treeitem', { name: '重命名 目录/新 名字.txt', exact: true }).click();
+  await page.getByRole('button', { name: 'Move to Trash', exact: true }).click();
+  filesDialog = page.getByRole('dialog');
+  await filesDialog.getByRole('button', { name: 'Move to Trash', exact: true }).click();
+  await until(async () => !(await fs.stat(path.join(root, '重命名 目录/新 名字.txt')).catch(() => null)));
+  assert.equal(await page.getByRole('treeitem', { name: '重命名 目录/新 名字.txt', exact: true }).count(), 0);
+  await page.screenshot({ path: 'smoke-results/electron-project-files.png', fullPage: true });
   await page.getByRole('button', { name: 'Source Code', exact: true }).click();
   await page.locator('.monaco-editor .view-lines').first().waitFor();
   const replaceCode = async (text) => { await page.locator('.monaco-editor .view-lines').first().click(); await page.keyboard.press('Control+a'); await page.keyboard.insertText(text); };
@@ -77,6 +115,21 @@ try {
   await until(async () => (await page.evaluate(() => window.aether.language.get()))?.documents.some((doc) => doc.file === 'src/main.cpp'));
   await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
   let pluginDialog = page.getByRole('dialog');
+  // Plugin-owned tool settings: actual status probe, saved executable and user-data persistence.
+  await pluginDialog.getByRole('button', { name: /^PlatformIO/ }).click();
+  const platformioField = pluginDialog.locator('[data-tool-id="platformio"]');
+  await platformioField.waitFor();
+  await until(async () => (await platformioField.getAttribute('data-tool-available')) !== 'unknown');
+  assert.equal(await platformioField.getAttribute('data-tool-available'), 'true', await platformioField.innerText());
+  await platformioField.getByRole('button', { name: /检测/ }).click();
+  await platformioField.getByText(/PlatformIO Core/).first().waitFor();
+  if (process.env.AETHER_PLATFORMIO_CLI) {
+    const toolInput = platformioField.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true });
+    await toolInput.fill(process.env.AETHER_PLATFORMIO_CLI);
+    await toolInput.press('Enter');
+    await until(async () => JSON.parse(await fs.readFile(path.join(profile, 'tools.json'), 'utf8').catch(() => '{}')).paths?.platformio === process.env.AETHER_PLATFORMIO_CLI);
+    assert.equal(await toolInput.inputValue(), process.env.AETHER_PLATFORMIO_CLI);
+  }
   await pluginDialog.getByRole('button', { name: /^C\/C\+\+ · clangd/ }).click();
   await pluginDialog.getByRole('button', { name: '停用', exact: true }).click();
   await until(async () => (await page.evaluate(() => window.aether.language.get())) === null);
@@ -99,8 +152,8 @@ try {
   assert.equal(await read('src/main.cpp'), before + '// external version\n');
   await page.getByRole('button', { name: '重新读取（放弃未保存修改）', exact: true }).click();
   await page.getByRole('button', { name: 'New file', exact: true }).click();
-  await page.getByRole('textbox', { name: 'File path', exact: true }).fill('src/extra.h');
-  await page.getByRole('button', { name: 'Create file', exact: true }).click(); await page.keyboard.press('Control+s');
+  await page.getByRole('textbox', { name: 'New file path', exact: true }).fill('src/extra.h');
+  await page.getByRole('button', { name: 'Create', exact: true }).click(); await page.keyboard.press('Control+s');
   await until(async () => !!(await fs.stat(path.join(root, 'src/extra.h')).catch(() => null)));
   await page.getByRole('button', { name: 'Build Tasks', exact: true }).click();
   await page.getByRole('button', { name: 'Build with PlatformIO', exact: true }).click();
@@ -204,6 +257,19 @@ try {
   await until(() => processGone(terminalPidAtExit));
   await launch(); await page.getByText(root, { exact: true }).first().waitFor();
   assert.equal(await page.evaluate(() => window.aether.runtime), 'electron');
+  await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
+  const restoredDialog = page.getByRole('dialog');
+  await restoredDialog.getByRole('button', { name: /^PlatformIO/ }).click();
+  const restoredTool = restoredDialog.locator('[data-tool-id="platformio"]');
+  await restoredTool.waitFor();
+  if (process.env.AETHER_PLATFORMIO_CLI) {
+    const restoredInput = restoredTool.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true });
+    await until(async () => (await restoredInput.inputValue()) === process.env.AETHER_PLATFORMIO_CLI);
+    assert.equal(await restoredInput.inputValue(), process.env.AETHER_PLATFORMIO_CLI);
+  }
+  await restoredDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.getByRole('treeitem', { name: '重命名 目录', exact: true }).waitFor();
+  assert.equal(await page.getByRole('treeitem', { name: '重命名 目录/新 名字.txt', exact: true }).count(), 0, 'trashed file stays deleted after reopening');
   await app.close(); app = undefined;
   console.log('PASS Electron: isolated preload, real disk folder open/edit/save/reopen, portable files, external edit refusal, new file, real clangd unsaved diagnostics/completion/F12 and plugin restart, PlatformIO compilation database and build/failure/cancel, OS PTY and WebSocket UI round trips, real interactive shell keyboard/UTF-8/resize/Ctrl+C, panel persistence and process cleanup on disable/reload/exit; picker selection fixture only, no hardware');
 } catch (error) {

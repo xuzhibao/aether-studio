@@ -6,9 +6,9 @@ import path from "node:path";
 import type { TaskSnapshot, BuildArtifact } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
 export interface TaskProvider {
-  id: string; executable: string; args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
+  id: string; executable: string | (() => string); args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
   inputExcludes?: string[]; recordName?: string;
-  artifacts: (root: string) => Promise<string[]>;
+  artifacts: (root: string, executable: string) => Promise<string[]>;
 }
 export class TaskService {
   private providers = new Map<string, TaskProvider>();
@@ -22,11 +22,13 @@ export class TaskService {
     const root = this.workspace.root;
     if (!root) throw new Error("请先打开工程目录");
     if (this.list().some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
+    // Resolve once so a settings change cannot swap the executable of a running task.
+    const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
     const args = typeof provider.args === "function" ? provider.args(options) : provider.args;
-    const toolVersion = provider.versionArgs ? (await promisify(execFile)(provider.executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
+    const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + provider.executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
-    const child = spawn(provider.executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
+    const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
     let cancelled = false;
     let processClosed = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -53,7 +55,7 @@ export class TaskService {
         if (result === "succeeded") {
           if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
           const artifacts: BuildArtifact[] = [];
-          for (const relative of await provider.artifacts(root)) {
+          for (const relative of await provider.artifacts(root, executable)) {
             const bytes = await fs.readFile(path.join(root, relative));
             artifacts.push({ path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
           }

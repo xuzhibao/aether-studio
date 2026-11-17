@@ -94,6 +94,14 @@ npm run desktop
 
 如果 `platformio` 已在应用进程的 PATH 中，可以直接启动。`AETHER_PLATFORMIO_CLI` 指定完整可执行文件路径，不接受 shell 命令串。找不到工具或构建失败时显示实际错误。
 
+安装版也可以在应用内配置，不必为每次启动设置环境变量：
+
+1. 打开 **Plugins** → **PlatformIO** → **插件设置**。
+2. 在 **PlatformIO CLI 可执行文件** 中填写完整路径，或点 **浏览…** 选择文件；点 **检测** 会实际运行 `--version`，显示版本或具体错误。
+3. 路径保存在应用用户数据目录（`AETHER_USER_DATA_DIR` 下的 `tools.json`），重启应用后自动恢复。
+
+查找顺序为：应用内保存的路径 → 环境变量 `AETHER_PLATFORMIO_CLI` → `PATH` 中的 `platformio`。只保存单个可执行文件路径，不会拼接成 shell 命令；含空格、中文、分号或 `&&` 的路径按原样作为单个参数传给进程，不经过 shell 解析。Windows 请选择 `.exe`，`.bat`、`.cmd` 和 `.ps1` 不在支持范围。构建、上传和生成编译数据库在任务启动时固定使用当时的可执行文件；运行中的任务不会因为保存新路径而中途换工具。
+
 ## 磁盘工程
 
 工程菜单或命令面板提供：
@@ -108,7 +116,11 @@ npm run desktop
 
 保存使用外部变更检查和逐文件临时写入。文件被外部修改后，Aether 拒绝覆盖；可重新读取目录，或将当前缓冲区另存到空目录。保存不是整个工程的文件系统事务，异常中断后不要直接删除 `.aether-saving` 文件，应先检查其中内容。
 
-当前加载不超过 1 MiB 的 UTF-8 文本文件，跳过链接、二进制和工具缓存目录，包括 `.git`、`.pio`、`.aether`、`.cache`、`node_modules`、`build`、`dist`、`target`、`release`。未加载的文件不会被保存操作删除或改写。尚未提供重命名、删除、外部编辑自动合并或多根工作区。
+当前加载不超过 1 MiB 的 UTF-8 文本文件，跳过链接、二进制和工具缓存目录，包括 `.git`、`.pio`、`.aether`、`.cache`、`node_modules`、`build`、`dist`、`target`、`release`。未加载的文件不会被保存操作删除或改写。尚未提供外部编辑自动合并或多根工作区。
+
+在 **Project files** 文件树中可以新建文件或目录、重命名、移动到系统回收站。操作只接受当前工程的相对路径，不能修改 `aether.project.json`、`hardware/circuit.json`、电路视图 `circuit.json`、工程根目录、工具缓存目录或工程内的符号链接。删除调用系统回收站而不是永久删除；目录重命名会同时移动其中的文件。重命名或删除有未保存修改的文件时，会先要求选择保存、取消或放弃。
+
+外部修改、删除或新增会按文件列出。打开 **Review disk changes…**（或顶部“按文件处理…”）可以比较磁盘版本与本地缓冲区，并选择使用磁盘版本、保留本地并覆盖该文件、从本地内容重建被删除的文件，或载入磁盘新增文件。处理一个文件不会丢弃其他文件的未保存修改；未处理的冲突仍会阻止整工程保存。
 
 磁盘工程源码以文件系统为准；`localStorage` 用于浏览器工作区和界面偏好。桌面最近打开目录记录在应用用户数据目录，重启时重新读取文件。可通过 `AETHER_USER_DATA_DIR` 指定用户数据位置。
 
@@ -134,6 +146,8 @@ sudo apt-get install clangd
 ```
 
 其他系统可从 [clangd 官方安装说明](https://clangd.llvm.org/installation) 获取。clangd 采用 Apache-2.0 WITH LLVM-exception；Aether 不捆绑该程序。
+
+安装版可在 **Plugins** → **C/C++ · clangd** → **插件设置** 中保存 clangd 可执行文件路径，查找顺序同样为：应用内保存的路径 → `AETHER_CLANGD_CLI` → `PATH`。保存新路径后，正在运行的 clangd 会重启并重新载入已打开的 C/C++ 文档；启动失败时在 **C/C++ Language** 面板显示实际错误和当前使用的可执行文件。
 
 打开磁盘 C/C++ 工程并启用 **C/C++ · clangd** 插件。编辑 `.c`、`.cpp`、`.cc`、`.cxx` 或头文件时启动语言服务。它分析未保存缓冲区，使用 UTF-16 位置同步；不会为诊断而自动保存源码。
 
@@ -218,7 +232,7 @@ npm run build
 npm run build:desktop
 ```
 
-`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host

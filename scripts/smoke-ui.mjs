@@ -2,9 +2,15 @@ import { startWebSocketPeer } from "./websocket-peer.mjs";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { chromium } from "playwright";
 
-const server = spawn("npm", ["run", "preview", "--", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], { stdio: "pipe", detached: process.platform !== "win32" });
+// Run Vite directly: spawning npm is not portable on Windows without a shell.
+// Pick a free port so a preview server from another checkout cannot satisfy the readiness check.
+const port = await new Promise((resolve, reject) => { const probe = createServer(); probe.once("error", reject); probe.listen(0, "127.0.0.1", () => { const value = probe.address().port; probe.close(() => resolve(value)); }); });
+const origin = `http://127.0.0.1:${port}`;
+const resultsDir = process.env.AETHER_SMOKE_RESULTS ?? "smoke-results";
+const server = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "preview", "--host", "127.0.0.1", "--port", String(port), "--strictPort"], { stdio: "pipe", detached: process.platform !== "win32" });
 let serverLog = "";
 server.stdout.on("data", (chunk) => { serverLog += chunk; });
 server.stderr.on("data", (chunk) => { serverLog += chunk; });
@@ -12,11 +18,11 @@ let networkPeer;
 let browser;
 let page;
 const errors = [];
-await mkdir("smoke-results", { recursive: true });
+await mkdir(resultsDir, { recursive: true });
 try {
   let ready = false;
   for (let n = 0; n < 60; n++) {
-    try { if ((await fetch("http://127.0.0.1:1421")).ok) { ready = true; break; } } catch {}
+    try { if ((await fetch(origin)).ok) { ready = true; break; } } catch {}
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   assert.ok(ready, `Preview did not start: ${serverLog}`);
@@ -25,11 +31,24 @@ try {
   page = await browser.newPage({ viewport: { width: 1728, height: 1080 } });
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
-  await page.goto("http://127.0.0.1:1421");
+  await page.goto(origin);
+  // Browser builds expose the explorer but never pretend disk file operations succeeded.
+  await page.getByText("磁盘文件操作仅在桌面端打开的工程目录中可用。", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "New file", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "New folder", exact: true }).isDisabled(), true);
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
   await dialog.getByText("本地内置插件 · 14 / 14 已启用", { exact: true }).waitFor();
+  // Browser preview cannot reach desktop tools; the plugin settings must say so instead of pretending.
+  await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
+  const platformioTool = dialog.locator('[data-tool-id="platformio"]');
+  await platformioTool.waitFor();
+  assert.equal(await platformioTool.getAttribute("data-tool-available"), "false");
+  await platformioTool.getByText(/桌面工具仅在安装版/).first().waitFor();
+  assert.equal(await platformioTool.locator("input").count(), 0);
+  await dialog.getByRole("button", { name: /^C\/C\+\+ · clangd/ }).click();
+  assert.equal(await dialog.locator('[data-tool-id="clangd"]').getAttribute("data-tool-available"), "false");
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -76,7 +95,7 @@ try {
   assert.ok(stored.workspaces[id].files["main.py"].includes("# smoke: persisted edit"));
   assert.equal(stored.workspaces[id].components.length, 3);
   assert.notEqual(stored.workspaces[id].components.find((c) => c.kind === "bme280").x, 172);
-  await page.screenshot({ path: "smoke-results/workspace.png", fullPage: true });
+  await page.screenshot({ path: `${resultsDir}/workspace.png`, fullPage: true });
   await page.reload();
   await page.getByRole("tab", { name: "main.py", exact: true }).click();
   await page.locator(".monaco-editor .view-lines").first().waitFor();
@@ -107,7 +126,7 @@ try {
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
   await dialog.getByRole("button", { name: /^C\/C\+\+ · clangd/ }).click();
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
-  await page.screenshot({ path: "smoke-results/plugins.png", fullPage: true });
+  await page.screenshot({ path: `${resultsDir}/plugins.png`, fullPage: true });
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
   await nav.getByRole("button", { name: "Demo Simulation 说明", exact: true }).click();
   await page.getByRole("heading", { name: "Demo Simulation", exact: true }).waitFor();
@@ -148,7 +167,7 @@ try {
   await page.getByRole("button", { name: "Reset layout", exact: true }).click();
   assert.equal(await page.getByRole("spinbutton", { name: "Editor font size" }).inputValue(), "12.5");
   await page.keyboard.press("Escape");
-  await page.screenshot({ path: "smoke-results/imported-project.png", fullPage: true });
+  await page.screenshot({ path: `${resultsDir}/imported-project.png`, fullPage: true });
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: /^OpenAI Compatible API/ }).click();
@@ -186,7 +205,7 @@ try {
   await page.getByRole("button", { name: "预览文件修改", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "notes.py (新文件)", exact: true }).click();
-  await page.screenshot({ path: "smoke-results/agent-review.png", fullPage: true });
+  await page.screenshot({ path: `${resultsDir}/agent-review.png`, fullPage: true });
   await dialog.getByRole("button", { name: "应用修改", exact: true }).click();
   await page.keyboard.press("Control+s");
   const approved = await page.evaluate(() => { const s = JSON.parse(localStorage.getItem("aether.projects.v1")); return s.workspaces[s.activeProjectId].files; });
@@ -231,7 +250,7 @@ try {
   assert.equal(await page.getByText("RX · WebSocket fixture text: paused-network-sample", { exact: true }).count(), 0);
   await page.getByRole("button", { name: "Resume display", exact: true }).click();
   await page.getByText("RX · WebSocket fixture binary: paused-network-sample", { exact: true }).waitFor();
-  await page.screenshot({ path: "smoke-results/websocket-browser.png", fullPage: true });
+  await page.screenshot({ path: `${resultsDir}/websocket-browser.png`, fullPage: true });
   await page.getByRole("button", { name: "Clear serial output", exact: true }).click();
   await page.getByText("No serial output in this view.", { exact: true }).waitFor();
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
@@ -253,8 +272,8 @@ try {
   console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, real WebSocket text/binary round trip, pause/clear and disable cleanup, no console errors");
 } catch (error) {
   if (page && !page.isClosed()) {
-    await page.screenshot({ path: "smoke-results/failure.png", fullPage: true });
-    await writeFile("smoke-results/failure.txt", `${error.stack}\n\nConsole errors:\n${errors.join("\n")}\n\n${await page.locator("body").innerText()}`);
+    await page.screenshot({ path: `${resultsDir}/failure.png`, fullPage: true });
+    await writeFile(`${resultsDir}/failure.txt`, `${error.stack}\n\nConsole errors:\n${errors.join("\n")}\n\n${await page.locator("body").innerText()}`);
   }
   throw error;
 } finally {

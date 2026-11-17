@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { WorkspaceService } from "../desktop/workspace";
@@ -10,9 +11,12 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (test: () => boolean | Promise<boolean>) => { for (let n = 0; n < 300; n++) { if (await test()) return; await wait(30); } throw new Error("PTY condition timeout: " + JSON.stringify(terminal.get())); };
 const exists = (file: string) => fs.stat(path.join(root, file)).then(() => true, () => false);
 const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; } };
+let unrelated: ReturnType<typeof spawn> | undefined;
 try {
   if (process.platform === "win32") throw new Error("smoke:terminal currently checks POSIX PTYs with bash and stty");
   await workspace.open(root);
+  unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{}, 1000)"], { stdio: "ignore" });
+  if (unrelated.pid === undefined) await new Promise((resolve, reject) => { unrelated!.once("spawn", resolve); unrelated!.once("error", reject); });
   terminal.register({ id: "bash.fixture", executable: "/bin/bash", args: ["--noprofile", "--norc", "-i"] });
   await assert.rejects(() => terminal.start("bash.fixture", root + "/not-open", 80, 24), /磁盘工程/);
   await assert.rejects(() => terminal.start("bash.fixture", root, 0, 24), /尺寸/);
@@ -40,11 +44,14 @@ try {
   await until(() => exists("foreground.pid")); await until(() => exists("background.pid"));
   const children = await Promise.all(["foreground.pid", "background.pid"].map(async (file) => Number(await fs.readFile(path.join(root, file), "utf8"))));
   await terminal.stop(session.id); assert.equal(terminal.get()!.status, "stopped");
+  await terminal.stop(session.id); assert.equal(terminal.get()!.status, "stopped", "a completed stop is reused without scanning again");
   await until(() => children.every(gone) && gone(session.pid));
+  assert.equal(gone(unrelated.pid!), false, "unrelated process must survive terminal stop");
   assert.throws(() => terminal.write(session.id, "not sent"), /会话已关闭/);
   const restarted = await terminal.start("bash.fixture", root, 80, 24); assert.ok(restarted.id > session.id);
   await terminal.stop(session.id); assert.equal(terminal.get()!.status, "running");
   terminal.write(restarted.id, "exit 7\r"); await until(() => terminal.get()!.status === "exited"); assert.equal(terminal.get()!.exitCode, 7);
+  await terminal.stop(restarted.id); assert.equal(terminal.get()!.status, "stopped", "an already-exited session stops without rescanning pids");
   const saturated = await terminal.start("bash.fixture", root, 80, 24);
   terminal.write(saturated.id, "yes\r"); await wait(150);
   await terminal.stop(saturated.id); assert.ok(gone(saturated.pid), "stop must also drain a paused producer");
@@ -53,4 +60,4 @@ try {
   await until(() => terminal.get()!.status === "exited"); assert.notEqual(terminal.get()!.exitCode, 0);
   assert.match(terminal.read(missing.id), /exec|No such|not-installed/i);
   console.log("PASS terminal: actual OS PTY, working directory, isatty, UTF-8/ANSI, stty resize, real file write, Ctrl+C, one-megabyte output backpressure, foreground/background process cleanup, restart, stale session refusal and exit code; no hardware");
-} finally { await terminal.stop(); await workspace.close(); await fs.rm(root, { recursive: true, force: true }); }
+} finally { try { if (unrelated?.pid) process.kill(unrelated.pid, "SIGKILL"); } catch {} await terminal.stop(); await workspace.close(); await fs.rm(root, { recursive: true, force: true }); }

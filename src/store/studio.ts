@@ -94,6 +94,8 @@ interface StudioState {
   openFile: (file: string) => void;
   closeTab: (tab: string) => void;
   updateFile: (name: string, value: string) => void;
+  renamePath: (from: string, to: string) => void;
+  removePaths: (paths: string[]) => void;
   saveProject: () => void;
   getProjectContext: () => ProjectContext;
 
@@ -274,6 +276,27 @@ export const useStudio = create<StudioState>((set, get) => ({
       dirty: true,
       aiModifiedFiles: s.aiModifiedFiles,
     })),
+  renamePath: (from, to) =>
+    set((s) => {
+      const rename = (name: string) => name === from ? to : name.startsWith(from + "/") ? to + name.slice(from.length) : name;
+      return {
+        files: Object.fromEntries(Object.entries(s.files).map(([name, text]) => [rename(name), text])),
+        openTabs: s.openTabs.map(rename),
+        aiModifiedFiles: s.aiModifiedFiles.map(rename),
+        activeTab: rename(s.activeTab),
+      };
+    }),
+  removePaths: (paths) =>
+    set((s) => {
+      const match = (name: string) => paths.some((item) => name === item || name.startsWith(item + "/"));
+      const openTabs = s.openTabs.filter((tab) => !match(tab));
+      return {
+        files: Object.fromEntries(Object.entries(s.files).filter(([name]) => !match(name))),
+        openTabs,
+        aiModifiedFiles: s.aiModifiedFiles.filter((name) => !match(name)),
+        activeTab: match(s.activeTab) ? openTabs[openTabs.length - 1] ?? "circuit" : s.activeTab,
+      };
+    }),
   getProjectContext: () => ({ ...snapshot(get()), project: get().projects.find((p) => p.id === get().activeProjectId)! }),
   saveProject: () => {
     if (useDisk.getState().root) { void useDisk.getState().save().catch(reportError); return; }
