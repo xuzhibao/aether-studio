@@ -32,6 +32,11 @@ try {
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   await page.goto(origin);
+  await page.goto("http://127.0.0.1:1421");
+  // Browser builds expose the explorer but never pretend disk file operations succeeded.
+  await page.getByText("磁盘文件操作仅在桌面端打开的工程目录中可用。", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "New file", exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "New folder", exact: true }).isDisabled(), true);
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");

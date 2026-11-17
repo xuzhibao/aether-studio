@@ -120,6 +120,7 @@ export function Sidebar() {
   } = useStudio();
   const registry = usePlugins();
   const panels = registry.all("panels");
+  const Explorer = registry.get("explorers", "project.files.tree")?.render;
   const files = useStudio((s) => s.files);
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0];
   const [rootOpen, setRootOpen] = useState(true);
@@ -178,9 +179,11 @@ export function Sidebar() {
         <div className="flex h-[42px] flex-none items-center justify-between pl-3.5 pr-2">
           <SectionLabel>Explorer</SectionLabel>
           <div className="flex items-center">
-            <IconButton label="New file" className="h-[24px] w-[24px]" onClick={() => setDialog("new-file")}>
-              <Plus size={13} />
-            </IconButton>
+            {!Explorer && (
+              <IconButton label="New file" className="h-[24px] w-[24px]" onClick={() => setDialog("new-file")}>
+                <Plus size={13} />
+              </IconButton>
+            )}
             <IconButton label="Collapse sidebar" className="h-[24px] w-[24px]" onClick={() => setSidebarCollapsed(true)}>
               <PanelLeftClose size={13.5} />
             </IconButton>
@@ -234,7 +237,7 @@ export function Sidebar() {
 
             {rootOpen && (
               <div className="mt-0.5">
-                <ProjectTree files={Object.keys(files)} />
+                {Explorer ? <Explorer /> : <ProjectTree files={Object.keys(files)} />}
               </div>
             )}
           </div>

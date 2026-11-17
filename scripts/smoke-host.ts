@@ -16,6 +16,19 @@ const tasks = new TaskService(workspace);
 const tools = new ToolService(() => path.join(directory, "tool-settings.json"));
 const platformio = createPlatformioPlugins(tools);
 await tools.load();
+// Directory junctions need no elevation on Windows and behave as links for the workspace boundary checks.
+const linkDirectory = async (target: string, link: string) => {
+  const types: ("dir" | "junction")[] = process.platform === "win32" ? ["junction", "dir"] : ["dir"];
+  for (const [index, type] of types.entries()) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { await fs.symlink(target, link, type); return; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EBUSY" && attempt < 4) { await new Promise((resolve) => setTimeout(resolve, 120)); continue; }
+        if (index === types.length - 1) throw error;
+        break;
+      }
+    }
+  }
+};
 const waitTask = async (id: string) => { for (let n = 0; n < 1800; n++) { const task = tasks.list().find((task) => task.id === id)!; if (task.status !== "running") return task; await new Promise((resolve) => setTimeout(resolve, 100)); } throw new Error("Task timeout"); };
 try {
   await workspace.saveAs(directory, context);
@@ -26,7 +39,7 @@ try {
   assert.equal(await fs.readFile(path.join(directory, "src/main.cpp"), "utf8"), "// external edit\n");
   await workspace.reload(); await workspace.save(context);
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), "aether-outside-"));
-  await fs.symlink(outside, path.join(directory, "linked"), "dir");
+  await linkDirectory(outside, path.join(directory, "linked"));
   await assert.rejects(() => workspace.save({ ...context, files: { ...context.files, "linked/escape.cpp": "not written" } }), /链接/);
   await assert.rejects(() => fs.stat(path.join(outside, "escape.cpp")), { code: "ENOENT" });
   await fs.rm(path.join(directory, "linked")); await fs.rm(outside, { recursive: true });
@@ -35,6 +48,90 @@ try {
   assert.equal(toolStatus.source, process.env.AETHER_PLATFORMIO_CLI ? "environment" : "path");
   assert.match(toolStatus.version, /PlatformIO/, "actual PlatformIO --version output");
   tasks.register(platformio.platformioBuild);
+  // Isolated project: real disk create/rename/trash and empty-directory persistence.
+  const managed = await fs.mkdtemp(path.join(os.tmpdir(), "aether-files-"));
+  const bin = await fs.mkdtemp(path.join(os.tmpdir(), "aether-bin-"));
+  const trashed: string[] = [];
+  const files = new WorkspaceService(undefined, async (target) => {
+    const destination = path.join(bin, path.relative(managed, target));
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.rename(target, destination);
+    trashed.push(target);
+  });
+  try {
+    await files.saveAs(managed, context);
+    await files.createDirectory("空 目录");
+    await files.createDirectory("src/nested");
+    await files.createFile("空 目录/说明 文档.md");
+    await files.write("空 目录/说明 文档.md", "你好，磁盘\n", "");
+    assert.equal(await fs.readFile(path.join(managed, "空 目录/说明 文档.md"), "utf8"), "你好，磁盘\n");
+    let listing = await files.listing();
+    assert.ok(listing.directories.includes("空 目录"));
+    assert.ok(listing.directories.includes("src/nested"), "empty directories are listed");
+    assert.equal(listing.files["空 目录/说明 文档.md"], "你好，磁盘\n");
+
+    await files.reload();
+    listing = await files.listing();
+    assert.ok(listing.directories.includes("src/nested"), "empty directory survives reopening");
+    assert.ok(listing.directories.includes("空 目录"));
+
+    await files.rename("空 目录", "重命名 目录");
+    assert.equal(await fs.stat(path.join(managed, "空 目录")).catch(() => null), null);
+    assert.equal(await fs.readFile(path.join(managed, "重命名 目录/说明 文档.md"), "utf8"), "你好，磁盘\n");
+    await files.rename("重命名 目录/说明 文档.md", "重命名 目录/新 名字.md");
+    assert.equal(await fs.readFile(path.join(managed, "重命名 目录/新 名字.md"), "utf8"), "你好，磁盘\n");
+    await files.reload();
+    listing = await files.listing();
+    assert.ok(listing.directories.includes("重命名 目录"));
+    assert.ok(!listing.directories.includes("空 目录"));
+
+    await assert.rejects(() => files.createFile("src/nested"), /已存在/);
+    await assert.rejects(() => files.createDirectory("src/nested"), /已存在/);
+    await assert.rejects(() => files.rename("src/nested", "src"), /已存在/);
+    await assert.rejects(() => files.createFile("../escape.txt"), /路径/);
+    await assert.rejects(() => files.createFile(".git/config"), /缓存/);
+    await assert.rejects(() => files.trash(""), /路径/);
+    await assert.rejects(() => files.trash("hardware"), /宿主管理/);
+    await assert.rejects(() => files.rename("hardware", "hw"), /宿主管理/);
+    await assert.rejects(() => files.createFile("circuit.json"), /宿主管理/);
+
+    const outsideFiles = await fs.mkdtemp(path.join(os.tmpdir(), "aether-outside-files-"));
+    await linkDirectory(outsideFiles, path.join(managed, "linked"));
+    await assert.rejects(() => files.createFile("linked/escape.txt"), /链接/);
+    await assert.rejects(() => files.trash("linked"), /链接/);
+    await assert.rejects(() => files.rename("linked", "linked2"), /链接/);
+    assert.equal(await fs.stat(path.join(outsideFiles, "escape.txt")).catch(() => null), null);
+
+    await fs.writeFile(path.join(managed, "src/main.cpp"), "// external\n");
+    await assert.rejects(() => files.write("src/main.cpp", "local\n", "stale"), /再次改变/);
+    assert.equal(await fs.readFile(path.join(managed, "src/main.cpp"), "utf8"), "// external\n");
+    await files.write("src/main.cpp", "// local\n", "// external\n");
+    assert.equal(await fs.readFile(path.join(managed, "src/main.cpp"), "utf8"), "// local\n");
+
+    await fs.writeFile(path.join(managed, "external.txt"), "added\n");
+    listing = await files.listing();
+    assert.equal(listing.files["external.txt"], "added\n", "external addition is listed");
+    await fs.rm(path.join(managed, "重命名 目录/新 名字.md"));
+    listing = await files.listing();
+    assert.equal(Object.hasOwn(listing.files, "重命名 目录/新 名字.md"), false, "external deletion is visible");
+
+    await files.trash("external.txt");
+    assert.equal(await fs.stat(path.join(managed, "external.txt")).catch(() => null), null);
+    assert.equal(await fs.readFile(path.join(bin, "external.txt"), "utf8"), "added\n", "trash moves the file and keeps it recoverable");
+    assert.ok(trashed.some((target) => target.endsWith("external.txt")));
+    await files.trash("src/nested");
+    assert.ok(await fs.stat(path.join(bin, "src/nested")).catch(() => null));
+    await files.reload();
+    listing = await files.listing();
+    assert.ok(!listing.directories.includes("src/nested"));
+    assert.equal(Object.hasOwn(listing.files, "external.txt"), false);
+    console.log("PASS files: real disk create/rename/trash, empty directories after reopen, Chinese and space paths, same-name refusal, out-of-bounds/cache/link refusal, per-file write guard, external add/delete visibility, recoverable trash");
+  } finally {
+    await files.close();
+    await fs.rm(managed, { recursive: true, force: true });
+    await fs.rm(bin, { recursive: true, force: true });
+  }
+
   const build = await waitTask((await tasks.start("platformio.build")).id);
   assert.equal(build.status, "succeeded", build.log + "\n" + build.error);
   assert.ok(build.toolVersion?.includes("PlatformIO")); assert.ok(build.artifacts.some((artifact) => artifact.path.endsWith("/program") || artifact.path.endsWith("/program.exe")));
@@ -50,4 +147,5 @@ try {
   for (let n = 0; n < 100 && !tasks.list().find((task) => task.id === pending.id)!.log.includes("child tree started"); n++) await new Promise((resolve) => setTimeout(resolve, 10));
   await tasks.cancel(pending.id); assert.equal(tasks.list().find((task) => task.id === pending.id)!.status, "cancelled");
   console.log("PASS host: actual folder save/reopen, external edit conflict, symlink boundary, real PlatformIO native compile and executable output, compiler failure, artifact hashes and child-process-tree cancellation");
+
 } finally { await tasks.stopAll(); await workspace.close(); await fs.rm(directory, { recursive: true, force: true }); }

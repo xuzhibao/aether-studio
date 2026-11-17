@@ -10,6 +10,15 @@ const api: DesktopAPI = {
   workspace: {
     open: () => ipcRenderer.invoke("workspace:open"), saveAs: (context) => ipcRenderer.invoke("workspace:saveAs", context), save: (context) => ipcRenderer.invoke("workspace:save", context),
     setDirty: (dirty) => ipcRenderer.invoke("workspace:setDirty", dirty), reload: () => ipcRenderer.invoke("workspace:reload"), close: () => ipcRenderer.invoke("workspace:close"), restore: () => ipcRenderer.invoke("workspace:restore"), onChanged: (callback) => event("workspace:changed", callback),
+    files: {
+      listing: () => ipcRenderer.invoke("workspace:files:listing"),
+      createFile: (path) => ipcRenderer.invoke("workspace:files:createFile", path),
+      createDirectory: (path) => ipcRenderer.invoke("workspace:files:createDirectory", path),
+      rename: (from, to) => ipcRenderer.invoke("workspace:files:rename", from, to),
+      trash: (path) => ipcRenderer.invoke("workspace:files:trash", path),
+      write: (path, text, expected) => ipcRenderer.invoke("workspace:files:write", path, text, expected),
+      accept: (path) => ipcRenderer.invoke("workspace:files:accept", path),
+    },
   },
   tasks: { start: (provider, options) => ipcRenderer.invoke("tasks:start", provider, options), cancel: (id) => ipcRenderer.invoke("tasks:cancel", id), list: () => ipcRenderer.invoke("tasks:list"), onChanged: (callback) => event("tasks:changed", callback) },
   serial: { list: () => ipcRenderer.invoke("serial:list"), open: (port, baud) => ipcRenderer.invoke("serial:open", port, baud), read: (id) => ipcRenderer.invoke("serial:read", id), write: (id, bytes) => ipcRenderer.invoke("serial:write", id, bytes), close: (id) => ipcRenderer.invoke("serial:close", id) },

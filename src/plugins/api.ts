@@ -83,6 +83,8 @@ export interface CapabilityMap {
   commands: { id: string; name: string; shortcut?: string; run: () => void | Promise<void> };
   overlays: { id: string; simulator?: string; render: ComponentType<{ readings: PartViewProps["readings"]; running: boolean }> };
   panels: { id: string; name: string; render: ComponentType };
+  explorers: { id: string; name: string; render: ComponentType };
+  dialogs: { id: string; name: string; render: ComponentType };
   menus: { id: string; name: string; command: string; location?: "project" | "share" | "plugins" };
 }
 export interface PluginHost {

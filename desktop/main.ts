@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol, net } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, protocol, net, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdirSync, promises as fs } from "node:fs";
@@ -25,7 +25,7 @@ const confirmClose = (detail = "选择放弃修改将关闭窗口。") => {
 let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
-const workspace = new WorkspaceService((root) => emit("workspace:changed", root));
+const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
 const tasks = new TaskService(workspace, (task) => emit("tasks:changed", task));
 const serial = new SerialService();
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
@@ -60,6 +60,17 @@ function routes() {
   handle("workspace:saveAs", (context: ProjectContext) => enqueue(async () => { const folder = await chooseFolder(); if (!folder) return null; await beforeSwitch(); const result = await workspace.saveAs(folder, context); await remember(); return result; }));
   handle("workspace:save", (context: ProjectContext) => enqueue(async () => { if (tasks.list().some((task) => task.status === "running")) throw new Error("构建运行中，请等待或取消任务后保存"); await workspace.save(context); }));
   handle("workspace:reload", () => enqueue(async () => { await beforeSwitch(); return workspace.reload(); }));
+  const fileOperation = (action: () => Promise<unknown>) => enqueue(async () => {
+    if (tasks.list().some((task) => task.status === "running")) throw new Error("任务运行中，请等待或取消后再修改工程文件");
+    return action();
+  });
+  handle("workspace:files:listing", () => enqueue(() => workspace.listing()));
+  handle("workspace:files:createFile", (name: string) => fileOperation(() => workspace.createFile(name)));
+  handle("workspace:files:createDirectory", (name: string) => fileOperation(() => workspace.createDirectory(name)));
+  handle("workspace:files:rename", (from: string, to: string) => fileOperation(() => workspace.rename(from, to)));
+  handle("workspace:files:trash", (name: string) => fileOperation(() => workspace.trash(name)));
+  handle("workspace:files:write", (name: string, text: string, expected: string | null) => fileOperation(() => workspace.write(name, text, expected)));
+  handle("workspace:files:accept", (name: string) => enqueue(() => workspace.accept(name)));
   handle("workspace:close", () => enqueue(async () => { await beforeSwitch(); await workspace.close(); await remember(); }));
   handle("workspace:restore", () => enqueue(async () => {
     const content = await fs.readFile(stateFile(), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });

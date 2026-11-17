@@ -298,3 +298,71 @@ console.log("PASS WebSocket cancellation: wait for deferred close event before a
 
 const { runToolSmoke } = await import("./smoke-tools");
 await runToolSmoke();
+// Per-file disk/buffer reconciliation with an in-memory host fixture; real disk I/O lives in smoke:host.
+const { useDisk, diskChanges } = await import("../src/store/disk");
+const fixtureFiles: Record<string, string> = {};
+const fixtureDirectories: string[] = [];
+const diskWrites: { path: string; text: string; expected: string | null }[] = [];
+const acceptedFiles: string[] = [];
+const desktopFixture = {
+  runtime: "electron",
+  workspace: {
+    files: {
+      listing: async () => ({ files: { ...fixtureFiles }, directories: [...fixtureDirectories] }),
+      write: async (file: string, text: string, expected: string | null) => {
+        if ((fixtureFiles[file] ?? null) !== expected) throw new Error("文件内容在预览后已再次改变：" + file);
+        fixtureFiles[file] = text; diskWrites.push({ path: file, text, expected });
+      },
+      accept: async (file: string) => { acceptedFiles.push(file); },
+      createFile: async () => {}, createDirectory: async () => {}, rename: async () => {}, trash: async () => {},
+    },
+    save: async () => {}, setDirty: async () => {}, close: async () => {}, onChanged: () => () => {},
+  },
+};
+Object.defineProperty(globalThis, "aether", { value: desktopFixture, configurable: true });
+const fixtureProject = { id: "disk-fixture", name: "Disk fixture", description: "", board: "", template: "", accent: "#007AFF", updated: "Local" };
+const baseMain = "int main() {}\n";
+const baseOther = "int other() {}\n";
+const localMain = "int main() { /* local */ }\n";
+const localOther = "int other() { /* local */ }\n";
+fixtureFiles["main.cpp"] = baseMain;
+fixtureFiles["other.cpp"] = baseOther;
+useDisk.getState().adopt({ root: "C:/fixture", context: { project: fixtureProject, components: [], wires: [], files: { "main.cpp": baseMain, "other.cpp": baseOther }, capabilities: { board: "", toolchain: "", simulator: "", editor: "monaco" } }, directories: ["docs"] });
+assert.deepEqual(useDisk.getState().directories, ["docs"]);
+useStudio.getState().updateFile("main.cpp", localMain);
+useStudio.getState().updateFile("other.cpp", localOther);
+fixtureFiles["main.cpp"] = "// external disk\n";
+await useDisk.getState().refresh();
+let pendingChanges = diskChanges();
+assert.deepEqual(pendingChanges.map((item) => [item.file, item.kind, item.dirty]), [["main.cpp", "modified", true]]);
+await useDisk.getState().acceptDisk("main.cpp");
+assert.equal(useStudio.getState().files["main.cpp"], "// external disk\n");
+assert.ok(acceptedFiles.includes("main.cpp"), "accepting the disk version resyncs the host baseline");
+assert.ok(useStudio.getState().files["other.cpp"].includes("/* local */"), "handling one file keeps other unsaved buffers");
+delete fixtureFiles["other.cpp"];
+await useDisk.getState().refresh();
+pendingChanges = diskChanges();
+assert.deepEqual(pendingChanges.map((item) => [item.file, item.kind]), [["other.cpp", "deleted"]]);
+await useDisk.getState().keepLocal("other.cpp");
+assert.deepEqual(diskWrites.at(-1), { path: "other.cpp", text: localOther, expected: null });
+assert.equal(fixtureFiles["other.cpp"], localOther, "recreating an externally deleted file uses local content");
+assert.equal(diskChanges().length, 0);
+fixtureFiles["new.txt"] = "disk only\n";
+fixtureFiles["main.cpp"] = "// external again\n";
+await useDisk.getState().refresh();
+pendingChanges = diskChanges();
+assert.deepEqual(pendingChanges.map((item) => [item.file, item.kind]), [["main.cpp", "modified"], ["new.txt", "added"]]);
+await useDisk.getState().acceptDisk("new.txt");
+assert.equal(useStudio.getState().files["new.txt"], "disk only\n");
+desktopFixture.workspace.save = async () => { throw new Error("文件已被外部修改：main.cpp。请按文件处理磁盘变更，或另存工程。"); };
+await assert.rejects(() => useDisk.getState().save(), /外部修改/);
+assert.ok(useStudio.getState().files["other.cpp"].includes("/* local */"), "a refused whole-project save keeps other buffers");
+useStudio.setState({ files: { "src/a.cpp": "a", "src/nested/b.cpp": "b", "main.py": "m" }, openTabs: ["circuit", "src/a.cpp", "src/nested/b.cpp"], activeTab: "src/nested/b.cpp", aiModifiedFiles: ["src/nested/b.cpp"] });
+useStudio.getState().renamePath("src", "lib");
+assert.deepEqual(Object.keys(useStudio.getState().files).sort(), ["lib/a.cpp", "lib/nested/b.cpp", "main.py"]);
+assert.equal(useStudio.getState().activeTab, "lib/nested/b.cpp");
+assert.deepEqual(useStudio.getState().aiModifiedFiles, ["lib/nested/b.cpp"]);
+useStudio.getState().removePaths(["lib/nested"]);
+assert.equal(Object.hasOwn(useStudio.getState().files, "lib/nested/b.cpp"), false);
+assert.equal(useStudio.getState().activeTab, "lib/a.cpp");
+console.log("PASS disk changes: per-file diff state, accept disk, keep local overwrite, external delete recreation, external add, refused whole-project save keeps other buffers, tab/buffer rename and removal (host fixture)");

@@ -97,7 +97,7 @@ export default function App() {
       <div className="app-shell">
         {disk.busy && <div role="status" className="fixed inset-0 z-[200] flex items-center justify-center bg-white/60 text-sm text-[#59616A]">正在处理工程目录…</div>}
         <TopBar />
-        {disk.root && <div className="flex flex-none items-center gap-2 border-b border-[#E9EBEE] bg-white px-3 py-1 text-[10px]"><span className="min-w-0 flex-1 truncate" title={disk.root}>{disk.root}</span>{disk.changed && <span className="text-[#A8741F]">目录有外部变更</span>}<button className="btn px-2" disabled={disk.busy} onClick={() => { void disk.reload().catch((error) => useDisk.setState({ error: String(error) })); }}>重新读取（放弃未保存修改）</button></div>}
+        {disk.root && <div className="flex flex-none items-center gap-2 border-b border-[#E9EBEE] bg-white px-3 py-1 text-[10px]"><span className="min-w-0 flex-1 truncate" title={disk.root}>{disk.root}</span>{disk.changed && <><span className="text-[#A8741F]">目录有外部变更</span><button className="btn px-2" disabled={disk.busy} onClick={() => { const command = plugins.get("commands", "project.files.changes"); if (!command) { void disk.reload().catch((error) => useDisk.setState({ error: String(error) })); return; } void Promise.resolve().then(command.run).catch((error) => useStudio.getState().addToast({ title: "无法打开磁盘变更", detail: String(error), tone: "warn" })); }}>按文件处理…</button></>}<button className="btn px-2" disabled={disk.busy} onClick={() => { void disk.reload().catch((error) => useDisk.setState({ error: String(error) })); }}>重新读取（放弃未保存修改）</button></div>}
         {disk.error && <div role="alert" className="flex gap-2 bg-[#FFF5E7] px-3 py-1 text-[11px] text-[#9A702C]">{disk.error}<button className="ml-auto" onClick={() => useDisk.setState({ error: "" })}>关闭</button></div>}
         <div className="flex min-h-0 flex-1">
           <Sidebar />
@@ -114,6 +114,7 @@ export default function App() {
         <DevicesDialog />
         <TestsDialog />
         <ProjectOverviewDialog />
+        {plugins.all("dialogs").map((dialog) => { const Render = dialog.render; return <Render key={dialog.id} />; })}
         <Toasts />
       </div>
     </TooltipProvider></MotionConfig>

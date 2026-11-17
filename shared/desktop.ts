@@ -1,6 +1,16 @@
 import type { ProjectContext } from "../src/plugins/api";
 import type { ToolsAPI } from "./tools";
-export interface DiskWorkspace { root: string; context: ProjectContext }
+export interface DiskWorkspace { root: string; context: ProjectContext; directories: string[] }
+export interface DiskListing { files: Record<string, string>; directories: string[] }
+export interface WorkspaceFileOptions {
+  listing: () => Promise<DiskListing>;
+  createFile: (path: string) => Promise<void>;
+  createDirectory: (path: string) => Promise<void>;
+  rename: (from: string, to: string) => Promise<void>;
+  trash: (path: string) => Promise<void>;
+  write: (path: string, text: string, expected: string | null) => Promise<void>;
+  accept: (path: string) => Promise<void>;
+}
 export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskSnapshot {
   id: string; provider: string; root: string; status: "running" | "succeeded" | "failed" | "cancelled";
@@ -19,6 +29,7 @@ export interface DesktopAPI {
     save: (context: ProjectContext) => Promise<void>; reload: () => Promise<DiskWorkspace>;
     setDirty: (dirty: boolean) => Promise<void>; close: () => Promise<void>; restore: () => Promise<DiskWorkspace | null>;
     onChanged: (listener: (root: string) => void) => () => void;
+    files: WorkspaceFileOptions;
   };
   tasks: {
     start: (provider: string, options?: Record<string, string>) => Promise<TaskSnapshot>; cancel: (id: string) => Promise<void>;
