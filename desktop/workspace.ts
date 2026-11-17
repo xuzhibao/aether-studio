@@ -10,6 +10,18 @@ const ignored = new Set([".git", ".pio", ".aether", "node_modules", "dist", "bui
 const manifestName = "aether.project.json";
 // Paths owned by the host: metadata, the virtual circuit view and its physical location.
 const reserved = new Set([manifestName, "circuit.json", "hardware", "hardware/circuit.json"]);
+// Case-insensitive filesystems alias names differing only by case (Windows and default macOS).
+// On case-sensitive filesystems these are distinct entries, so folding is limited to those platforms.
+const foldCase = process.platform === "win32" || process.platform === "darwin";
+const fold = (value: string) => foldCase ? value.toLowerCase() : value;
+const ignoredNames = new Set([...ignored].map(fold));
+const reservedNames = new Set([...reserved].map(fold));
+const isIgnoredPart = (part: string) => ignoredNames.has(fold(part));
+const isReservedPath = (name: string) => {
+  const parts = name.split("/");
+  for (let index = 1; index <= parts.length; index++) if (reservedNames.has(fold(parts.slice(0, index).join("/")))) return true;
+  return false;
+};
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const diskName = (file: string) => file === "circuit.json" ? "hardware/circuit.json" : file;
 const absent = (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; };
@@ -39,19 +51,19 @@ export class WorkspaceService {
   }
   private checkName(name: string) {
     if (!validProjectPath(name)) throw new Error("工程相对路径无效：" + name);
-    if (name.split("/").some((part) => ignored.has(part))) throw new Error("不能操作工具缓存目录：" + name);
-    if (reserved.has(name)) throw new Error("此路径由宿主管理，不能创建、重命名或删除：" + name);
+    if (name.split("/").some(isIgnoredPart)) throw new Error("不能操作工具缓存目录：" + name);
+    if (isReservedPath(name)) throw new Error("此路径由宿主管理，不能创建、重命名、写入或删除：" + name);
   }
   private async scan(root: string): Promise<DiskListing> {
     const files: Record<string, string> = {};
     const directories: string[] = [];
     const walk = async (directory: string, prefix = "") => {
       for (const item of await fs.readdir(directory, { withFileTypes: true })) {
-        if (ignored.has(item.name) || item.name.endsWith(".aether-saving") || item.isSymbolicLink()) continue;
+        if (isIgnoredPart(item.name) || item.name.endsWith(".aether-saving") || item.isSymbolicLink()) continue;
         const relative = prefix + item.name;
         if (item.isDirectory()) {
           // hardware/ holds the host-owned circuit file; browsing it is handled through the virtual circuit.json.
-          if (!prefix && item.name === "hardware") continue;
+          if (!prefix && fold(item.name) === fold("hardware")) continue;
           directories.push(relative);
           await walk(path.join(directory, item.name), relative + "/");
           continue;
@@ -94,7 +106,7 @@ export class WorkspaceService {
     await this.close();
     this.root = root;
     await this.captureBaseline(result.context);
-    this.watcher = watch(root, { ignoreInitial: true, ignored: (entry) => path.relative(root, entry).split(path.sep).some((part) => ignored.has(part)), awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 } });
+    this.watcher = watch(root, { ignoreInitial: true, ignored: (entry) => path.relative(root, entry).split(path.sep).some(isIgnoredPart), awaitWriteFinish: { stabilityThreshold: 150, pollInterval: 50 } });
     this.watcher.on("all", async (event, file) => {
       if (this.writing || this.root !== root || !["add", "change", "unlink"].includes(event) || file.endsWith(".aether-saving")) return;
       const relative = path.relative(root, file).split(path.sep).join("/");
@@ -160,9 +172,11 @@ export class WorkspaceService {
     if (sourceStat.isSymbolicLink()) throw new Error("不操作工程内的符号链接：" + from);
     const target = await this.target(to);
     const existing = await fs.lstat(target).catch(absent);
-    // Windows allows changing only the letter case of an existing name.
-    const caseOnly = from.toLowerCase() === to.toLowerCase();
-    if (existing && !caseOnly) throw new Error("同名文件或目录已存在：" + to);
+    if (existing) {
+      // Replacing is only safe when source and target are the same actual file (a real case-only rename).
+      const [sourceReal, targetReal] = await Promise.all([fs.realpath(source), fs.realpath(target)]);
+      if (sourceReal !== targetReal) throw new Error("同名文件或目录已存在：" + to);
+    }
     await fs.rename(source, target);
     this.rekeyBaseline(from, to);
   }
@@ -199,12 +213,17 @@ export class WorkspaceService {
     const validated = decodeProject(encodeProject(context));
     const root = this.requireRoot();
     if (Object.keys(validated.files).some((file) => file === manifestName || file === "hardware/circuit.json")) throw new Error("工程元数据与电路文件由宿主管理");
+    // Reject aliases of protected paths before writing anything (case-insensitive filesystems).
+    for (const file of Object.keys(validated.files)) {
+      const stored = diskName(file);
+      if (stored !== "hardware/circuit.json") this.checkName(stored);
+    }
     const outputs = new Map(Object.entries(validated.files).map(([name, text]) => [diskName(name), text]));
     outputs.set("hardware/circuit.json", JSON.stringify({ components: validated.components, wires: validated.wires }, null, 2));
     outputs.set(manifestName, JSON.stringify({ format: "aether-directory", version: 1, project: validated.project, capabilities: validated.capabilities }, null, 2));
     // Validate every target before writing anything, including newly created files.
     for (const name of outputs.keys()) {
-      if (name.split("/").some((part) => ignored.has(part))) throw new Error("不能写入工具缓存目录：" + name);
+      if (name.split("/").some(isIgnoredPart)) throw new Error("不能写入工具缓存目录：" + name);
       const target = await this.target(name);
       const current = await fs.readFile(target, "utf8").catch(absent);
       if ((current === null ? undefined : digest(current)) !== this.baseline.get(name)) throw new Error("文件已被外部修改：" + name + "。请按文件处理磁盘变更，或另存工程。");

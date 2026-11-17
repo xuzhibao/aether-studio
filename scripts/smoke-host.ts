@@ -95,6 +95,31 @@ try {
     await assert.rejects(() => files.rename("hardware", "hw"), /宿主管理/);
     await assert.rejects(() => files.createFile("circuit.json"), /宿主管理/);
 
+    // Case-insensitive filesystem aliases must not reach ignored or host-owned paths.
+    if (process.platform === "win32" || process.platform === "darwin") {
+      await fs.mkdir(path.join(managed, ".git"), { recursive: true });
+      await fs.writeFile(path.join(managed, ".git", "config"), "protected\n");
+      await assert.rejects(() => files.write(".GIT/config", "hacked\n", "protected\n"), /缓存/);
+      await assert.rejects(() => files.trash(".GIT"), /缓存/);
+      await assert.rejects(() => files.createFile("HARDWARE/evil.txt"), /宿主管理/);
+      await assert.rejects(() => files.rename("HARDWARE", "hw"), /宿主管理/);
+      await assert.rejects(() => files.save({ ...context, files: { "AETHER.PROJECT.JSON": "x" } }), /宿主管理/);
+      await assert.rejects(() => files.save({ ...context, files: { "HARDWARE/evil.txt": "x" } }), /宿主管理/);
+      await assert.rejects(() => files.save({ ...context, files: { ".GIT/config": "x" } }), /缓存/);
+      assert.equal(await fs.readFile(path.join(managed, ".git", "config"), "utf8"), "protected\n");
+      // A real case-only rename of the same file still works and keeps its content.
+      await files.write("Case Keep.txt", "keep\n", null);
+      await files.rename("Case Keep.txt", "case keep.txt");
+      assert.equal(await fs.readFile(path.join(managed, "case keep.txt"), "utf8"), "keep\n");
+    } else {
+      // On a case-sensitive filesystem two names differing only by case are different files and must both survive.
+      await files.write("case-a.txt", "lower\n", null);
+      await files.write("Case-a.txt", "upper\n", null);
+      await assert.rejects(() => files.rename("case-a.txt", "Case-a.txt"), /已存在/);
+      assert.equal(await fs.readFile(path.join(managed, "case-a.txt"), "utf8"), "lower\n");
+      assert.equal(await fs.readFile(path.join(managed, "Case-a.txt"), "utf8"), "upper\n");
+    }
+
     const outsideFiles = await fs.mkdtemp(path.join(os.tmpdir(), "aether-outside-files-"));
     await linkDirectory(outsideFiles, path.join(managed, "linked"));
     await assert.rejects(() => files.createFile("linked/escape.txt"), /链接/);

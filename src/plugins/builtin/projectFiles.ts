@@ -1,10 +1,14 @@
 import type { StudioPlugin } from "../api";
 import { isDesktop } from "../../lib/desktop";
 import { encodeProject, decodeProject } from "../../../shared/projectFormat";
-import { useDisk } from "../../store/disk";
-import { ProjectExplorer } from "./ProjectExplorer";
-import { ProjectFilesDialogs } from "./ProjectFilesDialogs";
-import { openChanges, parentOf, requireDisk, useProjectFiles } from "./projectFilesState";
+import { createElement, lazy, Suspense } from "react";
+// Store-backed UI and helpers load on demand: the plugin registry (and this module) initialize before the stores.
+const LazyProjectExplorer = lazy(() => import("./ProjectExplorer").then((module) => ({ default: module.ProjectExplorer })));
+const LazyProjectFilesDialogs = lazy(() => import("./ProjectFilesDialogs").then((module) => ({ default: module.ProjectFilesDialogs })));
+const ProjectExplorerPanel = () => createElement(Suspense, { fallback: createElement("div", { className: "p-4 text-xs" }, "Loading files…") }, createElement(LazyProjectExplorer));
+const ProjectFilesDialogsHost = () => createElement(LazyProjectFilesDialogs);
+const filesState = () => import("./projectFilesState");
+const diskState = () => import("../../store/disk");
 export { encodeProject, decodeProject, validProjectPath } from "../../../shared/projectFormat";
 
 const filters = [{ name: "Aether Studio Project", extensions: ["aether"] }];
@@ -56,23 +60,25 @@ export const projectFilesPlugin: StudioPlugin = {
     api.register("menus", { id: "project.open.menu", name: "Open project (.aether)", command: "project.import", location: "project" });
     api.register("menus", { id: "project.export.menu", name: "Export project (.aether)", command: "project.export", location: "project" });
     api.register("menus", { id: "project.export.share", name: "Export project bundle", command: "project.export", location: "share" });
-    api.register("explorers", { id: "project.files.tree", name: "Project files", render: ProjectExplorer });
-    api.register("dialogs", { id: "project.files.dialogs", name: "Project file dialogs", render: ProjectFilesDialogs });
-    const parentForCreate = () => {
+    api.register("explorers", { id: "project.files.tree", name: "Project files", render: ProjectExplorerPanel });
+    api.register("dialogs", { id: "project.files.dialogs", name: "Project file dialogs", render: ProjectFilesDialogsHost });
+    const parentForCreate = async () => {
+      const [{ useProjectFiles, parentOf }, { useDisk }] = await Promise.all([filesState(), diskState()]);
       const selected = useProjectFiles.getState().selected;
       if (!selected) return "";
       return useDisk.getState().directories.includes(selected) ? selected : parentOf(selected);
     };
-    const selectedEntry = () => {
+    const selectedEntry = async () => {
+      const [{ useProjectFiles }, { useDisk }] = await Promise.all([filesState(), diskState()]);
       const selected = useProjectFiles.getState().selected;
       if (!selected) throw new Error("请先在文件树中选择文件或目录");
       return { target: selected, directory: useDisk.getState().directories.includes(selected) };
     };
-    api.register("commands", { id: "project.files.new-file", name: "New file in project folder", run: () => { requireDisk(); useProjectFiles.getState().open({ kind: "create", mode: "file", parent: parentForCreate() }); } });
-    api.register("commands", { id: "project.files.new-folder", name: "New folder in project folder", run: () => { requireDisk(); useProjectFiles.getState().open({ kind: "create", mode: "directory", parent: parentForCreate() }); } });
-    api.register("commands", { id: "project.files.rename", name: "Rename project file or folder", run: () => { requireDisk(); const entry = selectedEntry(); useProjectFiles.getState().open({ kind: "rename", ...entry }); } });
-    api.register("commands", { id: "project.files.delete", name: "Move project file or folder to Trash", run: () => { requireDisk(); const entry = selectedEntry(); useProjectFiles.getState().open({ kind: "delete", ...entry }); } });
-    api.register("commands", { id: "project.files.changes", name: "Review per-file disk changes", run: () => { requireDisk(); return openChanges(); } });
+    api.register("commands", { id: "project.files.new-file", name: "New file in project folder", run: async () => { const { requireDisk, useProjectFiles } = await filesState(); requireDisk(); useProjectFiles.getState().open({ kind: "create", mode: "file", parent: await parentForCreate() }); } });
+    api.register("commands", { id: "project.files.new-folder", name: "New folder in project folder", run: async () => { const { requireDisk, useProjectFiles } = await filesState(); requireDisk(); useProjectFiles.getState().open({ kind: "create", mode: "directory", parent: await parentForCreate() }); } });
+    api.register("commands", { id: "project.files.rename", name: "Rename project file or folder", run: async () => { const { requireDisk, useProjectFiles } = await filesState(); requireDisk(); const entry = await selectedEntry(); useProjectFiles.getState().open({ kind: "rename", ...entry }); } });
+    api.register("commands", { id: "project.files.delete", name: "Move project file or folder to Trash", run: async () => { const { requireDisk, useProjectFiles } = await filesState(); requireDisk(); const entry = await selectedEntry(); useProjectFiles.getState().open({ kind: "delete", ...entry }); } });
+    api.register("commands", { id: "project.files.changes", name: "Review per-file disk changes", run: async () => { const { requireDisk, openChanges } = await filesState(); requireDisk(); return openChanges(); } });
     api.register("menus", { id: "project.files.menu.new-file", name: "New file…", command: "project.files.new-file", location: "project" });
     api.register("menus", { id: "project.files.menu.new-folder", name: "New folder…", command: "project.files.new-folder", location: "project" });
     api.register("menus", { id: "project.files.menu.changes", name: "Review disk changes…", command: "project.files.changes", location: "project" });
