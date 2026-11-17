@@ -35,7 +35,8 @@ const ownedProcesses = (rootPid: number, rows: Map<number, ProcessRow>) => {
 // A pid may have exited or been reused between the snapshot and the signal. Only keep pids that
 // still belong to the captured tree or one of its job groups.
 const verifyOwned = (pids: Iterable<number>, snapshot: Map<number, ProcessRow>, owned: Set<number>, current: Map<number, ProcessRow>) => {
-  const groups = new Set([...owned].map((pid) => snapshot.get(pid)?.pgid).filter((pgid): pgid is number => typeof pgid === "number"));
+  // Only process groups led by an owned pid are job groups. A group inherited from the host is not ours.
+  const groups = new Set([...owned].filter((pid) => snapshot.get(pid)?.pgid === pid));
   return [...pids].filter((pid) => {
     const before = snapshot.get(pid); const now = current.get(pid);
     if (!before || !now) return false;
