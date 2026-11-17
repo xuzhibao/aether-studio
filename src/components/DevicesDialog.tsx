@@ -24,8 +24,9 @@ export function DevicesDialog() {
   const revision = registry.getRevision();
   const transport = registry.get("transports", selected);
   // Upload/build tasks own the native port; do not let the monitor reopen it and break the running command.
+  const ioBusy = ["connecting", "connected", "disconnecting"].includes(io.status);
   const portBusy = taskRunning && selected === "native-serial";
-  const busy = ["connecting", "connected", "disconnecting"].includes(io.status) || portBusy;
+  const busy = ioBusy || portBusy;
   const address = addresses[selected] ?? "";
   const parameters = Object.fromEntries(transport?.parameters.map((field) => [field.key, settings[selected]?.[field.key] ?? field.initial]) ?? []);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -45,7 +46,7 @@ export function DevicesDialog() {
       <div className="flex justify-between"><Dialog.Title className="text-[14px] font-semibold">Devices</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div>
       <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">选择通信插件和地址，建立连接后在 Serial Monitor 收发数据。Demo Simulation 独立运行。</Dialog.Description>
       {!transports.length ? <p className="mt-4 text-xs text-[#9A702C]">没有已启用的通信插件。</p> : <form className="mt-4 space-y-3 text-[11px]" onSubmit={(event) => { event.preventDefault(); if (!busy && transport && !transport.unavailable) void io.connect(selected, { address: address.trim(), parameters }); }}>
-        <label className="block">通信插件<select aria-label="通信插件" disabled={busy} value={selected} onChange={(event) => setSelected(event.target.value)} className="input mt-1 w-full">{transports.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label className="block">通信插件<select aria-label="通信插件" disabled={ioBusy} value={selected} onChange={(event) => setSelected(event.target.value)} className="input mt-1 w-full">{transports.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         {transport?.unavailable && <p role="status" className="rounded bg-[#FFF5E7] p-2 text-[#9A702C]">{transport.unavailable}</p>}
         <label className="block">{transport?.endpoint.label}<input ref={addressRef} aria-label={transport?.endpoint.label} list={transport?.list ? "transport-addresses" : undefined} disabled={busy || !!transport?.unavailable} value={address} onChange={(event) => setAddresses({ ...addresses, [selected]: event.target.value })} placeholder={transport?.endpoint.placeholder} className="input mt-1 w-full" /></label>
         <datalist id="transport-addresses">{ports.map((port) => <option key={port.path} value={port.path}>{port.label}</option>)}</datalist>

@@ -169,6 +169,14 @@ try {
   await page.getByRole('button', { name: '重新读取（放弃未保存修改）', exact: true }).click();
   await page.getByRole('button', { name: 'Build Tasks', exact: true }).click(); await page.getByRole('button', { name: 'Build with PlatformIO', exact: true }).click();
   await page.getByText(/fixture slow build/).first().waitFor({ timeout: 60000 });
+  // A running task owns the native port: the Devices dialog must not open a competing serial session.
+  await page.locator('nav').getByRole('button', { name: 'Devices', exact: true }).click();
+  const guardDialog = page.getByRole('dialog');
+  await guardDialog.getByRole('combobox', { name: '通信插件', exact: true }).selectOption('native-serial');
+  await guardDialog.getByText('构建或上传任务正在运行，暂时不能连接原生串口。', { exact: true }).waitFor();
+  assert.equal(await guardDialog.getByRole('button', { name: '建立连接', exact: true }).isDisabled(), true);
+  await guardDialog.getByRole('button', { name: 'Close dialog' }).click();
+  await page.locator('nav').getByRole('button', { name: 'Build Tasks', exact: true }).click();
   await page.getByRole('button', { name: 'Cancel task', exact: true }).click(); await page.locator('[data-task-status="cancelled"]').waitFor();
   await page.screenshot({ path: 'smoke-results/electron-task-results.png', fullPage: true });
   // Actual OS PTY, through the migrated Electron serial backend and monitor UI.

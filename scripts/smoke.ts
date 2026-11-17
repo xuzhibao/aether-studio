@@ -281,6 +281,7 @@ await io().disconnect();
 await io().connectSerial("fixture-port");
 assert.equal(io().status, "connected");
 assert.equal(lastOpen, "fixture-port@115200", "connectSerial uses the transport's declared default baud rate");
+await assert.rejects(() => io().connectSerial("other-port"), /串口正在使用/, "one native port at a time; an upload cannot share the monitor's handle");
 // A retry must not race a still-closing session: both disconnect and connect wait for the real backend close.
 let releaseClose!: () => void;
 closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
