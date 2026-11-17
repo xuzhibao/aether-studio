@@ -77,6 +77,8 @@ jobs:
       - run: xvfb-run -a npm run smoke:desktop
         env:
           AETHER_PACKAGED_EXECUTABLE: release/linux-unpacked/aether-studio
+          # Only clangd-20 is installed; the Electron smoke resolves clangd from this variable.
+          AETHER_CLANGD_CLI: /usr/bin/clangd-20
       - uses: actions/upload-artifact@v4
         if: always()
         with:
