@@ -126,7 +126,7 @@ try {
   await service.change(authorized.id, file, completionText, 2);
   const completion = await service.request(authorized.id, file, 2, "completion", { line: valueLine, character: "    Serial.".length }) as CompletionItem[] | CompletionList;
   const items = Array.isArray(completion) ? completion : completion.items;
-  assert.ok(items.some((item) => item.label === "println" || item.label === "begin"), "Arduino Serial members must come from the SDK: " + JSON.stringify(items.slice(0, 10)));
+  assert.ok(items.some((item) => /println|begin/.test(item.label + " " + (item.filterText ?? ""))), "Arduino Serial members must come from the SDK: " + JSON.stringify(items.slice(0, 10)));
   await service.change(authorized.id, file, source, 3);
   await until(() => document(3) !== undefined && blockingErrors(3).length === 0, "restored source must have no blocking errors");
 

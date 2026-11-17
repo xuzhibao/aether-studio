@@ -174,6 +174,13 @@ export function clangdProvider(tool: ToolService): LanguageProvider {
   return {
     id: "clangd", tool: "clangd", executable: () => tool.executable("clangd"),
     context: (root, options) => compileDatabaseContext(root, options, tool),
+    env: (context) => {
+      // PlatformIO records the compiler by bare name; clangd resolves it through PATH before matching the allow-list.
+      if (!context.queryDrivers.length) return process.env;
+      const directories = [...new Set(context.queryDrivers.map((driver) => path.dirname(driver)))];
+      const current = process.env.PATH ?? process.env.Path ?? "";
+      return { ...process.env, PATH: [...directories, current].filter(Boolean).join(path.delimiter) };
+    },
     args: (root, context) => {
       const directory = context.compileDatabase === "ready" ? root : path.join(root, EMPTY_DATABASE);
       const args = ["--background-index=false", "--clang-tidy=false", "--enable-config=false", "--log=error", "--compile-commands-dir=" + directory];

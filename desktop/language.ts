@@ -13,6 +13,8 @@ export interface LanguageProvider {
   // Inspects the project before the process starts; the result is shown in the panel and passed to args().
   context?: (root: string, options: LanguageStartOptions) => Promise<LanguageLaunchContext>;
   args: (root: string, context: LanguageLaunchContext) => string[];
+  // Optional process environment, e.g. a PATH that lets clangd execute the authorized compiler from the compile command.
+  env?: (context: LanguageLaunchContext) => NodeJS.ProcessEnv;
 }
 interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void>; toolId?: string; quiet: boolean; options: { environment: string; queryDriver: boolean } }
 const methods = { completion: "textDocument/completion", hover: "textDocument/hover", definition: "textDocument/definition" } as const;
@@ -60,7 +62,7 @@ export class LanguageService {
       compileDatabase: context.compileDatabase, compileDatabaseMessage: context.compileDatabaseMessage, queryDrivers: context.queryDrivers, args, diagnosticsReceived: 0,
       error: "", log: "", documents: [],
     };
-    const child = spawn(executable, args, { cwd: root, shell: false, windowsHide: true });
+    const child = spawn(executable, args, { cwd: root, shell: false, windowsHide: true, env: provider.env ? provider.env(context) : process.env });
     const spawned = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     const rpc = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
     let resolve!: () => void; const done = new Promise<void>((finish) => { resolve = finish; });

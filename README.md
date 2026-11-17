@@ -178,7 +178,7 @@ PlatformIO 默认不把工具链 include 路径写入数据库（`COMPILATIONDB_
 
 允许列表在用户显式点击 **Generate compilation database** 时解析：该任务成功后执行 `platformio project metadata --json-output -e ENV`，把该环境的 `cc_path`/`cxx_path` 连同环境和时间写入 `.aether/compiledb.json` 的 `metadata`。启动或重启语言服务只读取这份缓存，不会运行 PlatformIO，也不会执行工程脚本；只有生成编译数据库这一显式任务会重跑 PlatformIO 的 integration（`extra_scripts`）。
 
-缓存中的编译器还必须同时满足：路径是字面绝对路径（不含 `*`、`?`、`[]` 等 glob 字符）、真实路径位于 PlatformIO 核心的 `packages` 目录（`PLATFORMIO_CORE_DIR`、默认 `~/.platformio`，或配置的 pio 可执行文件所属 `<core>/penv`）、并且正是当前编译数据库调用的编译器。否则不启用 query-driver。勾选后带有未保存缓冲区的运行中会话会自动重启。
+缓存中的编译器还必须同时满足：路径是字面绝对路径（不含 `*`、`?`、`[]`、`,` 等会扩大或拆分匹配的字符，symlink 解析后的真实路径也需满足）、真实路径位于 PlatformIO 核心的 `packages` 目录（`PLATFORMIO_CORE_DIR`、默认 `~/.platformio`，或配置的 pio 可执行文件所属 `<core>/penv`）、并且正是当前编译数据库调用的编译器。否则不启用 query-driver。启用时只在该 clangd 子进程的 PATH 前加入这些已授权编译器所在目录，使数据库中的裸编译器名可以被解析；不会修改用户全局 PATH。勾选后带有未保存缓冲区的运行中会话会自动重启。
 
 ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s3-elf-g++` 与 `-mlongcalls` 等真实交叉编译参数，不替换为宿主编译器，也不为迎合 clangd 修改构建参数。已知限制：上游 clang 不认识或改名的 GCC 驱动选项（`-mlongcalls`、`-fstrict-volatile-bitfields`、`-fno-tree-switch-conversion`）会被 clangd 报告为 Unknown argument。启用 query-driver 后，Arduino/框架头文件和工具链头文件解析、补全、悬停与工程内定义跳转均可正常工作；这几条驱动选项诊断不影响这些结果，实际构建结果仍以 PlatformIO 为准。
 
