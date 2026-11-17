@@ -61,7 +61,7 @@ try {
 Import("env")
 os.makedirs(".aether", exist_ok=True)
 with open(".aether/script_runs.txt", "a") as log:
-    log.write("run\n")
+    log.write("run\\n")
 `;
   await fs.writeFile(path.join(root, "extra_marker.py"), markerScript);
   const iniPath = path.join(root, "platformio.ini");
