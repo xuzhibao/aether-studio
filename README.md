@@ -2,7 +2,7 @@
 
 Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、TypeScript 和 Monaco。它提供电路画布、文本编辑器、磁盘工程、构建任务、串口和 WebSocket 监视器，以及可配置的 AI 工程助手。
 
-**万物皆插件**：宿主提供窗口、文件访问、任务与资源管理、事件和 UI 扩展入口；开发板、元器件、编辑器、工具链、部署、仿真和 AI 通过插件注册。官方功能也使用同一注册表。
+**万物皆插件**：宿主提供窗口、文件访问、任务与资源管理、事件和 UI 扩展入口；开发板、元器件、编辑器、语言服务、终端、工具链、部署、仿真和 AI 通过插件注册。官方功能也使用同一注册表。
 
 ## 当前功能
 
@@ -14,6 +14,7 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 - 构建成功后记录已加载工程文本快照 SHA-256、PlatformIO 版本、产物路径、大小和校验和。
 - PlatformIO 部署插件：明确填写端口后，运行实际构建及上传命令。不会因为打开串口而显示烧录成功。
 - ESP32-S3 C++ 模板，以及 MicroPython 电路演示模板。
+- 交互式 PTY 终端：在磁盘工程目录启动本机 shell，支持输入、中断、尺寸调整和会话清理。
 - 原生串口与 WebSocket 字节通信；设备输出与 Demo Simulation 分开显示。
 - `.aether` 工程导入导出、面板布局和编辑设置保存。
 - 可配置的 Chat Completions API、工程读取工具、文件修改建议预览、应用、拒绝和请求取消。
@@ -122,6 +123,24 @@ sudo apt-get install clangd
 
 当前语言插件不执行 compilation database 中的编译器，也不启用 clangd 用户配置或后台全工程索引。只同步已打开的文件，保留打开标签页的缓冲区；关闭文件、停用插件、切换目录和退出应用会清理对应资源。尚未提供重命名、格式化、代码修复或全工程问题扫描。
 
+## 终端
+
+在左侧 **Terminal** 或命令面板的 **Open project terminal** 打开终端面板，然后点击 **Start terminal**。必须先打开或保存到磁盘工程目录；打开面板本身不启动 shell。
+
+终端使用 node-pty 和 xterm.js，在当前工程目录启动真实 shell。Linux / macOS 使用 `SHELL`，未设置时使用 `/bin/bash`；Windows 使用 `ComSpec`，未设置时使用 `cmd.exe`。可通过 `AETHER_SHELL` 指定 shell 的完整可执行文件路径，不接受拼接的命令串。POSIX shell 使用 `-i` 启动，可能读取自己的交互配置。
+
+- 聚焦终端后，键盘输入直接发送到 shell，`Ctrl+C` 中断前台命令；工作区不会拦截终端的 `Ctrl+R`、`Ctrl+K` 等快捷键。
+- 面板尺寸改变会调整实际 PTY 的行列数。
+- 切换工作区面板会保留会话和当前会话的显示历史。
+- **Clear terminal** 只清理显示历史；**Stop terminal** 关闭会话。退出后的终端显示实际退出码，可再次启动。
+- 停用终端插件、重新读取或切换工程，以及退出应用会关闭会话并清理会话内进程。主动脱离终端会话的守护进程不在此管理范围内。
+
+终端拥有当前用户的文件与进程权限，命令可以修改工程及其他用户可访问的文件。它读取磁盘文件，不会自动保存编辑器缓冲区；终端造成的文件变更仍通过工作区的外部修改检查处理。面板标注的是启动目录，执行 `cd` 后以 shell 自己的当前目录为准。
+
+目前一次只提供一个终端会话，显示历史最多 3000 行；窗口关闭后不恢复 shell 或终端历史。后台按 xterm 的消费进度读取 PTY 输出，并在输出积压时暂停生产者。Agent 尚不调用终端，也不会自动执行模型生成的命令。当前主要验证 Linux；macOS 和 Windows 需在对应系统验证。
+
+首次安装原生依赖时，如果 node-pty 没有匹配的预构建文件，需要当前系统的 C/C++ 构建工具和 Python。桌面打包会为 Electron 重建原生模块。
+
 ## 设备通信
 
 打开 **Devices**，选择通信插件及地址。原生串口支持手动路径、端口枚举、波特率、8N1 和无流控。WebSocket 支持 `ws://`、`wss://`，接收文本及二进制帧，发送携带 UTF-8 文本的二进制帧。
@@ -140,7 +159,7 @@ sudo apt-get install clangd
 
 `src/plugins/api.ts` 定义 Manifest 和能力接口，`src/plugins/registry.ts` 管理注册、依赖、启停和清理。当前官方前端插件由 `src/plugins/builtin/index.tsx` 静态导入，运行在可信应用进程内。
 
-插件通过 `api.register(kind, contribution)` 提供开发板、元器件、编辑器、语言服务、工具链、部署、仿真器、通信、模型、Agent、工具、模板、命令、工程格式、菜单、面板和叠加视图。操作时使用 `api.project.get()` 读取当前工程；事件订阅在停用时移除。
+插件通过 `api.register(kind, contribution)` 提供开发板、元器件、编辑器、语言服务、终端、工具链、部署、仿真器、通信、模型、Agent、工具、模板、命令、工程格式、菜单、面板和叠加视图。操作时使用 `api.project.get()` 读取当前工程；事件订阅在停用时移除。
 
 例如，在内置插件目录新增：
 
@@ -159,7 +178,7 @@ export const hello: StudioPlugin = {
 
 将插件加入 `builtinPlugins` 数组后，可在命令面板运行，停用后命令被移除。
 
-桌面受限 API 定义在 `shared/desktop.ts`，preload 只暴露指定操作，不暴露 Node、任意 IPC 或任意 shell 执行。后台任务只能调用已注册提供者。PlatformIO 的后台命令和产物发现位于 `desktop/plugins/platformio.ts`，串口适配位于 `desktop/plugins/serial.ts`。语言服务进程由 `desktop/language.ts` 管理，clangd 启动参数在 `desktop/plugins/clangd.ts`；`languages` 能力负责 Monaco 接入及诊断面板。
+桌面受限 API 定义在 `shared/desktop.ts`，preload 只暴露指定操作，不暴露 Node 或任意 IPC。后台构建任务只能调用已注册提供者；交互终端按用户输入执行 shell 命令，Agent 工具不连接终端。PlatformIO 的后台命令和产物发现位于 `desktop/plugins/platformio.ts`，串口适配位于 `desktop/plugins/serial.ts`。语言服务进程由 `desktop/language.ts` 管理，clangd 启动参数在 `desktop/plugins/clangd.ts`；`languages` 能力负责 Monaco 接入及诊断面板。`terminals` 能力提供交互终端操作和面板挂载，shell 提供者位于 `desktop/plugins/shell.ts`。插件 UI 可通过 `data-plugin-keyboard` 标注自己处理键盘事件的区域。
 
 当前还没有本地插件包安装器、独立插件进程、完整沙箱和插件市场。前后端注册入口仍随应用构建，不宣称支持不可信外部插件。
 
@@ -169,11 +188,12 @@ export const hello: StudioPlugin = {
 npm run typecheck
 npm run smoke
 npm run smoke:network
+npm run smoke:terminal
 npm run build
 npm run build:desktop
 ```
 
-真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
@@ -202,4 +222,4 @@ Aether 原创代码采用 Apache-2.0，见 `LICENSE` 和 `NOTICE`。第三方组
 
 PlatformIO Core 使用 Apache-2.0；其下载的开发平台、编译器和 SDK 按各自许可提供。IDE 不要求商业模拟器、账号或付费模型。支持 ESP32 不代表其无线固件依赖全部提供源码。
 
-当前尚未提供其他语言的 LSP、DAP 调试、交互式 PTY 终端、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 桌面运行需要对应环境验证。
+当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 桌面运行需要对应环境验证。

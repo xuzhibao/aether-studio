@@ -58,6 +58,7 @@ jobs:
       - run: python -m pip install platformio==6.1.19
       - run: npm ci
       - run: npx playwright install-deps chromium
+      - run: npm run smoke:terminal
       - run: npm run smoke:host
       - run: npm run smoke:language
       - run: platformio run -d examples/platformio-esp32s3

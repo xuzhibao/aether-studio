@@ -7,6 +7,7 @@ export interface TaskSnapshot {
   inputHash: string; toolVersion?: string; artifacts: BuildArtifact[];
 }
 export interface DesktopAPI {
+  terminal: import("./terminal").TerminalAPI;
   language: import("./language").LanguageAPI;
   runtime: "electron";
   window: (action: "close" | "minimize" | "maximize") => Promise<void>;

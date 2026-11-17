@@ -5,6 +5,7 @@ import { BoardPart, SensorPart, OledPart, ResistorPart, LedPart, GenericPart, Sc
 import { lazy, Suspense } from "react";
 const LazyEditor = lazy(() => import("../../components/EditorPane").then((m) => ({ default: m.EditorPane })));
 function EditorPane({ file }: { file: string }) { return <Suspense fallback={<div className="p-4 text-xs">Loading editor…</div>}><LazyEditor file={file} /></Suspense>; }
+import { terminalPlugin } from "./terminal";
 import { clangdPlugin } from "./clangd";
 import { platformioPlugin } from "./platformio";
 import { micropythonPlugin } from "./micropython";
@@ -45,4 +46,4 @@ const templatePlugin: StudioPlugin = {
     api.register("commands", { id: "esp32.example", name: "ESP32-S3: 创建环境监测示例", run: () => api.host.createProject("esp32-s3", "Environment monitor") });
   },
 };
-export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin, nativeSerialPlugin, websocketPlugin, platformioPlugin, clangdPlugin];
+export const builtinPlugins = [boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin, nativeSerialPlugin, websocketPlugin, platformioPlugin, clangdPlugin, terminalPlugin];

@@ -66,6 +66,8 @@ This inventory records installed package metadata; it is not a claim that all up
 | @types/prop-types | 15.7.15 | MIT |
 | @types/react | 18.3.31 | MIT |
 | @types/react-dom | 18.3.7 | MIT |
+| @xterm/addon-fit | 0.11.0 | MIT |
+| @xterm/xterm | 6.0.0 | MIT |
 | aria-hidden | 1.2.6 | MIT |
 | chokidar | 4.0.3 | MIT |
 | clsx | 2.1.1 | MIT |
@@ -85,8 +87,10 @@ This inventory records installed package metadata; it is not a claim that all up
 | motion-dom | 12.43.0 | MIT |
 | motion-utils | 12.39.0 | MIT |
 | ms | 2.1.3 | MIT |
+| node-addon-api | 7.1.1 | MIT |
 | node-addon-api | 8.3.0 | MIT |
 | node-gyp-build | 4.8.4 | MIT |
+| node-pty | 1.1.0 | MIT |
 | react | 18.3.1 | MIT |
 | react-dom | 18.3.1 | MIT |
 | react-remove-scroll | 2.7.2 | MIT |
@@ -105,3 +109,5 @@ This inventory records installed package metadata; it is not a claim that all up
 | vscode-languageserver-protocol | 3.17.5 | MIT |
 | vscode-languageserver-types | 3.17.5 | MIT |
 | zustand | 5.0.16 | MIT |
+
+node-pty also ships winpty (MIT, Copyright Ryan Prichard) and ConPTY/OpenConsole (MIT, Copyright Microsoft Corporation). Their notices are included under `dist-licenses/node-pty-bundled/`. ConPTY license source: https://github.com/microsoft/terminal/blob/main/LICENSE .

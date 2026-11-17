@@ -7,6 +7,8 @@ import { TaskService } from "./tasks";
 import { platformioBuild, platformioUpload, platformioCompileDatabase } from "./plugins/platformio";
 import { LanguageService } from "./language";
 import { clangdProvider } from "./plugins/clangd";
+import { TerminalService } from "./terminal";
+import { shellProvider } from "./plugins/shell";
 import { SerialService } from "./plugins/serial";
 import type { ProjectContext } from "../src/plugins/api";
 
@@ -26,12 +28,14 @@ const workspace = new WorkspaceService((root) => emit("workspace:changed", root)
 const tasks = new TaskService(workspace, (task) => emit("tasks:changed", task));
 tasks.register(platformioBuild); tasks.register(platformioUpload); tasks.register(platformioCompileDatabase);
 const serial = new SerialService();
+const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
+terminal.register(shellProvider);
 const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
 language.register(clangdProvider);
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { await tasks.stopAll(); await serial.dispose(); await language.stop(); };
+const beforeSwitch = async () => { await tasks.stopAll(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -62,6 +66,12 @@ function routes() {
   handle("language:change", (id, file, text, version) => enqueue(() => language.change(id, file, text, version)));
   handle("language:close", (id, file) => enqueue(() => language.close(id, file)));
   handle("language:request", (id, file, version, method, position) => language.request(id, file, version, method, position));
+  handle("terminal:start", (provider, root, cols, rows) => enqueue(() => terminal.start(provider, root, cols, rows)));
+  handle("terminal:get", () => terminal.get());
+  handle("terminal:stop", (id) => enqueue(() => terminal.stop(id)));
+  handle("terminal:write", (id, data) => terminal.write(id, data));
+  handle("terminal:read", (id) => terminal.read(id));
+  handle("terminal:resize", (id, cols, rows) => terminal.resize(id, cols, rows));
   handle("tasks:start", (provider: string, options: Record<string, string> = {}) => enqueue(() => tasks.start(provider, options)));
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   handle("tasks:list", () => tasks.list());
@@ -72,7 +82,7 @@ let quitting = false;
 app.on("before-quit", (event) => {
   if (quitting) return;
   event.preventDefault(); if (!confirmClose()) return; dirty = false; quitting = true;
-  void Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), workspace.close()]).finally(() => app.quit());
+  void enqueue(async () => { await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]); }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
 // Keep the ESM entry import complete so Electron can reach its ready event.

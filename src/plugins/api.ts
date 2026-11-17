@@ -8,7 +8,7 @@ export interface ProjectWorkspace {
   capabilities: { board: string; toolchain: string; simulator: string; editor: string };
 }
 export interface ProjectContext extends ProjectWorkspace { project: ProjectMeta }
-export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language";
+export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language" | "terminal";
 export interface PluginManifest {
   id: string;
   name: string;
@@ -56,6 +56,7 @@ export interface EditorAttachment {
   model: import("monaco-editor").editor.ITextModel; file: string; root: string;
 }
 export interface CapabilityMap {
+  terminals: { id: string; name: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; interrupt: () => Promise<void>; clear: () => Promise<void>; mount: (element: HTMLElement) => () => void };
   languages: { id: string; name: string; languageIds: string[]; diagnosticsPanel: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; attach: (attachment: EditorAttachment) => () => void };
   deployments: { id: string; name: string; toolchain: string; endpointLabel: string; deploy: (project: ProjectContext, address: string) => Promise<void> };
   transports: { id: string; name: string; unavailable?: string; endpoint: { label: string; placeholder: string }; parameters: TransportParameter[]; description: string; sendHint: string; list?: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers, signal?: AbortSignal) => Promise<TransportConnection> };

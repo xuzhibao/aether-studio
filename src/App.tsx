@@ -38,6 +38,8 @@ export default function App() {
       const s = useStudio.getState();
       if (useDisk.getState().busy) { event.preventDefault(); return; }
 
+      if (target?.closest("[data-plugin-keyboard]")) return;
+
       const shortcut = [mod ? "mod" : "", event.shiftKey ? "shift" : "", event.key.toLowerCase()].filter(Boolean).join("+");
       const command = plugins.all("commands").find((c) => c.shortcut === shortcut);
       if (command) {
