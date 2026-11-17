@@ -1,121 +1,55 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import {
-  Check,
-  Cloud,
-  Plus,
-  Radio,
-  RefreshCw,
-  Usb,
-  Wifi,
-} from "lucide-react";
 import { useStudio } from "../store/studio";
-import { cn } from "../lib/utils";
+import { useTransport } from "../store/transport";
+import { usePlugins } from "../plugins/usePlugins";
+import type { TransportPort } from "../plugins/api";
 import { CloseButton, Modal } from "./Dialogs";
 
 export function DevicesDialog() {
-  const { dialog, setDialog, addToast, deviceConnected } = useStudio();
-  const [selected, setSelected] = useState("board");
-
+  const { dialog, setDialog, setTab } = useStudio();
+  const registry = usePlugins();
+  const transports = registry.all("transports");
+  const io = useTransport();
+  const [selected, setSelected] = useState(() => transports[0]?.id ?? "");
+  const [addresses, setAddresses] = useState<Record<string, string>>({});
+  const [settings, setSettings] = useState<Record<string, Record<string, string>>>({});
+  const [ports, setPorts] = useState<TransportPort[]>([]);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const addressRef = useRef<HTMLInputElement>(null);
+  const revision = registry.getRevision();
+  const transport = registry.get("transports", selected);
+  const busy = ["connecting", "connected", "disconnecting"].includes(io.status);
+  const address = addresses[selected] ?? "";
+  const parameters = Object.fromEntries(transport?.parameters.map((field) => [field.key, settings[selected]?.[field.key] ?? field.initial]) ?? []);
+  const [refreshToken, setRefreshToken] = useState(0);
   useEffect(() => {
-    if (dialog === "devices") setSelected("board");
-  }, [dialog]);
-
-  return (
-    <Modal open={dialog === "devices"} onOpenChange={(open) => !open && setDialog(null)} width={566}>
-      <Dialog.Title className="sr-only">Devices</Dialog.Title>
-      <Dialog.Description className="sr-only">Manage the virtual board and cloud connections.</Dialog.Description>
-      <div className="flex items-start gap-3 px-5 pb-3 pt-4">
-        <div className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-[8px] bg-[#EEF4FB] text-[#3F6FA5]"><Radio size={17} strokeWidth={1.7} /></div>
-        <div className="flex-1">
-          <div className="text-[13px] font-semibold text-[#23272C]">Devices</div>
-          <div className="mt-0.5 text-[10px] text-[#90969E]">Virtual hardware and connected services for this project.</div>
-        </div>
-        <button className="flex h-[24px] items-center gap-1 rounded-[5px] px-1.5 text-[9px] text-[#7D848C] hover:bg-[#F1F3F5]" onClick={() => addToast({ title: "Devices refreshed", detail: "1 virtual board · 1 cloud link online", tone: "success" })}>
-          <RefreshCw size={10.5} /> Refresh
-        </button>
-        <CloseButton onClick={() => setDialog(null)} />
-      </div>
-
-      <div className="px-5 pb-4">
-        <div className="space-y-1.5">
-          {[
-            { id: "board", icon: Usb, title: "ESP32-S3 DevKitC-1", meta: "USB Serial/JTAG · COM3", status: deviceConnected ? "Connected" : "Offline", sub: "Virtual · This workspace" },
-            { id: "cloud", icon: Cloud, title: "Aether Cloud", meta: "MQTT · mqtt://aether.local", status: "Online", sub: "QoS 1 · 42 ms · env-monitor" },
-          ].map((device) => {
-            const Icon = device.icon;
-            return (
-              <button
-                key={device.id}
-                onClick={() => setSelected(device.id)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-[7px] border px-2.5 py-2.5 text-left transition-all",
-                  selected === device.id ? "border-[#B8D7F8] bg-[#F5FAFF]" : "border-[#E6E9ED] bg-white hover:border-[#D6DBE1]",
-                )}
-              >
-                <span className={cn("flex h-[30px] w-[30px] flex-none items-center justify-center rounded-[6px]", selected === device.id ? "bg-white text-[#2F7DCE] shadow-sm" : "bg-[#F3F5F7] text-[#68717B]")}>
-                  <Icon size={14} strokeWidth={1.7} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5 text-[10.5px] font-[550] text-[#343A41]">{device.title}</span>
-                  <span className="mt-[2px] block text-[8.5px] text-[#989EA6]">{device.meta} · {device.sub}</span>
-                </span>
-                <span className="flex items-center gap-1 text-[8.5px] font-medium text-[#2B7F58]">
-                  <span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" /> {device.status}
-                </span>
-                <span className={cn("ml-1 flex h-[15px] w-[15px] items-center justify-center rounded-full border", selected === device.id ? "border-[#007AFF] bg-[#007AFF]" : "border-[#D6DAE0] bg-white")}>
-                  {selected === device.id && <Check size={8.5} strokeWidth={3} className="text-white" />}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="mt-3 rounded-[7px] border border-[#E8EAEE]">
-          <div className="flex h-[27px] items-center justify-between border-b border-[#EEF0F3] px-3">
-            <span className="text-[9px] font-semibold text-[#5A6169]">{selected === "board" ? "Board details" : "Cloud link details"}</span>
-            <span className="text-[8px] text-[#A0A5AC]">{selected === "board" ? "Virtual hardware" : "MQTT 3.1.1"}</span>
-          </div>
-          <div className="grid grid-cols-3 gap-px bg-[#EEF0F3]">
-            {(selected === "board"
-              ? [
-                  ["Port", "COM3"], ["Baud rate", "115200"], ["Firmware", "MicroPython 1.23"],
-                  ["Flash", "8 MB"], ["PSRAM", "2 MB"], ["Uptime", "00:01:42"],
-                ]
-              : [
-                  ["Broker", "aether.local"], ["Port", "1883"], ["QoS", "1"],
-                  ["Client ID", "env-monitor-01"], ["Latency", "42 ms"], ["Keepalive", "60 s"],
-                ]
-            ).map(([label, value]) => (
-              <div key={label} className="bg-white px-3 py-2">
-                <div className="text-[8px] uppercase tracking-[0.04em] text-[#A2A7AE]">{label}</div>
-                <div className="mt-[2px] font-mono text-[9px] text-[#454C54]">{value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-3 flex items-center gap-2 rounded-[7px] border border-[#E8EAEE] bg-[#FAFBFC] px-3 py-2.5">
-          <Wifi size={13} className="text-[#6F7A86]" />
-          <div className="flex-1">
-            <div className="text-[9.5px] font-medium text-[#444A51]">AetherLab</div>
-            <div className="mt-[1px] text-[8px] text-[#9BA0A8]">192.168.1.42 · Wi-Fi 5 · RSSI −48 dBm</div>
-          </div>
-          <div className="flex items-end gap-[2px]">
-            {[3, 5, 7, 9].map((height, i) => (
-              <span key={i} className={cn("w-[2.5px] rounded-sm", i < 3 ? "bg-[#5B9EDD]" : "bg-[#DDE2E8]")} style={{ height }} />
-            ))}
-          </div>
-          <span className="ml-2 rounded-[4px] bg-[#EBF6EF] px-1.5 py-[2px] text-[8px] font-medium text-[#2B7F58]">Signal good</span>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between border-t border-[#ECEEF1] bg-[#FAFBFC] px-4 py-2.5">
-        <button className="flex items-center gap-1.5 text-[9px] text-[#6E767F] hover:text-[#007AFF]" onClick={() => addToast({ title: "Pair a device", detail: "Connect a physical board over USB to continue.", tone: "default" })}>
-          <Plus size={10.5} /> Pair physical device
-        </button>
-        <button className="btn btn-primary h-[27px] px-3 text-[10px]" onClick={() => setDialog(null)}>Done</button>
-      </div>
-    </Modal>
-  );
+    if (!registry.get("transports", selected)) setSelected(registry.all("transports")[0]?.id ?? "");
+  }, [revision, selected]);
+  useEffect(() => {
+    if (dialog !== "devices") return;
+    let current = true;
+    setPorts([]); setError(""); setLoading(!!transport?.list && !transport.unavailable);
+    if (transport?.list && !transport.unavailable) void transport.list().then((ports) => { if (current) setPorts(ports); }, (error) => { if (current) setError(String(error)); }).finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [dialog, selected, revision, refreshToken]);
+  return <Modal open={dialog === "devices"} onOpenChange={(open) => !open && setDialog(null)} onOpenAutoFocus={(event) => { event.preventDefault(); addressRef.current?.focus(); }}>
+    <div className="p-5">
+      <div className="flex justify-between"><Dialog.Title className="text-[14px] font-semibold">Devices</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div>
+      <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">选择通信插件和地址，建立连接后在 Serial Monitor 收发数据。Demo Simulation 独立运行。</Dialog.Description>
+      {!transports.length ? <p className="mt-4 text-xs text-[#9A702C]">没有已启用的通信插件。</p> : <form className="mt-4 space-y-3 text-[11px]" onSubmit={(event) => { event.preventDefault(); if (!busy && transport && !transport.unavailable) void io.connect(selected, { address: address.trim(), parameters }); }}>
+        <label className="block">通信插件<select aria-label="通信插件" disabled={busy} value={selected} onChange={(event) => setSelected(event.target.value)} className="input mt-1 w-full">{transports.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        {transport?.unavailable && <p role="status" className="rounded bg-[#FFF5E7] p-2 text-[#9A702C]">{transport.unavailable}</p>}
+        <label className="block">{transport?.endpoint.label}<input ref={addressRef} aria-label={transport?.endpoint.label} list={transport?.list ? "transport-addresses" : undefined} disabled={busy || !!transport?.unavailable} value={address} onChange={(event) => setAddresses({ ...addresses, [selected]: event.target.value })} placeholder={transport?.endpoint.placeholder} className="input mt-1 w-full" /></label>
+        <datalist id="transport-addresses">{ports.map((port) => <option key={port.path} value={port.path}>{port.label}</option>)}</datalist>
+        <div className="flex items-end gap-2">{transport?.parameters.map((field) => <label key={field.key} className="block flex-1">{field.label}<input aria-label={field.label} type={field.type} min={field.min} step={field.type === "number" ? "1" : undefined} disabled={busy} value={parameters[field.key]} onChange={(event) => setSettings({ ...settings, [selected]: { ...settings[selected], [field.key]: event.target.value } })} className="input mt-1 w-full" /></label>)}<div className="flex flex-1 justify-end gap-2">{transport?.list && <button type="button" className="btn px-3 py-1.5" disabled={loading || busy || !!transport.unavailable} onClick={() => setRefreshToken((token) => token + 1)}>{loading ? "正在枚举…" : "刷新端口"}</button>}<button type="submit" className="btn btn-primary px-3 py-1.5" disabled={busy || !address.trim() || !transport || !!transport.unavailable}>建立连接</button></div></div>
+        <p className="text-[10px] leading-5 text-[#90969E]">{transport?.description}</p>
+        {!loading && transport?.list && !transport.unavailable && ports.length === 0 && <p className="text-[10px] text-[#90969E]">未枚举到端口，可手动输入路径。</p>}
+      </form>}
+      <div className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]" role="status">{io.status === "connected" ? `已连接 ${io.label}` : io.status === "connecting" ? "正在建立连接…" : io.status === "disconnecting" ? "正在断开…" : "未建立连接"}</div>
+      {(error || io.error) && <p role="alert" className="mt-3 whitespace-pre-wrap text-[11px] text-[#A8741F]">{error || io.error}</p>}
+      <div className="mt-4 flex justify-end gap-2 text-[11px]"><button className="btn px-3 py-1.5" onClick={() => setDialog("plugins")}>管理插件</button>{["connecting", "connected"].includes(io.status) && <button className="btn px-3 py-1.5" onClick={() => void io.disconnect()}>断开连接</button>}<button className="btn px-3 py-1.5" onClick={() => { setDialog(null); setTab("serial"); }}>打开 Serial Monitor</button></div>
+    </div>
+  </Modal>;
 }

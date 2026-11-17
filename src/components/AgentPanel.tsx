@@ -1,3 +1,4 @@
+import { usePlugins } from "../plugins/usePlugins";
 import { useEffect, useRef, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { AnimatePresence, motion } from "motion/react";
@@ -96,21 +97,6 @@ function Refs({ refs }: { refs: AgentRef[] }) {
   );
 }
 
-function LiveStrip() {
-  return (
-    <div className="mt-2.5 flex items-center gap-2 rounded-[7px] border border-[#E7EEF6] bg-[#F8FBFF] px-2.5 py-[7px]">
-      <span className="h-[5px] w-[5px] flex-none rounded-full bg-[#2B9661] pulse-dot" />
-        <div className="min-w-0 flex-1">
-        <div className="text-[9.5px] font-medium text-[#4E5C6B]">Monitoring serial output</div>
-        <div className="mt-[1px] text-[8.5px] text-[#7F8894]">2.0 s cadence · 0 anomalies · COM3</div>
-      </div>
-      <svg width="43" height="15" viewBox="0 0 43 15" fill="none" className="flex-none opacity-70">
-        <path d="M1 10 L5 8 L9 10 L13 5 L17 7 L21 4 L25 8 L29 3 L33 6 L37 5 L42 7" stroke="#4C92D8" strokeWidth="1" strokeLinecap="round" />
-      </svg>
-    </div>
-  );
-}
-
 function Message({ message }: { message: AgentMessage }) {
   const { runAgent, applyFix, appliedFixIds, agentRunning } = useStudio();
   const [expanded, setExpanded] = useState(true);
@@ -184,6 +170,13 @@ function Message({ message }: { message: AgentMessage }) {
         <p className="mt-2.5 select-text text-[11px] leading-[1.63] text-[#5B6169]">{message.summary}</p>
       )}
 
+      {message.toolRuns && message.toolRuns.length > 0 && <div className="mt-3 space-y-1">
+        {message.toolRuns.map((tool, index) => <details key={tool.id + index} className="rounded border border-[#E4E7EB] p-2 text-[10px]"><summary className={tool.status === "error" ? "text-[#B35C42]" : "text-[#637B6B]"}>{tool.status === "error" ? "工具失败" : "工具已执行"} · {tool.name}</summary><pre className="mt-2 max-h-[180px] overflow-auto whitespace-pre-wrap text-[9px] text-[#8A9098]">{tool.detail}</pre></details>)}
+      </div>}
+      {message.proposals?.map((proposal) => <div key={proposal.id} className="mt-3 rounded-lg border border-[#CFE0F5] bg-[#F6FAFF] p-3 text-[11px]">
+        <div className="font-medium">{proposal.summary}</div><div className="my-2 break-all font-mono text-[9px] text-[#8A9098]">{proposal.changes.map((c) => c.path).join(", ")}</div>
+        {proposal.status === "pending" ? <button className="btn px-2 py-1" onClick={() => useStudio.getState().reviewProposal(message.id, proposal.id)}>预览文件修改</button> : <span>{proposal.status === "applied" ? "已应用到工作区" : "已拒绝 · 文件未改变"}</span>}
+      </div>)}
       {message.actions && (
         <div className="mt-2.5 flex items-center gap-1.5">
           <button
@@ -209,7 +202,7 @@ function Message({ message }: { message: AgentMessage }) {
         </div>
       )}
 
-      {message.live && <LiveStrip />}
+
     </div>
   );
 }
@@ -246,7 +239,10 @@ export function AgentPanel() {
     runAgent,
     addToast,
   } = useStudio();
-  const [mode, setMode] = useState("Build & Debug");
+  const registry = usePlugins();
+  const activeAgentId = useStudio((s) => s.activeAgentId);
+  const configuredModel = registry.get("agents", activeAgentId)?.name;
+  const [mode, setMode] = useState("Ask");
   const [model, setModel] = useState("Hardware Agent");
   const [listening, setListening] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -285,7 +281,7 @@ export function AgentPanel() {
     if (agentRunning) return;
     if (!agentDraft.trim()) {
       inputRef.current?.focus();
-      addToast({ title: "Describe a change", detail: "Tell Aether what to build, modify or debug.", tone: "default" });
+      addToast({ title: "写下问题", detail: "可以询问当前工程的代码、电路或调试思路。", tone: "default" });
       return;
     }
     runAgent();
@@ -308,7 +304,7 @@ export function AgentPanel() {
               </div>
               <div className="mt-[2px] flex items-center gap-1 text-[8.5px] text-[#858C94]">
                 <span className="h-[3px] w-[3px] rounded-full bg-[#B9BEC5]" />
-                Autonomous engineering
+                工程问答与文件修改建议
               </div>
             </div>
             <IconButton label="Collapse agent" className="h-[24px] w-[24px]" onClick={() => setAgentCollapsed(true)}>
@@ -321,78 +317,41 @@ export function AgentPanel() {
                 </button>
               </DropdownMenu.Trigger>
               <DropdownMenu.Content align="end" sideOffset={6} className="menu-content w-[224px]">
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.setState({ agentMessages: [] })}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => { useStudio.getState().cancelAgent(); useStudio.setState({ agentMessages: [] }); }}>
                   <RotateCcw size={12} /> New session
                 </DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.setState({ agentMessages: [] })}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => { useStudio.getState().cancelAgent(); useStudio.setState({ agentMessages: [] }); }}>
                   <History size={12} /> Clear conversation
                 </DropdownMenu.Item>
                 <DropdownMenu.Separator className="menu-sep" />
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Agent settings", detail: "Tool permissions: circuit, firmware, simulation.", tone: "default" })}>
+                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Agent settings", detail: "问答会发送当前工程上下文；自动执行工具尚未实现。", tone: "default" })}>
                   <Settings2 size={12} /> Agent permissions
                 </DropdownMenu.Item>
-                <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "No active run", detail: "Aether is idle and watching the simulation.", tone: "default" })}>
+                <DropdownMenu.Item className="menu-item" disabled={!agentRunning} onSelect={() => useStudio.getState().cancelAgent()}>
                   <Square size={11} /> Stop current run
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
             </DropdownMenu.Root>
           </div>
 
-          <div className="mt-2 flex items-center gap-1.5">
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className="flex h-[23px] items-center gap-1 rounded-[5px] border border-[#E4E7EB] bg-white px-1.5 text-[9px] font-medium text-[#545B63] hover:bg-[#F8F9FA]">
-                  <Hammer size={10} className="text-[#7A828B]" />
-                  {mode}
-                  <ChevronDown size={8} className="text-[#A2A7AE]" />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="start" sideOffset={5} className="menu-content w-[196px]">
-                <div className="menu-label">Agent mode</div>
-                {["Build & Debug", "Plan", "Review", "Ask"].map((item) => (
-                  <DropdownMenu.Item key={item} className="menu-item" onSelect={() => setMode(item)}>
-                    <Hammer size={12} className="text-[#818991]" /> {item}
-                    {mode === item && <Check size={11} className="ml-auto text-[#007AFF]" />}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className="flex h-[23px] items-center gap-1 rounded-[5px] border border-[#E4E7EB] bg-white px-1.5 text-[9px] font-medium text-[#545B63] hover:bg-[#F8F9FA]">
-                  <Cpu size={10} className="text-[#7A828B]" />
-                  {model}
-                  <ChevronDown size={8} className="text-[#A2A7AE]" />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="start" sideOffset={5} className="menu-content w-[214px]">
-                <div className="menu-label">Model</div>
-                {["Hardware Agent", "Fast Tool Use", "Deep Reasoning"].map((item) => (
-                  <DropdownMenu.Item key={item} className="menu-item" onSelect={() => { setModel(item); useStudio.getState().addToast({ title: "Agent model", detail: item + " selected for this session.", tone: "default" }); }}>
-                    <Sparkles size={11} className="text-[#818991]" /> {item}
-                    {model === item && <Check size={11} className="ml-auto text-[#007AFF]" />}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-            <span className="ml-auto flex items-center gap-1 text-[8px] tabular text-[#8F969E]">
-              <span className="h-[3px] w-[3px] rounded-full bg-[#2B9661]" /> 4 tools
-            </span>
+          <div className="mt-2 flex items-center gap-1.5 text-[9px] text-[#858C94]">
+            <select aria-label="Agent mode" className="rounded border border-[#E4E7EB] bg-white px-2 py-1" value={activeAgentId} onChange={(e) => useStudio.getState().setAgent(e.target.value)}>{!configuredModel && <option value="">未启用 Agent</option>}{registry.all("agents").map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select>
+            <button className="btn ml-auto px-2 py-1" onClick={() => useStudio.getState().setDialog("plugins")}>配置 API</button>
           </div>
         </div>
 
         <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3">
           <div className="mb-3 flex items-center gap-2">
             <span className="h-px flex-1 bg-[#ECEEF1]" />
-            <span className="text-[8px] font-medium text-[#B0B4BB]">Today · 12:04</span>
+            <span className="text-[8px] font-medium text-[#B0B4BB]">当前会话</span>
             <span className="h-px flex-1 bg-[#ECEEF1]" />
           </div>
 
           {agentMessages.length === 0 ? (
             <div className="mt-12 flex flex-col items-center px-6 text-center">
               <Orb size={44} />
-              <div className="mt-3 text-[12px] font-semibold text-[#33383E]">What should we build?</div>
-              <p className="mt-1 text-[10px] leading-[1.6] text-[#8F959D]">Aether can edit the circuit, write firmware, run the simulator and deploy to hardware.</p>
+              <div className="mt-3 text-[12px] font-semibold text-[#33383E]">询问当前工程</div>
+              <p className="mt-1 text-[10px] leading-[1.6] text-[#8F959D]">配置 API 后可进行工程问答；Project Tools 可提出文件修改，预览后手动应用。</p>
             </div>
           ) : (
             agentMessages.map((message) => <Message key={message.id} message={message} />)
@@ -406,22 +365,7 @@ export function AgentPanel() {
           <div className="mb-1.5 flex items-center gap-1">
             <span className="mr-0.5 text-[8px] font-medium text-[#AAAEB5]">Context</span>
             <span className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#F1F3F6] px-1.5 text-[8px] text-[#6D747C]"><CircuitBoard size={8.5} /> Circuit</span>
-            <span className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#F1F3F6] px-1.5 text-[8px] text-[#6D747C]"><FileCode2 size={8.5} /> main.py</span>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <button className="flex h-[18px] w-[18px] items-center justify-center rounded-[4px] text-[#A0A5AC] hover:bg-[#F1F3F6] hover:text-[#666D75]">
-                  <Plus size={10} />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content align="start" sideOffset={5} className="menu-content w-[218px]">
-                <div className="menu-label">Add context</div>
-                {["sensors.py", "config.json", "Serial output", "Full project"].map((item) => (
-                  <DropdownMenu.Item key={item} className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Context attached", detail: item + " added to this request.", tone: "default" })}>
-                    <FileCode2 size={11} className="text-[#818991]" /> {item}
-                  </DropdownMenu.Item>
-                ))}
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
+            <span className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#F1F3F6] px-1.5 text-[8px] text-[#6D747C]"><FileCode2 size={8.5} /> 当前工程文件</span>
           </div>
 
           <div className="agent-composer px-2.5 pb-1.5 pt-2">
@@ -436,7 +380,7 @@ export function AgentPanel() {
               }}
               rows={1}
               ref={inputRef}
-              placeholder="Ask Aether to build, modify or debug…"
+              placeholder="Ask about the code, circuit or debugging…"
               className="max-h-[90px] min-h-[32px] w-full resize-none bg-transparent text-[10.5px] leading-[1.55] text-[#343940] outline-none placeholder:text-[#A8ADB4]"
             />
             <div className="flex items-center gap-0.5 pt-1">
@@ -447,10 +391,10 @@ export function AgentPanel() {
                   </button>
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="start" side="top" sideOffset={6} className="menu-content w-[206px]">
-                  <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Context added", detail: "Circuit graph attached to the next message.", tone: "default" })}>
+                  <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "工程上下文", detail: "发送问答时会包含当前代码和电路数据。", tone: "default" })}>
                     <CircuitBoard size={12} /> Attach circuit
                   </DropdownMenu.Item>
-                  <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "Pin state added", detail: "GPIO 8, GPIO 9, GPIO 2 attached.", tone: "default" })}>
+                  <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().addToast({ title: "尚未实现", detail: "真实引脚状态读取需要通信插件。", tone: "default" })}>
                     <Cpu size={12} /> Attach pin state
                   </DropdownMenu.Item>
                 </DropdownMenu.Content>
@@ -458,35 +402,25 @@ export function AgentPanel() {
               <button className="flex h-[23px] w-[23px] items-center justify-center rounded-[5px] text-[#8A9098] hover:bg-[#F2F4F6] hover:text-[#545B63]" onClick={() => fileRef.current?.click()}>
                 <Paperclip size={12} />
               </button>
-              <input ref={fileRef} type="file" className="hidden" onChange={(e) => { if (e.target.files?.[0]) useStudio.getState().addToast({ title: "File attached", detail: e.target.files[0].name + " will be available to Aether.", tone: "success" }); e.target.value = ""; }} />
+              <input ref={fileRef} type="file" className="hidden" onChange={(e) => { if (e.target.files?.[0]) useStudio.getState().addToast({ title: "尚未实现", detail: "附件上传尚未接入；本次文件未发送。", tone: "default" }); e.target.value = ""; }} />
               <button
                 className={cn("flex h-[23px] w-[23px] items-center justify-center rounded-[5px] hover:bg-[#F2F4F6]", listening ? "bg-[#FDF0EE] text-[#D15345]" : "text-[#8A9098] hover:text-[#545B63]")}
-                onClick={() => {
-                  if (listening) return;
-                  setListening(true);
-                  useStudio.getState().addToast({ title: "Listening…", detail: "Speak your engineering request.", tone: "default" });
-                  window.setTimeout(() => {
-                    setListening(false);
-                    if (!useStudio.getState().agentDraft) setAgentDraft("Check the I2C warning and verify the sensor still samples at 2 seconds.");
-                    useStudio.getState().addToast({ title: "Voice captured", detail: "Transcript added to the composer.", tone: "success" });
-                  }, 1700);
-                }}
+                onClick={() => addToast({ title: "尚未实现", detail: "语音输入尚未接入。" })}
               >
                 {listening ? <span className="h-[7px] w-[7px] rounded-full bg-[#D15345] pulse-dot" /> : <Mic size={12} />}
               </button>
               <span className="ml-auto mr-2 hidden items-center gap-1 text-[8px] text-[#9AA0A8] min-[1500px]:flex">⌘↵ to run</span>
               <button
-                onClick={submit}
-                disabled={agentRunning}
+                onClick={() => agentRunning ? useStudio.getState().cancelAgent() : submit()}
                 className="flex h-[24px] items-center gap-1.5 rounded-[5.5px] bg-[#007AFF] px-2 text-[9.5px] font-medium text-white shadow-[0_1px_2px_rgba(0,84,178,0.24)] transition-colors hover:bg-[#006FE8] disabled:bg-[#C9D9EA] disabled:text-white/80 disabled:shadow-none"
               >
-                {agentRunning ? <Spinner size={10} /> : <ArrowUp size={11} strokeWidth={2.2} />}
-                {agentRunning ? "Working" : "Run"}
+                {agentRunning ? <Square size={10} /> : <ArrowUp size={11} strokeWidth={2.2} />}
+                {agentRunning ? "Stop" : "Run"}
               </button>
             </div>
           </div>
           <div className="mt-1.5 flex items-center justify-center gap-1 text-[8px] text-[#939AA2]">
-            <Sparkles size={7.5} /> Aether can edit files and hardware · Review before deploying
+            <Sparkles size={7.5} /> 文件修改需预览后应用 · 不执行真实硬件操作
           </div>
         </div>
       </aside>

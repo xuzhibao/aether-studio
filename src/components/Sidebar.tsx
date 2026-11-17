@@ -1,5 +1,7 @@
+import { usePlugins } from "../plugins/usePlugins";
 import { useState } from "react";
 import {
+  Puzzle,
   Activity,
   Braces,
   ChevronDown,
@@ -31,13 +33,14 @@ import { IconButton, SectionLabel, Tip } from "./ui";
 import { ResizeDivider } from "./ResizeDivider";
 
 const navigation = [
+  { id: "plugins", label: "Plugins", icon: Puzzle },
   { id: "overview", label: "Overview", icon: LayoutGrid },
   { id: "hardware", label: "Hardware", icon: Cpu },
   { id: "circuit", label: "Circuit", icon: Workflow },
   { id: "source", label: "Source Code", icon: FileCode2 },
   { id: "components", label: "Components", icon: Component, badge: "5" },
   { id: "simulation", label: "Simulation", icon: Activity },
-  { id: "devices", label: "Devices", icon: Radio, badge: "2" },
+  { id: "devices", label: "Devices", icon: Radio },
   { id: "tests", label: "Test Reports", icon: FlaskConical },
 ];
 
@@ -115,6 +118,9 @@ export function Sidebar() {
     addToast,
     setDialog,
   } = useStudio();
+  const registry = usePlugins();
+  const panels = registry.all("panels");
+  const files = useStudio((s) => s.files);
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0];
   const [rootOpen, setRootOpen] = useState(true);
   const [firmwareOpen, setFirmwareOpen] = useState(true);
@@ -172,7 +178,7 @@ export function Sidebar() {
         <div className="flex h-[42px] flex-none items-center justify-between pl-3.5 pr-2">
           <SectionLabel>Explorer</SectionLabel>
           <div className="flex items-center">
-            <IconButton label="New file" className="h-[24px] w-[24px]" onClick={() => addToast({ title: "New file", detail: "Choose a template from the command palette.", tone: "default" })}>
+            <IconButton label="New file" className="h-[24px] w-[24px]" onClick={() => setDialog("new-file")}>
               <Plus size={13} />
             </IconButton>
             <IconButton label="Collapse sidebar" className="h-[24px] w-[24px]" onClick={() => setSidebarCollapsed(true)}>
@@ -196,7 +202,7 @@ export function Sidebar() {
                 {item.id === "simulation" && (
                   <span className="flex items-center gap-1 text-[9px] font-medium text-[#2B9661]">
                     <span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" />
-                    Live
+                    Demo
                   </span>
                 )}
                 {item.id === "components" ? (
@@ -207,6 +213,7 @@ export function Sidebar() {
               </button>
             );
           })}
+          {panels.map((panel) => <button key={panel.id} className="sidebar-item w-full text-left" onClick={() => useStudio.getState().setTab("panel:" + panel.id)}><Puzzle size={13} />{panel.name}</button>)}
         </nav>
 
         <div className="mx-3 my-2.5 h-px flex-none bg-[#E9EBEE]" />
@@ -214,7 +221,7 @@ export function Sidebar() {
         <div className="flex min-h-0 flex-1 flex-col">
           <div className="flex flex-none items-center justify-between px-3.5 pb-1.5">
             <SectionLabel>Project files</SectionLabel>
-            <span className="text-[9px] text-[#AEB2B9]">7 files</span>
+            <span className="text-[9px] text-[#AEB2B9]">{Object.keys(files).filter((f) => f !== "circuit.json").length + 1} files</span>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-3">
             <button className="tree-row w-full gap-1.5 font-[520] text-[#33373D]" onClick={() => setRootOpen(!rootOpen)}>
@@ -227,24 +234,7 @@ export function Sidebar() {
 
             {rootOpen && (
               <div className="mt-0.5">
-                <FolderRow label="firmware" open={firmwareOpen} onToggle={() => setFirmwareOpen(!firmwareOpen)} depth={1} />
-                {firmwareOpen && (
-                  <div>
-                    <FileRow path="main.py" depth={2} />
-                    <FileRow path="sensors.py" depth={2} />
-                    <FileRow path="config.json" depth={2} />
-                  </div>
-                )}
-                <FolderRow label="hardware" open={hardwareOpen} onToggle={() => setHardwareOpen(!hardwareOpen)} depth={1} />
-                {hardwareOpen && (
-                  <div>
-                    <FileRow path="circuit.json" depth={2} />
-                    <FileRow path="esp32_s3.board" depth={2} />
-                  </div>
-                )}
-                <FolderRow label="tests" open={testsOpen} onToggle={() => setTestsOpen(!testsOpen)} depth={1} count={1} />
-                {testsOpen && <FileRow path="tests/check_i2c.py" depth={2} />}
-                <FileRow path="README.md" depth={1} />
+                <ProjectTree files={Object.keys(files)} />
               </div>
             )}
           </div>
@@ -256,9 +246,9 @@ export function Sidebar() {
                 <FileCode2 size={9.5} />
               </button>
             </div>
-            <p className="mt-1 text-[9px] leading-[1.55] text-[#7E858D]">Indoor climate node. BME280 on I²C bus 0, 2 s sampling, SSD1306 readout.</p>
+            <p className="mt-1 text-[9px] leading-[1.55] text-[#7E858D]">Demo Simulation 生成数据；不执行固件、不连接真实硬件。</p>
             <div className="mt-1.5 flex items-center gap-1.5">
-              <span className="flex items-center gap-1 text-[8px] text-[#2B7F58]"><span className="h-[3.5px] w-[3.5px] rounded-full bg-[#2B9661]" /> Checks passed</span>
+              <span className="flex items-center gap-1 text-[8px] text-[#2B7F58]"><span className="h-[3.5px] w-[3.5px] rounded-full bg-[#2B9661]" /> Demo only</span>
               <span className="text-[8px] text-[#C0C4CA]">·</span>
               <span className="text-[8px] text-[#A0A5AC]">Rev A</span>
             </div>
@@ -267,8 +257,8 @@ export function Sidebar() {
 
         <div className="flex-none border-t border-[#E9EBEE] px-2.5 pb-2.5 pt-2">
           <div className="mb-1 flex items-center justify-between px-1">
-            <SectionLabel>Connected</SectionLabel>
-            <button className="flex h-[18px] w-[18px] items-center justify-center rounded text-[#9BA0A8] hover:bg-[#ECEEF1] hover:text-[#565B63]" onClick={() => addToast({ title: "Devices refreshed", detail: "2 devices online · COM3 active", tone: "default" })}>
+            <SectionLabel>Demo Simulation</SectionLabel>
+            <button className="flex h-[18px] w-[18px] items-center justify-center rounded text-[#9BA0A8] hover:bg-[#ECEEF1] hover:text-[#565B63]" onClick={() => setDialog("devices")}>
               <RefreshCw size={10.5} />
             </button>
           </div>
@@ -281,10 +271,10 @@ export function Sidebar() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5">
-                <span className="truncate text-[10.5px] font-[520] text-[#3A3E44]">ESP32-S3 DevKitC-1</span>
+                <span className="truncate text-[10.5px] font-[520] text-[#3A3E44]">{project.board}</span>
                 <span className="h-[4px] w-[4px] flex-none rounded-full bg-[#2B9661]" />
               </span>
-              <span className="mt-[1px] block text-[9px] text-[#9CA1A8]">COM3 · 115200 baud · Virtual</span>
+              <span className="mt-[1px] block text-[9px] text-[#9CA1A8]">Demo output · 无真实设备</span>
             </span>
           </button>
           <button
@@ -296,10 +286,10 @@ export function Sidebar() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5">
-                <span className="truncate text-[10.5px] font-[520] text-[#3A3E44]">Aether Cloud</span>
+                <span className="truncate text-[10.5px] font-[520] text-[#3A3E44]">Cloud transport</span>
                 <span className="h-[4px] w-[4px] flex-none rounded-full bg-[#2B9661]" />
               </span>
-              <span className="mt-[1px] block text-[9px] text-[#9CA1A8]">MQTT · aether.local · 18 ms</span>
+              <span className="mt-[1px] block text-[9px] text-[#9CA1A8]">尚未实现</span>
             </span>
           </button>
         </div>
@@ -307,4 +297,14 @@ export function Sidebar() {
       <ResizeDivider axis="x" value={sidebarWidth} min={208} max={304} onChange={setSidebarWidth} />
     </div>
   );
+}
+
+function ProjectTree({ files, prefix = "", depth = 1 }: { files: string[]; prefix?: string; depth?: number }) {
+  const [closed, setClosed] = useState<string[]>([]);
+  const children = [...new Set(files.filter((file) => file.startsWith(prefix)).map((file) => file.slice(prefix.length).split("/")[0]))].sort();
+  return <>{children.map((name) => {
+    const key = prefix + name;
+    const directory = files.some((file) => file.startsWith(key + "/"));
+    return directory ? <div key={key}><FolderRow label={name} depth={depth} open={!closed.includes(key)} onToggle={() => setClosed(closed.includes(key) ? closed.filter((item) => item !== key) : [...closed, key])} />{!closed.includes(key) && <ProjectTree files={files} prefix={key + "/"} depth={depth + 1} />}</div> : <FileRow key={key} path={key} depth={depth} />;
+  })}</>;
 }

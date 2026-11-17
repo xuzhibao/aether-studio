@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { useStudio } from "../store/studio";
+import { usePlugins } from "../plugins/usePlugins";
 import { cn } from "../lib/utils";
 import { Tip } from "./ui";
 
@@ -23,9 +24,9 @@ const iconFor = (tab: string) => {
   return FileText;
 };
 
-const labelFor = (tab: string) => (tab === "circuit" ? "Circuit" : tab === "serial" ? "Serial Monitor" : tab.split("/").pop());
-
 export function TabBar() {
+  const registry = usePlugins();
+  const labelFor = (tab: string) => tab.startsWith("panel:") ? registry.get("panels", tab.slice(6))?.name ?? "Plugin panel" : tab === "circuit" ? "Circuit" : tab === "serial" ? "Serial Monitor" : tab.split("/").pop();
   const { openTabs, activeTab, setTab, closeTab, aiModifiedFiles, splitMode, setSplitMode, dockOpen, setDockOpen, addToast, saveProject } = useStudio();
   const pinned = new Set(["circuit", "serial"]);
 
@@ -42,6 +43,7 @@ export function TabBar() {
               className={cn("workspace-tab group", active && "active")}
               onClick={() => setTab(tab)}
               role="tab"
+              aria-label={labelFor(tab)}
               aria-selected={active}
             >
               <Icon size={11.5} strokeWidth={1.8} className={active ? "text-[#4D5B6C]" : "text-[#9AA0A8]"} />
@@ -57,7 +59,7 @@ export function TabBar() {
                     e.stopPropagation();
                     closeTab(tab);
                   }}
-                  aria-label={"Close " + tab}
+                  aria-label={"Close " + labelFor(tab)}
                 >
                   <X size={10} />
                 </button>
@@ -104,7 +106,7 @@ export function TabBar() {
               Fit canvas to view
             </DropdownMenu.Item>
             <DropdownMenu.Separator className="menu-sep" />
-            <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Layout saved", detail: "Panel arrangement restored on launch.", tone: "success" })}>
+            <DropdownMenu.Item className="menu-item" onSelect={() => useStudio.getState().saveLayout()}>
               Save panel layout
             </DropdownMenu.Item>
             <DropdownMenu.Item className="menu-item" onSelect={() => addToast({ title: "Tabs", detail: "All project files are available in the explorer.", tone: "default" })}>

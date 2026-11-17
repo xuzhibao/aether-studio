@@ -1,13 +1,27 @@
 {
   "name": "aether-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "typecheck": "tsc -b && tsc -p tsconfig.desktop.json",
+    "smoke": "node --import tsx scripts/smoke.ts",
+    "smoke:ui": "node scripts/smoke-ui.mjs",
+    "smoke:network": "node --import tsx scripts/smoke-network.ts",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "desktop": "npm run desktop:runtime && node scripts/dev-desktop.mjs",
+    "desktop:package": "npm run build && npm run build:desktop && npm run licenses && electron-builder --dir",
+    "smoke:host": "node --import tsx scripts/smoke-host.ts",
+    "smoke:desktop": "node scripts/smoke-electron.mjs",
+    "licenses": "npm run desktop:runtime && node scripts/licenses.mjs",
+    "desktop:runtime": "node node_modules/electron/install.js",
+    "smoke:language": "node --import tsx scripts/smoke-language.ts",
+    "smoke:terminal": "node --import tsx scripts/smoke-terminal.ts",
+    "desktop:release": "npm run build && npm run build:desktop && npm run licenses && electron-builder --publish never",
+    "smoke:release": "node scripts/smoke-release.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -19,25 +33,96 @@
     "@radix-ui/react-scroll-area": "^1.2.10",
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@tauri-apps/api": "^2.8.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "chokidar": "^4.0.3",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
     "monaco-editor": "^0.52.2",
     "motion": "^12.23.12",
+    "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "serialport": "^13.0.0",
     "tailwind-merge": "^2.6.0",
+    "vscode-jsonrpc": "^8.2.1",
+    "vscode-languageserver-protocol": "^3.17.5",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.8.4",
+    "@types/node": "^22.20.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.65.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.23.15",
     "typescript": "~5.6.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "ws": "^8.23.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "main": "desktop-dist/main.mjs",
+  "license": "Apache-2.0",
+  "description": "Plugin-based open source hardware development workspace",
+  "author": "Aether Studio contributors",
+  "build": {
+    "appId": "studio.aether.app",
+    "productName": "Aether Studio",
+    "files": [
+      "dist/**/*",
+      "desktop-dist/**/*",
+      "THIRD_PARTY_NOTICES.md",
+      "LICENSE",
+      "dist-licenses/**/*",
+      "NOTICE"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "category": "Development",
+      "executableName": "aether-studio"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "executableName": "AetherStudio"
+    },
+    "artifactName": "Aether-Studio-${version}-${os}-${arch}.${ext}",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "dmg": {
+      "sign": false
+    }
   }
 }

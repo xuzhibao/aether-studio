@@ -1,0 +1,112 @@
+name: Desktop release
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/workflows/smoke.yml
+      - package.json
+      - package-lock.json
+      - build/**
+      - scripts/smoke-release.mjs
+      - scripts/publish-release.cjs
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - package.json
+      - package-lock.json
+      - build/**
+      - scripts/smoke-release.mjs
+      - scripts/publish-release.cjs
+  workflow_dispatch:
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/smoke.yml
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            name: linux-x64
+            args: --linux --x64
+            executable: release/linux-unpacked/aether-studio
+          - runner: windows-2022
+            name: windows-x64
+            args: --win --x64
+            executable: release/win-unpacked/AetherStudio.exe
+          - runner: macos-15
+            name: macos-arm64
+            args: --mac --arm64
+            executable: release/mac-arm64/Aether Studio.app/Contents/MacOS/Aether Studio
+          - runner: macos-15-intel
+            name: macos-x64
+            args: --mac --x64
+            executable: release/mac/Aether Studio.app/Contents/MacOS/Aether Studio
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CSC_FOR_PULL_REQUEST: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run smoke
+      - if: runner.os == 'Linux'
+        run: npx playwright install-deps chromium
+      - run: npm run desktop:release -- ${{ matrix.args }}
+      - name: Launch packaged application
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            xvfb-run -a npm run smoke:release
+          else
+            npm run smoke:release
+          fi
+        env:
+          AETHER_PACKAGED_EXECUTABLE: ${{ matrix.executable }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-package-${{ matrix.name }}
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            release/Aether-Studio-*.exe
+            release/Aether-Studio-*.zip
+            release/Aether-Studio-*.dmg
+            release/Aether-Studio-*.AppImage
+            release/Aether-Studio-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-smoke-${{ matrix.name }}
+          retention-days: 7
+          path: smoke-results/
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [verify, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-package-*
+          path: release-assets
+          merge-multiple: true
+      - uses: actions/github-script@v7
+        with:
+          script: await require('./scripts/publish-release.cjs')({ github, context })

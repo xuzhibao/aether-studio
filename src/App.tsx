@@ -1,8 +1,13 @@
+import { connectDesktop, useDisk } from "./store/disk";
+import { ReviewChangesDialog } from "./components/ReviewChangesDialog";
+import { MotionConfig } from "motion/react";
+import { PluginsDialog } from "./components/PluginsDialog";
+import { plugins } from "./plugins/runtime";
 import { useEffect } from "react";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { AgentPanel } from "./components/AgentPanel";
 import { CommandPalette } from "./components/CommandPalette";
-import { DeployDialog, NewProjectDialog } from "./components/Dialogs";
+import { DeployDialog, NewFileDialog, NewProjectDialog } from "./components/Dialogs";
 import { DevicesDialog } from "./components/DevicesDialog";
 import { ProjectOverviewDialog } from "./components/ProjectOverviewDialog";
 import { TestsDialog } from "./components/TestsDialog";
@@ -14,7 +19,11 @@ import { Workspace } from "./components/Workspace";
 import { useStudio } from "./store/studio";
 
 export default function App() {
+  useEffect(() => connectDesktop(), []);
+  const disk = useDisk();
   const tick = useStudio((s) => s.tick);
+  const reducedMotion = useStudio((s) => s.settings.reducedMotion);
+  useEffect(() => { document.documentElement.dataset.reducedMotion = String(reducedMotion); }, [reducedMotion]);
 
   useEffect(() => {
     const timer = window.setInterval(() => tick(), 1000);
@@ -27,7 +36,17 @@ export default function App() {
       const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       const mod = event.metaKey || event.ctrlKey;
       const s = useStudio.getState();
+      if (useDisk.getState().busy) { event.preventDefault(); return; }
 
+      if (target?.closest("[data-plugin-keyboard]")) return;
+
+      const shortcut = [mod ? "mod" : "", event.shiftKey ? "shift" : "", event.key.toLowerCase()].filter(Boolean).join("+");
+      const command = plugins.all("commands").find((c) => c.shortcut === shortcut);
+      if (command) {
+        event.preventDefault();
+        void Promise.resolve().then(command.run).catch((error) => s.addToast({ title: "插件命令失败", detail: String(error), tone: "warn" }));
+        return;
+      }
       if (mod && event.key.toLowerCase() === "k") {
         event.preventDefault();
         s.setCommandOpen(!s.commandOpen);
@@ -74,9 +93,12 @@ export default function App() {
   }, []);
 
   return (
-    <TooltipProvider delayDuration={380} skipDelayDuration={180}>
+    <MotionConfig reducedMotion={reducedMotion ? "always" : "user"}><TooltipProvider delayDuration={380} skipDelayDuration={180}>
       <div className="app-shell">
+        {disk.busy && <div role="status" className="fixed inset-0 z-[200] flex items-center justify-center bg-white/60 text-sm text-[#59616A]">正在处理工程目录…</div>}
         <TopBar />
+        {disk.root && <div className="flex flex-none items-center gap-2 border-b border-[#E9EBEE] bg-white px-3 py-1 text-[10px]"><span className="min-w-0 flex-1 truncate" title={disk.root}>{disk.root}</span>{disk.changed && <span className="text-[#A8741F]">目录有外部变更</span>}<button className="btn px-2" disabled={disk.busy} onClick={() => { void disk.reload().catch((error) => useDisk.setState({ error: String(error) })); }}>重新读取（放弃未保存修改）</button></div>}
+        {disk.error && <div role="alert" className="flex gap-2 bg-[#FFF5E7] px-3 py-1 text-[11px] text-[#9A702C]">{disk.error}<button className="ml-auto" onClick={() => useDisk.setState({ error: "" })}>关闭</button></div>}
         <div className="flex min-h-0 flex-1">
           <Sidebar />
           <Workspace />
@@ -84,13 +106,16 @@ export default function App() {
         </div>
         <StatusBar />
         <CommandPalette />
+        <ReviewChangesDialog />
+        <PluginsDialog />
         <NewProjectDialog />
+        <NewFileDialog />
         <DeployDialog />
         <DevicesDialog />
         <TestsDialog />
         <ProjectOverviewDialog />
         <Toasts />
       </div>
-    </TooltipProvider>
+    </TooltipProvider></MotionConfig>
   );
 }

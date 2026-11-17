@@ -1,14 +1,4 @@
-export type ComponentKind =
-  | "board"
-  | "bme280"
-  | "oled"
-  | "led"
-  | "resistor"
-  | "buzzer"
-  | "button"
-  | "dht22"
-  | "soil"
-  | "servo";
+export type ComponentKind = string;
 
 export type PinSignal = "power" | "gnd" | "i2c" | "gpio" | "analog" | "pwm";
 export type PinDir = "left" | "right" | "up" | "down";
@@ -59,7 +49,7 @@ export interface SerialLine {
 
 export interface ConsoleLine {
   id: string;
-  source: "Build" | "Agent" | "Simulator" | "Deploy";
+  source: "Build" | "Agent" | "Simulator" | "Deploy" | "Plugin";
   text: string;
   tone?: "normal" | "muted" | "success" | "warn";
 }
@@ -78,6 +68,15 @@ export interface AgentRef {
   meta?: string;
 }
 
+export interface ToolRun { id: string; name: string; status: "done" | "error"; detail: string }
+export interface EditProposal {
+  id: string;
+  projectId: string;
+  summary: string;
+  changes: { path: string; before: string | null; after: string }[];
+  status: "pending" | "applied" | "rejected";
+}
+
 export interface AgentMessage {
   id: string;
   role: "user" | "agent";
@@ -88,6 +87,9 @@ export interface AgentMessage {
   summary?: string;
   actions?: boolean;
   live?: boolean;
+  error?: boolean;
+  toolRuns?: ToolRun[];
+  proposals?: EditProposal[];
 }
 
 export interface ProjectMeta {

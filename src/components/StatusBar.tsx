@@ -1,3 +1,7 @@
+import { useDisk } from "../store/disk";
+import { useLanguage } from "../store/language";
+import { usePlugins } from "../plugins/usePlugins";
+import { useTransport } from "../store/transport";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -9,6 +13,11 @@ import { useStudio } from "../store/studio";
 import { cn, formatElapsed } from "../lib/utils";
 
 export function StatusBar() {
+  const io = useTransport();
+  const root = useDisk((state) => state.root);
+  const language = useLanguage((state) => state.snapshot);
+  const registry = usePlugins();
+  const context = useStudio((s) => s.capabilities);
   const {
     runState,
     elapsed,
@@ -24,6 +33,10 @@ export function StatusBar() {
     agentCollapsed,
   } = useStudio();
 
+  const provider = language && registry.get("languages", language.provider);
+  const languageReady = provider && language.root === root && language.status === "ready";
+  const diagnostics = languageReady ? language.documents.flatMap((item) => item.diagnostics) : [];
+
   return (
     <footer className="flex h-[28px] flex-none items-center gap-2 border-t border-[#E5E8EC] bg-[#F8F9FA] px-3 text-[9.5px] text-[#6F757D]">
       <button
@@ -31,27 +44,27 @@ export function StatusBar() {
         onClick={() => (runState === "running" ? pauseSimulation() : runSimulation())}
       >
         <span className={cn("h-[5px] w-[5px] rounded-full", runState === "running" ? "bg-[#2B9661] pulse-dot" : "bg-[#C08A2E]")} />
-        {runState === "running" ? "Simulation Running" : "Simulation Paused"}
+        {runState === "running" ? "Demo Simulation Running" : "Demo Simulation Idle"}
       </button>
       <span className="font-mono text-[9px] tabular text-[#767D85]">{formatElapsed(elapsed)}</span>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
-      <span className="flex items-center gap-1"><Cpu size={10} className="text-[#878D95]" /> ESP32-S3 <span className="text-[#B8BCC2]">·</span> MicroPython</span>
+      <span className="flex items-center gap-1"><Cpu size={10} className="text-[#878D95]" /> {registry.get("boards", context.board)?.name || "File workspace"} <span className="text-[#B8BCC2]">·</span> {registry.get("toolchains", context.toolchain)?.name || "No toolchain"}</span>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
-      <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => { setDockOpen(true); setDockTab("console"); }}>
-        <CheckCircle2 size={10} className="text-[#2B9661]" /> {errors} Errors
+      <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => { if (languageReady) useStudio.getState().openFile("panel:" + provider.diagnosticsPanel); else { setDockOpen(true); setDockTab("console"); } }}>
+        <CheckCircle2 size={10} className="text-[#2B9661]" /> {languageReady && <span>C/C++ ·</span>} {languageReady ? diagnostics.filter((item) => item.severity === 1).length : errors} Errors
         <span className="mx-0.5 text-[#B8BCC2]">·</span>
-        <span className="flex items-center gap-1 text-[#986C1F]"><AlertTriangle size={10} /> {warnings} Warnings</span>
+        <span className="flex items-center gap-1 text-[#986C1F]"><AlertTriangle size={10} /> {languageReady ? diagnostics.filter((item) => item.severity === 2).length : warnings} Warnings</span>
       </button>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => setTab("serial")}>
-        <Usb size={10} className="text-[#7C838B]" /> Serial Connected
+        <Usb size={10} className="text-[#7C838B]" /> {io.status === "connected" ? "Transport · " + io.address : "Demo output · 无设备连接"}
       </button>
 
       <span className="flex-1" />
 
-      <button className="hidden items-center gap-1.5 text-[#7D848D] hover:text-[#3F454C] min-[1300px]:flex" onClick={() => addToast({ title: "Agent session", detail: agentRunning ? "Aether is executing a task." : "Aether is watching the simulation.", tone: "default" })}>
+      <button className="hidden items-center gap-1.5 text-[#7D848D] hover:text-[#3F454C] min-[1300px]:flex" onClick={() => addToast({ title: "Agent session", detail: agentRunning ? "Aether is executing a task." : "配置 API 后可发送工程问答。", tone: "default" })}>
         <Sparkles size={9.5} className={agentRunning ? "text-[#007AFF]" : "text-[#8A9098]"} />
-        {agentRunning ? "Agent working" : agentCollapsed ? "Agent collapsed" : "Agent · Build & Debug"}
+        {agentRunning ? "Agent working" : agentCollapsed ? "Agent collapsed" : "Agent · Ask"}
       </button>
       <span className="mx-0.5 hidden h-[11px] w-px bg-[#DFE2E6] min-[1300px]:block" />
       <span className="hidden tabular text-[#9CA1A8] min-[1200px]:inline">100%</span>

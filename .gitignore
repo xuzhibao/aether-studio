@@ -6,3 +6,14 @@ src-tauri/gen
 .DS_Store
 *.local
 *.tsbuildinfo
+
+smoke-results
+
+desktop-dist
+release
+dist-licenses
+**/.pio
+**/.aether
+*.aether-saving
+
+.venv

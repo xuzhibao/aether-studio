@@ -76,7 +76,7 @@ export function Inspector({ comp }: { comp: HwComponent }) {
           </div>
           <div className="mt-[3px] flex items-center gap-1.5 text-[9px] text-[#91969E]">
             <span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" />
-            {comp.kind === "board" ? "Simulated · online" : "Connected · " + connected.length + " nets"}
+            {comp.kind === "board" ? "开发板定义 · 无真实连接" : "图中连线 · " + connected.length + " nets"}
             <span className="text-[#C5C8CD]">·</span>
             <span>3.3 V</span>
           </div>
@@ -173,7 +173,7 @@ export function Inspector({ comp }: { comp: HwComponent }) {
           <FileCode2 size={10.5} /> Open in files
         </button>
         <Tip label="Pin usage details" side="top">
-          <button className="icon-btn ml-auto h-[23px] w-[23px]" onClick={() => addToast({ title: "Pin report", detail: "All selected nets are electrically valid.", tone: "success" })}>
+          <button className="icon-btn ml-auto h-[23px] w-[23px]" onClick={() => addToast({ title: "尚未实现", detail: "电气规则校验尚未接入。", tone: "default" })}>
             <Info size={12} />
           </button>
         </Tip>

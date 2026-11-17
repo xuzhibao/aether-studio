@@ -1,4 +1,8 @@
-import { useState } from "react";
+import { useDisk } from "../store/disk";
+import { useState, useEffect } from "react";
+import { Uri } from "monaco-editor";
+import { usePlugins } from "../plugins/usePlugins";
+import { useLanguage } from "../store/language";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import {
   ChevronRight,
@@ -13,6 +17,8 @@ import { cn } from "../lib/utils";
 import { Tip } from "./ui";
 
 const languageFor = (file: string) => {
+  if (/\.(cpp|hpp|cc|cxx|h|hh|hxx|c)$/.test(file)) return file.endsWith(".c") ? "c" : "cpp";
+  if (file.endsWith(".ini")) return "ini";
   if (file.endsWith(".py")) return "python";
   if (file.endsWith(".json")) return "json";
   if (file.endsWith(".md")) return "markdown";
@@ -20,6 +26,21 @@ const languageFor = (file: string) => {
 };
 
 export function EditorPane({ file }: { file: string }) {
+  const root = useDisk((state) => state.root);
+  const registry = usePlugins(); const revision = registry.getRevision();
+  const [mounted, setMounted] = useState<{ editor: Parameters<OnMount>[0]; monaco: Parameters<OnMount>[1] } | null>(null);
+  const modelUri = root ? Uri.file(root.replaceAll("\\", "/") + "/" + file).toString() : useStudio.getState().activeProjectId + "/" + file;
+  const jump = useLanguage((state) => state.jump);
+  useEffect(() => {
+    const model = mounted?.editor.getModel(); if (!mounted || !model || !root || model.uri.toString() !== modelUri) return;
+    const disposers = registry.all("languages").filter((item) => item.languageIds.includes(languageFor(file))).map((item) => item.attach({ ...mounted, model, root, file }));
+    return () => disposers.forEach((dispose) => dispose());
+  }, [mounted, root, file, revision, modelUri]);
+  useEffect(() => {
+    if (!mounted || jump?.file !== file || mounted.editor.getModel()?.uri.toString() !== modelUri) return;
+    mounted.editor.setPosition({ lineNumber: jump.range.start.line + 1, column: jump.range.start.character + 1 }); mounted.editor.revealLineInCenter(jump.range.start.line + 1); mounted.editor.focus(); useLanguage.setState({ jump: null });
+  }, [mounted, jump, file, modelUri]);
+  const diskBusy = useDisk((s) => s.busy);
   const content = useStudio((s) => s.files[file] ?? "");
   const updateFile = useStudio((s) => s.updateFile);
   const aiModified = useStudio((s) => s.aiModifiedFiles.includes(file));
@@ -85,25 +106,7 @@ export function EditorPane({ file }: { file: string }) {
   };
 
   const onMount: OnMount = (editor, monaco) => {
-    if (file === "main.py") {
-      editor.createDecorationsCollection([
-        {
-          range: new monaco.Range(18, 1, 25, 1),
-          options: { isWholeLine: true, className: "ai-line", glyphMarginClassName: "ai-glyph" },
-        },
-        {
-          range: new monaco.Range(12, 1, 12, 1),
-          options: {
-            after: { content: "   # Aether · verified at 400 kHz", inlineClassName: "ai-ghost" },
-          },
-        },
-      ]);
-    }
-    if (file === "sensors.py") {
-      editor.createDecorationsCollection([
-        { range: new monaco.Range(1, 1, 2, 1), options: { isWholeLine: true, className: "ai-line" } },
-      ]);
-    }
+    setMounted({ editor, monaco });
     editor.onDidChangeCursorPosition((event) => {
       setCursor({ line: event.position.lineNumber, column: event.position.column });
     });
@@ -120,7 +123,7 @@ export function EditorPane({ file }: { file: string }) {
         {dirty && <span className="ml-0.5 h-[4px] w-[4px] rounded-full bg-[#C08A2E]" />}
         <span className="mx-1.5 h-[12px] w-px bg-[#ECEEF1]" />
         {aiModified && (
-          <button className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#EEF5FF] px-1.5 text-[8.5px] font-medium text-[#2F6BAE] hover:bg-[#E4EFFF]" onClick={() => useStudio.getState().addToast({ title: "Aether changes", detail: aiModified ? "3 agent edits in " + file + " · verified" : "No agent edits", tone: "default" })}>
+          <button className="flex h-[18px] items-center gap-1 rounded-[4px] bg-[#EEF5FF] px-1.5 text-[8.5px] font-medium text-[#2F6BAE] hover:bg-[#E4EFFF]" onClick={() => useStudio.getState().addToast({ title: "Aether changes", detail: aiModified ? "此文件有修改标记；尚未进行编译或硬件验证。" : "No agent edits", tone: "default" })}>
             <Sparkles size={9} fill="currentColor" strokeWidth={0} />
             Agent modified
           </button>
@@ -145,8 +148,9 @@ export function EditorPane({ file }: { file: string }) {
       </div>
       <div className="relative min-h-0 flex-1">
         <Editor
-          key={file}
-          path={file}
+          key={modelUri}
+          path={modelUri}
+          keepCurrentModel={!!root}
           language={languageFor(file)}
           value={content}
           theme="aether-light"
@@ -156,6 +160,9 @@ export function EditorPane({ file }: { file: string }) {
           loading={<div className="flex h-full items-center justify-center text-[10px] text-[#9AA0A8]">Preparing editor…</div>}
           options={{
             automaticLayout: true,
+            // Monaco 0.52 word-highlight timers reject on disposal during definition navigation.
+            occurrencesHighlight: /\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/.test(file) ? "off" : "singleFile",
+            readOnly: diskBusy || file === "circuit.json",
             fontFamily: '"JetBrains Mono Variable", "SF Mono", monospace',
             fontSize,
             lineHeight: 21,
@@ -191,7 +198,7 @@ export function EditorPane({ file }: { file: string }) {
         <span>Ln {cursor.line}, Col {cursor.column}</span>
         <span>UTF-8</span>
         <span>Spaces: 4</span>
-        <span className="ml-auto flex items-center gap-1"><span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" /> MicroPython 1.23</span>
+        <span className="ml-auto flex items-center gap-1"><span className="h-[4px] w-[4px] rounded-full bg-[#2B9661]" /> Text editor</span>
       </div>
     </div>
   );

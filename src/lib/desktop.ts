@@ -1,15 +1,7 @@
-export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
+import type { DesktopAPI } from "../../shared/desktop";
+declare global { interface Window { aether?: DesktopAPI } }
+export const isDesktop = () => typeof window !== "undefined" && window.aether?.runtime === "electron";
 export async function windowAction(action: "close" | "minimize" | "maximize"): Promise<boolean> {
-  if (!isTauri()) return false;
-  try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const win = getCurrentWindow();
-    if (action === "close") await win.close();
-    if (action === "minimize") await win.minimize();
-    if (action === "maximize") await win.toggleMaximize();
-    return true;
-  } catch {
-    return false;
-  }
+  if (!isDesktop()) return false;
+  await window.aether!.window(action); return true;
 }

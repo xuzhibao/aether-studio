@@ -1,3 +1,4 @@
+import { usePlugins } from "../../plugins/usePlugins";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
@@ -16,7 +17,7 @@ import {
 import { useStudio } from "../../store/studio";
 import { clamp, cn, getPin, wireGeometry } from "../../lib/utils";
 import { IconButton, Tip } from "../ui";
-import { BoardPart, GenericPart, LedPart, OledPart, ResistorPart, SchematicPart, SensorPart } from "./parts";
+import { PluginPart } from "./PluginPart";
 import { Inspector } from "./Inspector";
 import { ComponentLibrary } from "./Library";
 import type { HwComponent } from "../../types";
@@ -156,46 +157,8 @@ function WirePreview({ start, zoom, pan }: { start: { comp: string; pin: string 
   );
 }
 
-function BoardHud() {
-  const { memory, runState, readings, cpu } = useStudio();
-  return (
-    <div className="hud-card pointer-events-auto absolute bottom-[18px] right-4 w-[243px] px-3 pb-2.5 pt-2.5">
-      <div className="flex items-center gap-1.5">
-        <span className={cn("h-[5px] w-[5px] rounded-full", runState === "running" ? "bg-[#2B9661] pulse-dot" : "bg-[#C08A2E]")} />
-        <span className="text-[10.5px] font-[560] text-[#2B2F35]">ESP32-S3</span>
-        <span className="ml-auto text-[9px] text-[#727A83]">{runState === "running" ? "Connected · Running" : "Paused"}</span>
-      </div>
-      <div className="mt-2 grid grid-cols-3 gap-2">
-        <div>
-          <div className="text-[8.5px] uppercase tracking-[0.06em] text-[#8C939B]">CPU</div>
-          <div className="mt-0.5 text-[10.5px] font-[520] tabular text-[#3E434A]">240 <span className="text-[8px] font-normal text-[#9BA0A8]">MHz</span></div>
-        </div>
-        <div>
-          <div className="text-[8.5px] uppercase tracking-[0.06em] text-[#A2A7AE]">Memory</div>
-          <div className="mt-0.5 flex items-center gap-1.5">
-            <span className="text-[10.5px] font-[520] tabular text-[#3E434A]">{memory}%</span>
-            <span className="h-[2.5px] w-8 overflow-hidden rounded-full bg-[#ECEEF1]">
-              <span className="block h-full rounded-full bg-[#5B9EDD]" style={{ width: memory + "%" }} />
-            </span>
-          </div>
-        </div>
-        <div>
-          <div className="text-[8.5px] uppercase tracking-[0.06em] text-[#A2A7AE]">GPIO</div>
-          <div className="mt-0.5 text-[10.5px] font-[520] tabular text-[#3E434A]">3<span className="text-[8px] font-normal text-[#9BA0A8]">/45</span></div>
-        </div>
-      </div>
-      <div className="mt-2 flex items-center gap-1.5 border-t border-[#EEF0F3] pt-1.5">
-        <Wifi size={9.5} className="text-[#7E858D]" />
-        <span className="text-[8.5px] text-[#7E858E]">AetherLab · −48 dBm</span>
-        <span className="ml-auto text-[8.5px] tabular text-[#92979F]">{readings.temperature.toFixed(1)}°C</span>
-        <span className="h-[2.5px] w-[2.5px] rounded-full bg-[#C7CBD0]" />
-        <span className="text-[8.5px] tabular text-[#92979F]">{readings.humidity.toFixed(0)}%</span>
-      </div>
-    </div>
-  );
-}
-
 export function CircuitCanvas() {
+  const registry = usePlugins();
   const {
     components,
     wires,
@@ -395,10 +358,9 @@ export function CircuitCanvas() {
     <div
       ref={canvasRef}
       className={cn("dot-grid canvas-vignette relative h-full w-full overflow-hidden", spaceDown ? "cursor-grab" : panning ? "cursor-grabbing" : "")}
-      onPointerDown={onBackgroundDown}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <svg id="circuit-scene" viewBox={view.x + " " + view.y + " " + view.w + " " + view.h} className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet">
+      <svg id="circuit-scene" onPointerDown={onBackgroundDown} viewBox={view.x + " " + view.y + " " + view.w + " " + view.h} className="absolute inset-0 h-full w-full" preserveAspectRatio="xMidYMid meet">
         <Defs />
         <g ref={groupRef} id="scene-group" transform={sceneTransform}>
           <g pointerEvents="none">
@@ -449,25 +411,13 @@ export function CircuitCanvas() {
             return (
               <g
                 key={comp.id}
+                data-component-id={comp.id}
+                data-component-kind={comp.kind}
                 className={cn("scene-part", draggingId === comp.id && "dragging", tool === "wire" && "cursor-crosshair")}
                 transform={"translate(" + comp.x + " " + comp.y + ")"}
                 onPointerDown={(e) => beginDrag(e, comp)}
               >
-                {viewMode === "schematic" ? (
-                  <SchematicPart comp={comp} />
-                ) : comp.kind === "board" ? (
-                  <BoardPart comp={comp} onPinClick={pinHandler} selectedPin={selectedPin} running={runState === "running"} connected={connectedPins} />
-                ) : comp.kind === "bme280" ? (
-                  <SensorPart comp={comp} onPinClick={pinHandler} selectedPin={selectedPin} />
-                ) : comp.kind === "oled" ? (
-                  <OledPart comp={comp} readings={readings} running={runState === "running"} onPinClick={pinHandler} selectedPin={selectedPin} />
-                ) : comp.kind === "resistor" ? (
-                  <ResistorPart comp={comp} onPinClick={pinHandler} selectedPin={selectedPin} />
-                ) : comp.kind === "led" ? (
-                  <LedPart comp={comp} on={ledOn} onPinClick={pinHandler} selectedPin={selectedPin} />
-                ) : (
-                  <GenericPart comp={comp} onPinClick={pinHandler} selectedPin={selectedPin} />
-                )}
+                <PluginPart comp={comp} schematic={viewMode === "schematic"} onPinClick={pinHandler} selectedPin={selectedPin} running={runState === "running"} connected={connectedPins} readings={readings} on={ledOn} />
               </g>
             );
           })}
@@ -549,7 +499,7 @@ export function CircuitCanvas() {
         </div>
       )}
 
-      <BoardHud />
+      {registry.all("overlays").filter((overlay) => !overlay.simulator || overlay.simulator === useStudio.getState().capabilities.simulator).map(({ id, render: Render }) => <Render key={id} readings={readings} running={runState === "running"} />)}
 
       {libraryOpen && <ComponentLibrary />}
       {!libraryOpen && selected && <Inspector comp={selected} />}

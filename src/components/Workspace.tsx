@@ -1,8 +1,9 @@
+import { usePlugins } from "../plugins/usePlugins";
 import { useCallback, useRef, useState } from "react";
 import { useStudio } from "../store/studio";
 import { CircuitCanvas } from "./circuit/CircuitCanvas";
 import { Dock } from "./Dock";
-import { EditorPane } from "./EditorPane";
+import { PluginEditor as EditorPane } from "./PluginEditor";
 import { SerialWorkspace } from "./SerialWorkspace";
 import { TabBar } from "./TabBar";
 import { clamp } from "../lib/utils";
@@ -41,25 +42,32 @@ function SplitDivider({ percent, onChange }: { percent: number; onChange: (p: nu
 }
 
 export function Workspace() {
+  const files = useStudio((s) => s.files);
+  const openTabs = useStudio((s) => s.openTabs);
+  const splitFile = [...openTabs].reverse().find((file) => file !== "circuit.json" && Object.hasOwn(files, file)) ?? Object.keys(files).find((file) => file !== "circuit.json");
   const activeTab = useStudio((s) => s.activeTab);
   const splitMode = useStudio((s) => s.splitMode);
-  const [leftWidth, setLeftWidth] = useState(58);
+  const plugins = usePlugins();
+  const panel = plugins.all("panels").find((p) => activeTab === "panel:" + p.id);
+  const Panel = panel?.render;
+  const leftWidth = useStudio((s) => s.splitRatio);
+  const setLeftWidth = useStudio((s) => s.setSplitRatio);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <TabBar />
       <div className="relative flex min-h-0 flex-1">
-        {activeTab === "circuit" ? (
+        {Panel ? <Panel /> : activeTab.startsWith("panel:") ? <div className="p-5 text-xs text-[#9A702C]">此面板的插件已停用。</div> : activeTab === "circuit" ? (
           <div className="flex min-h-0 flex-1 flex-col">
             <div className="flex min-h-0 flex-1">
               <div className="min-w-0" style={{ width: splitMode ? leftWidth + "%" : "100%" }}>
                 <CircuitCanvas />
               </div>
-              {splitMode && (
+              {splitMode && splitFile && (
                 <>
                   <SplitDivider percent={leftWidth} onChange={setLeftWidth} />
                   <div className="min-w-0 flex-1">
-                    <EditorPane file="main.py" />
+                    <EditorPane file={splitFile} />
                   </div>
                 </>
               )}
