@@ -7,8 +7,10 @@ export interface TerminalProvider { id: string; executable: string; args: string
 interface Session { state: TerminalSnapshot; process: pty.IPty; pending: string; paused: boolean; done: Promise<void>; stopping?: Promise<void> }
 const exec = promisify(execFile);
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const signal = (pid: number, name: NodeJS.Signals) => { try { process.kill(pid, name); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; } };
-const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } };
+// A PID from the scanned session may have exited or been reused by a process we cannot signal.
+const unkillable = (error: NodeJS.ErrnoException) => error.code === "ESRCH" || error.code === "EPERM";
+const signal = (pid: number, name: NodeJS.Signals) => { try { process.kill(pid, name); } catch (error) { if (!unkillable(error as NodeJS.ErrnoException)) throw error; } };
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { if (unkillable(error as NodeJS.ErrnoException)) return false; throw error; } };
 export class TerminalService {
   private providers = new Map<string, TerminalProvider>();
   private session?: Session;
@@ -74,7 +76,7 @@ export class TerminalService {
       for (const pid of targets) signal(pid, "SIGTERM");
       for (let n = 0; n < 10 && targets.some(alive); n++) await sleep(50);
       for (const pid of targets.filter(alive)) signal(pid, "SIGKILL");
-      if (wasRunning) session.process.kill("SIGKILL");
+      if (wasRunning) { try { session.process.kill("SIGKILL"); } catch (error) { if (!unkillable(error as NodeJS.ErrnoException)) throw error; } }
     }
     await session.done;
   }
