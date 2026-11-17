@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ToolStatus } from "../../shared/tools";
 
 const sources: Record<ToolStatus["source"], string> = { setting: "插件设置", environment: "环境变量", path: "PATH" };
@@ -10,6 +10,7 @@ export function ToolPathField({ tool, label, placeholder, help }: { tool: string
   const [status, setStatus] = useState<ToolStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const edited = useRef(false);
   useEffect(() => {
     if (!api) return;
     let live = true;
@@ -23,7 +24,8 @@ export function ToolPathField({ tool, label, placeholder, help }: { tool: string
     void api.list().then(async (list) => {
       adopt(list);
       const item = list.find((entry) => entry.id === tool);
-      if (item) setValue(item.configured);
+      // A slow initial list must not overwrite a value the user already typed or saved.
+      if (item && !edited.current) setValue(item.configured);
       const measured = await api.status(tool);
       if (live) setStatus(measured);
     }).catch((issue) => { if (live) setError(String(issue)); });
@@ -42,7 +44,7 @@ export function ToolPathField({ tool, label, placeholder, help }: { tool: string
   };
   const browse = async () => {
     setError("");
-    try { const picked = await api.pick(tool); if (picked) { setValue(picked); await save(picked); } }
+    try { const picked = await api.pick(tool); if (picked) { edited.current = true; setValue(picked); await save(picked); } }
     catch (issue) { setError(issue instanceof Error ? issue.message : String(issue)); }
   };
   const detect = async () => {
@@ -55,7 +57,7 @@ export function ToolPathField({ tool, label, placeholder, help }: { tool: string
     <p className="mb-1 font-medium">{label}</p>
     <div className="flex gap-1.5">
       <input aria-label={label} className="input w-full text-[11px]" placeholder={placeholder} value={value} spellCheck={false}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => { edited.current = true; setValue(event.target.value); }}
         onBlur={() => { if (value.trim() !== (status?.configured ?? "")) void save(); }}
         onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void save(); } }} />
       <button type="button" className="btn whitespace-nowrap px-2 py-1" aria-label={`选择 ${label}`} onClick={browse} disabled={busy}>浏览…</button>

@@ -286,7 +286,7 @@ function DiskChangesDialog() {
                   keepCurrentOriginalModel
                   keepCurrentModifiedModel
                   onMount={(editor) => { editor.getModel()?.original.setValue(change.disk ?? ""); editor.getModel()?.modified.setValue(local ?? ""); }}
-                  options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, automaticLayout: true }}
+                  options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, automaticLayout: true, occurrencesHighlight: "off" }}
                 />
               </div>
               <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#ECEEF1] px-3 py-2">

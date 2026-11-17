@@ -192,6 +192,7 @@ try {
   const toolInput = toolField.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true });
   await toolInput.fill(process.execPath);
   await toolInput.press('Enter');
+  await until(async () => (await toolInput.inputValue()) === process.execPath);
   await until(async () => JSON.parse(await fs.readFile(path.join(profile, 'tools.json'), 'utf8').catch(() => '{}')).paths?.platformio === process.execPath);
   await pluginsDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await closeApp();
@@ -216,13 +217,20 @@ try {
   await page.getByRole('button', { name: 'Stop terminal', exact: true }).click();
   await page.locator('[data-terminal-status="stopped"]').waitFor();
 
+  // Save dirty buffers through the normal path (a refused save must fail) before switching projects.
+  await page.locator('nav').getByRole('button', { name: 'Source Code', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'a.txt', exact: true }).click();
+  await page.locator('.monaco-editor .view-lines').first().click();
+  await page.keyboard.press(saveKey);
+  await until(async () => (await page.getByText('Unsaved changes', { exact: true }).count()) === 0);
+
   // The same file name in another project previews that project's content, not a cached model.
   const second = path.join(temp, 'second-project'); await fs.mkdir(second, { recursive: true });
   await fs.writeFile(path.join(second, 'a.txt'), 'second-project-buffer\n');
   const secondRoot = await fs.realpath(second);
   await app.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, secondRoot);
-  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
-  await command('Open project folder');
+  await page.locator('nav').getByRole('button', { name: 'Build Tasks', exact: true }).click();
+  await page.getByRole('button', { name: 'Open project folder', exact: true }).click();
   await page.getByText(secondRoot, { exact: true }).first().waitFor();
   await fs.writeFile(path.join(secondRoot, 'a.txt'), 'second-project-external\n');
   await page.getByText('目录有外部变更', { exact: true }).waitFor();

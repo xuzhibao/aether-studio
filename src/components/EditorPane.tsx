@@ -167,7 +167,8 @@ export function EditorPane({ file }: { file: string }) {
           options={{
             automaticLayout: true,
             // Monaco 0.52 word-highlight timers reject on disposal during definition navigation.
-            occurrencesHighlight: /\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/.test(file) ? "off" : "singleFile",
+            // Monaco 0.52 WordHighlighter cancels its own request on restore/dispose without a handled rejection.
+            occurrencesHighlight: "off",
             readOnly: diskBusy || file === "circuit.json",
             fontFamily: '"JetBrains Mono Variable", "SF Mono", monospace',
             fontSize,
