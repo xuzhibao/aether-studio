@@ -16,12 +16,12 @@ export interface ToolDefinition {
 
 interface StoredTools { version: 1; paths: Record<string, string> }
 
-const commandSyntax = /["'`\r\n\0;|<>]|\$\(|&&|\|\|/;
 const shellScript = /\.(bat|cmd|ps1)$/i;
 const looksLikePath = (value: string) => path.isAbsolute(value) || value.includes("/") || value.includes("\\");
 
+// A setting is always one literal executable path, handed to execFile/spawn as a single argument with shell:false.
+// Characters such as ;, &, quotes or $ in a path are therefore data, not shell syntax, and are allowed.
 export const validateToolSetting = (value: string) => {
-  if (commandSyntax.test(value)) throw new Error("工具设置只接受单个可执行文件路径，不接受命令、参数或 shell 语法");
   if (shellScript.test(value)) throw new Error("工具设置只接受可执行文件，不支持 .bat、.cmd 或 .ps1，因为桌面端不通过 shell 启动工具");
 };
 
@@ -152,7 +152,7 @@ export class ToolService {
     let error = locationError;
     if (located.available) {
       const cached = this.versions.get(id);
-      if (!measure && cached?.executable === located.executable) version = cached.version;
+      if (!measure && cached?.executable === located.executable) { version = cached.version; error = cached.error; }
       if (measure) {
         const measured = await this.probe(located.executable, definition.versionArgs);
         this.versions.set(id, { executable: located.executable, version: measured.version, error: measured.error });
