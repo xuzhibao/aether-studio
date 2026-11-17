@@ -19,6 +19,8 @@ export function RecoveryDialog() {
   const [file, setFile] = useState<string | null>(null);
   const diskRoot = useDisk((state) => state.root);
   const diskFiles = useDisk((state) => state.diskFiles);
+  const diskCircuit = useDisk((state) => state.diskCircuit);
+  const diskManifest = useDisk((state) => state.diskManifest);
   const active = drafts.find((draft) => draft.root === selected) ?? drafts[0];
   useEffect(() => { void refresh(); }, []);
   useEffect(() => {
@@ -32,7 +34,17 @@ export function RecoveryDialog() {
   }, [active?.root]);
   const text = preview && file && Object.hasOwn(preview.context.files, file) ? preview.context.files[file] : "";
   // A disk change during the crash window is shown before restoring and stays a per-file conflict afterwards.
-  const changedOnDisk = preview && diskRoot === preview.root ? Object.entries(preview.disk ?? {}).filter(([name, value]) => diskFiles[name] !== value).map(([name]) => name) : [];
+  // The comparison covers every path the restored buffer could write, including files that appeared on disk.
+  const changedOnDisk = preview && diskRoot === preview.root ? (() => {
+    const base = preview.disk ?? {};
+    const names = new Set([...Object.keys(base), ...Object.keys(preview.context.files)]);
+    return [...names].filter((name) => name !== "circuit.json" && (Object.hasOwn(base, name) ? base[name] : null) !== (Object.hasOwn(diskFiles, name) ? diskFiles[name] : null)).sort();
+  })() : [];
+  // Circuit and manifest are host-managed, so their downtime changes need an explicit warning.
+  const changedHost = preview && diskRoot === preview.root ? [
+    ...(preview.host?.circuit !== undefined && preview.host.circuit !== diskCircuit ? ["hardware/circuit.json"] : []),
+    ...(preview.host?.manifest !== undefined && preview.host.manifest !== diskManifest ? ["aether.project.json"] : []),
+  ] : [];
   return (
     <Modal open onOpenChange={(open) => { if (!open) later(); }} width={1000}>
       <div className="flex items-start justify-between px-5 pb-3 pt-4">
@@ -69,6 +81,7 @@ export function RecoveryDialog() {
               </p>
               {preview && <p className="mt-1 text-[9px] text-[#9AA0A8]">电路上下文：{preview.context.components.length} 个元件 · {preview.context.wires.length} 条连线 · 内容版本 {preview.revision}</p>}
               {changedOnDisk.length > 0 && <p role="alert" className="mt-2 rounded-[5px] bg-[#FFF7E8] px-2 py-1 text-[9px] leading-4 text-[#966A22]">磁盘在草稿写入后已变化：{changedOnDisk.join("、")}。恢复后保存会被拦住，需要先按文件选择磁盘版本或保留本地内容。</p>}
+              {changedHost.length > 0 && <p role="alert" className="mt-2 rounded-[5px] bg-[#FFF7E8] px-2 py-1 text-[9px] leading-4 text-[#966A22]">电路或工程元数据在草稿写入后已变化：{changedHost.join("、")}。恢复后整工程保存会被阻止；请另存工程到新目录，或重新读取磁盘版本。</p>}
             </div>
             {active.error ? <div className="m-4 rounded-[6px] border border-[#F2D9D4] bg-[#FDF1EF] p-3 text-[10px] leading-5 text-[#A6402F]">
               <p className="flex items-center gap-1.5 font-medium"><AlertTriangle size={11} />{active.error}</p>

@@ -63,23 +63,35 @@ export const useRecovery = create<RecoveryState>((set, get) => ({
         dialog: null, selectedId: null, selectedPin: null, wireStart: null, proposalReview: null,
       });
       if (current) {
-        // The draft remembers the disk text it was based on. If the disk changed while the app was down,
-        // keep that older baseline so the existing per-file review and whole-project save guard stay in force.
-        const diskNow = useDisk.getState().diskFiles;
-        const synced = { ...useDisk.getState().synced };
+        // The draft remembers the disk text it was based on. Any difference against the current disk is a change
+        // made while the app was down; only files the restored buffer would write can overwrite it silently.
+        const disk = useDisk.getState();
+        const diskNow = disk.diskFiles;
+        const synced = { ...disk.synced };
         const conflicts: string[] = [];
-        for (const [name, text] of Object.entries(draft.disk ?? {})) {
-          if (name === "circuit.json" || Object.hasOwn(diskNow, name) && diskNow[name] === text) continue;
-          synced[name] = text; conflicts.push(name);
+        const names = new Set([...Object.keys(draft.disk ?? {}), ...Object.keys(workspace.files)]);
+        for (const name of names) {
+          if (name === "circuit.json") continue;
+          const base = draft.disk && Object.hasOwn(draft.disk, name) ? draft.disk[name] : null;
+          const now = Object.hasOwn(diskNow, name) ? diskNow[name] : null;
+          if (base === now) continue;
+          // Keep the draft's baseline so the existing per-file review compares against what the buffer was based on.
+          if (base === null) delete synced[name]; else synced[name] = base;
+          if (Object.hasOwn(workspace.files, name)) conflicts.push(name);
         }
-        useDisk.setState({ synced, recoveryConflicts: conflicts, changed: conflicts.length > 0 });
+        // Circuit and manifest are host-managed; the host baseline is the current disk, so a downtime change
+        // would be overwritten without a renderer-side guard. Detect it and require save-as or reload.
+        const hostConflicts: string[] = [];
+        if (draft.host?.circuit !== undefined && draft.host.circuit !== disk.diskCircuit) hostConflicts.push("hardware/circuit.json");
+        if (draft.host?.manifest !== undefined && draft.host.manifest !== disk.diskManifest) hostConflicts.push("aether.project.json");
+        useDisk.setState({ synced, recoveryConflicts: conflicts, recoveryHostConflicts: hostConflicts, changed: conflicts.length > 0 || disk.changed });
       }
       // Remember the draft's own root: the project directory may be gone and the user may save to a new folder.
       inMemoryRestoredRoot = draft.root;
       // The restored content becomes a new revision; the old draft stays until a save or discard processes it.
       contentRevision = Math.max(Date.now(), contentRevision + 1, draft.revision + 1);
       lastContent = ""; lastTabs = "";
-      schedule(0);
+      schedule(0, current ?? draft.root);
       set({ preview: null, restoring: false });
       await closeRecoveryDialog();
       useStudio.getState().addToast({ title: "已恢复未保存内容", detail: "内容已进入缓冲区，尚未写入磁盘；保存前仍会检查磁盘外部修改。", tone: "success" });
@@ -112,36 +124,44 @@ let contentRevision = Date.now();
 let lastContent = "";
 let lastTabs = "";
 let timer: ReturnType<typeof setTimeout> | undefined;
+let timerRoot: string | null = null;
 let started = false;
-// A save or discard must not leave a draft behind when an autosave was already in flight.
-let clearedRevision = 0;
+// A save or discard suppresses only its own project root and revision: clearing an unrelated root must
+// neither cancel a pending draft write nor hide newer edits made during the save.
+const cleared = new Map<string, number>();
 let inMemoryRestoredRoot: string | null = null;
 
 async function writeDraft() {
   const [{ useDisk }, { useStudio }] = await Promise.all([import("./disk"), import("./studio")]);
-  const root = useDisk.getState().root;
+  // A draft restored while its project directory was gone has no disk root yet; keep saving it in memory-only form.
+  const root = useDisk.getState().root ?? inMemoryRestoredRoot;
   const state = useStudio.getState();
   if (!root || !isDesktop() || !state.dirty) return;
   const revision = contentRevision;
-  if (revision <= clearedRevision) return;
-  const synced = useDisk.getState().synced;
+  if (revision <= (cleared.get(root) ?? 0)) return;
+  const disk = useDisk.getState();
   const draft: RecoveryDraft = {
     version: 1, root, revision, updatedAt: new Date().toISOString(), context: state.getProjectContext(),
-    disk: Object.fromEntries(Object.entries(synced).filter(([name]) => name !== "circuit.json")),
+    disk: Object.fromEntries(Object.entries(disk.synced).filter(([name]) => name !== "circuit.json")),
+    host: { circuit: disk.diskCircuit, manifest: disk.diskManifest },
     openTabs: state.openTabs.filter((tab) => tab === "circuit" || tab === "serial" || Object.hasOwn(state.files, tab)),
     activeTab: state.activeTab,
   };
   try {
     await api().save(draft); useRecovery.setState({ error: "" });
     // The save cleared the draft while this write was in flight; remove only that exact revision again.
-    if (revision <= clearedRevision) await api().clear(root, revision);
+    if (revision <= (cleared.get(root) ?? 0)) await api().clear(root, revision);
   } catch (error) { useRecovery.setState({ error: "恢复草稿写入失败：" + (error instanceof Error ? error.message : String(error)) }); }
 }
 
-function schedule(delay = 700) {
+function schedule(delay = 700, root: string | null = null) {
   clearTimeout(timer);
+  timerRoot = root;
   timer = setTimeout(() => { void writeDraft(); }, delay);
 }
+
+/** A save or discard only cancels the pending write of the root it actually processed. */
+function stopTimerFor(root: string) { if (timerRoot === root) { clearTimeout(timer); timerRoot = null; } }
 
 /** Monotonic revision of the buffer content, used to clear only the version that was actually saved. */
 export const recoveryRevision = () => contentRevision;
@@ -155,12 +175,27 @@ export async function refreshRecoveryDrafts() {
   } catch (error) { useRecovery.setState({ error: "读取恢复草稿失败：" + (error instanceof Error ? error.message : String(error)) }); }
 }
 
+/** Persist the current buffer as a draft right now; used before an old root's draft is superseded. */
+export async function flushRecoveryDraft() {
+  if (!isDesktop()) return;
+  await writeDraft();
+}
+
 /** After a successful whole-project save, clear the draft only when no newer edit happened during the save. */
 export async function noteRecoverySaved(root: string, revision: number) {
   if (!isDesktop()) return;
   if (contentRevision !== revision) return;
-  clearedRevision = Math.max(clearedRevision, revision);
-  clearTimeout(timer);
+  cleared.set(root, Math.max(cleared.get(root) ?? 0, revision));
+  stopTimerFor(root);
+  try { await api().clear(root, revision); }
+  catch (error) { useRecovery.setState({ error: "清理恢复草稿失败：" + (error instanceof Error ? error.message : String(error)) }); }
+  if (inMemoryRestoredRoot === root) inMemoryRestoredRoot = null;
+  await refreshRecoveryDrafts();
+}
+
+/** A snapshot written to a new folder is processed even if the buffer changed meanwhile; keep any newer draft. */
+export async function noteRecoverySavedRevision(root: string, revision: number) {
+  if (!isDesktop()) return;
   try { await api().clear(root, revision); }
   catch (error) { useRecovery.setState({ error: "清理恢复草稿失败：" + (error instanceof Error ? error.message : String(error)) }); }
   if (inMemoryRestoredRoot === root) inMemoryRestoredRoot = null;
@@ -170,8 +205,8 @@ export async function noteRecoverySaved(root: string, revision: number) {
 /** Reload/explicit discard: the user confirmed dropping these buffers, so the root's draft is stale. */
 export async function noteRecoveryDiscarded(root: string) {
   if (!isDesktop()) return;
-  clearedRevision = Math.max(clearedRevision, contentRevision);
-  clearTimeout(timer);
+  cleared.set(root, Math.max(cleared.get(root) ?? 0, contentRevision));
+  stopTimerFor(root);
   try { await api().discard(root); } finally { if (inMemoryRestoredRoot === root) inMemoryRestoredRoot = null; await refreshRecoveryDrafts(); }
 }
 
@@ -191,7 +226,8 @@ export async function startRecovery() {
   await refreshRecoveryDrafts();
   const observe = () => {
     const state = useStudio.getState();
-    const root = useDisk.getState().root;
+    // In-memory restores of a deleted root have no disk root, but their edits must still update the draft.
+    const root = useDisk.getState().root ?? inMemoryRestoredRoot;
     const content = JSON.stringify({ root, files: state.files, components: state.components, wires: state.wires, capabilities: state.capabilities, projectId: state.activeProjectId });
     const contentChanged = content !== lastContent;
     if (contentChanged) {
@@ -202,7 +238,7 @@ export async function startRecovery() {
     // Tab switches do not create new content, but they are part of the draft and still schedule a write.
     if (!contentChanged && tabs === lastTabs) return;
     lastTabs = tabs;
-    if (root && state.dirty) schedule();
+    if (root && state.dirty) schedule(700, root);
   };
   useStudio.subscribe(observe);
   useDisk.subscribe(observe);

@@ -4,7 +4,8 @@ import { useStudio } from "./studio";
 import { useTransport } from "./transport";
 import type { DiskWorkspace, TaskSnapshot } from "../../shared/desktop";
 import { plugins } from "../plugins/runtime";
-import { recoveryRevision, recoveryRestoredRoot, noteRecoverySaved, noteRecoveryDiscarded, recoveryOnRootOpened, startRecovery } from "./recovery";
+import { decodeProject, encodeProject } from "../../shared/projectFormat";
+import { recoveryRevision, recoveryRestoredRoot, flushRecoveryDraft, noteRecoverySaved, noteRecoverySavedRevision, noteRecoveryDiscarded, recoveryOnRootOpened, startRecovery } from "./recovery";
 export type DiskChangeKind = "modified" | "deleted" | "added";
 export interface DiskChange { file: string; kind: DiskChangeKind; disk: string | null; local: string | null; dirty: boolean }
 interface DiskState {
@@ -12,6 +13,10 @@ interface DiskState {
   directories: string[]; synced: Record<string, string>; diskFiles: Record<string, string>;
   /** Files whose disk text changed after the recovery draft was written; resolved per file. */
   recoveryConflicts: string[];
+  /** Host-managed files changed after the draft was written; only save-as or reload can resolve them. */
+  recoveryHostConflicts: string[];
+  /** Disk text of the host-managed files at the last adopt/save, used to detect downtime changes on restore. */
+  diskCircuit: string; diskManifest: string;
   adopt: (disk: DiskWorkspace) => void; open: () => Promise<void>; saveAs: () => Promise<void>; reload: () => Promise<void>;
   save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<void>; cancel: (id: string) => Promise<void>;
   refresh: () => Promise<void>; acceptDisk: (file: string) => Promise<void>; keepLocal: (file: string) => Promise<void>; saveFile: (file: string) => Promise<void>;
@@ -19,6 +24,11 @@ interface DiskState {
 const desktop = () => { if (!isDesktop()) throw new Error("此功能需要 Electron 桌面端"); return window.aether!; };
 // The virtual circuit view mirrors components/wires; the host writes it as part of a project save.
 const persisted = (files: Record<string, string>) => Object.fromEntries(Object.entries(files).filter(([name]) => name !== "circuit.json"));
+// Normalize like the host does before writing, so a draft snapshot compares byte-for-byte with the real files.
+const normalized = (context: DiskWorkspace["context"]) => decodeProject(encodeProject(context));
+const circuitText = (context: DiskWorkspace["context"]) => JSON.stringify({ components: context.components, wires: context.wires }, null, 2);
+const manifestText = (context: DiskWorkspace["context"]) => JSON.stringify({ format: "aether-directory", version: 1, project: context.project, capabilities: context.capabilities }, null, 2);
+const diskHostFiles = (context: DiskWorkspace["context"]) => ({ diskCircuit: circuitText(context), diskManifest: manifestText(context) });
 
 /** Per-file comparison between the last synced disk content and the current disk content. */
 export function diskChanges(): DiskChange[] {
@@ -39,34 +49,71 @@ export function diskChanges(): DiskChange[] {
 export const useDisk = create<DiskState>((set, get) => {
   const recompute = () => set({ changed: diskChanges().length > 0 });
   return {
-  root: null, changed: false, busy: false, tasks: [], error: "", directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [],
+  root: null, changed: false, busy: false, tasks: [], error: "", directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [], recoveryHostConflicts: [], diskCircuit: "", diskManifest: "",
   adopt: ({ root, context, directories }) => {
     const { project, ...workspace } = context;
     useStudio.getState().cancelAgent(); void useTransport.getState().disconnect();
     useStudio.setState({ projects: [project], activeProjectId: project.id, workspaces: { [project.id]: workspace }, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(workspace.files).filter((name) => name !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [], agentMessages: [], proposalReview: null });
     const synced = persisted(workspace.files);
-    set({ root, changed: false, error: "", directories: directories ?? [], synced, diskFiles: synced, recoveryConflicts: [] }); plugins.emit("project:opened", { root, id: project.id });
+    set({ root, changed: false, error: "", directories: directories ?? [], synced, diskFiles: synced, recoveryConflicts: [], recoveryHostConflicts: [], ...diskHostFiles(context) }); plugins.emit("project:opened", { root, id: project.id });
   },
-  open: async () => { set({ busy: true }); try { const result = await desktop().workspace.open(); if (result) { get().adopt(result); void recoveryOnRootOpened(result.root).catch((error) => set({ error: String(error) })); } } finally { set({ busy: false }); } },
-  saveAs: async () => { set({ busy: true }); const previous = get().root; const restored = recoveryRestoredRoot(); try { const result = await desktop().workspace.saveAs(useStudio.getState().getProjectContext()); if (result) { get().adopt(result); const source = previous ?? restored; if (source) void noteRecoveryDiscarded(source).catch(() => {}); } } finally { set({ busy: false }); } },
+  open: async () => {
+    set({ busy: true });
+    const previous = get().root; const hadUnsaved = useStudio.getState().dirty;
+    try {
+      const result = await desktop().workspace.open();
+      if (result) {
+        get().adopt(result);
+        // The user confirmed abandoning unsaved changes in the host's close prompt; do not resurrect them on restart.
+        if (previous && hadUnsaved) await noteRecoveryDiscarded(previous).catch(() => {});
+        await recoveryOnRootOpened(result.root).catch((error) => set({ error: String(error) }));
+      }
+    } finally { set({ busy: false }); }
+  },
+  saveAs: async () => {
+    set({ busy: true });
+    const previous = get().root; const restored = recoveryRestoredRoot();
+    const state = useStudio.getState(); const context = state.getProjectContext(); const revision = recoveryRevision();
+    try {
+      const result = await desktop().workspace.saveAs(context);
+      if (!result) return;
+      const current = useStudio.getState();
+      // Edits made while the folder was being written are newer than the saved snapshot; keep them in the buffer.
+      const changed = current.files !== state.files || current.components !== state.components || current.wires !== state.wires || current.capabilities !== state.capabilities;
+      const newer = changed ? { files: current.files, components: current.components, wires: current.wires, capabilities: current.capabilities, openTabs: current.openTabs, activeTab: current.activeTab, dirty: true } : null;
+      get().adopt(result);
+      if (newer) useStudio.setState(newer);
+      // Only the revision that reached the new folder is processed; a newer draft for the old root is kept.
+      const source = previous ?? restored;
+      if (source) {
+        if (newer) {
+          // The newer buffer now belongs to the new project: persist it there first, then retire the old root's draft.
+          await flushRecoveryDraft().catch(() => {});
+          await noteRecoveryDiscarded(source).catch(() => {});
+        } else await noteRecoverySavedRevision(source, revision).catch(() => {});
+      }
+    } finally { set({ busy: false }); }
+  },
   reload: async () => { set({ busy: true }); const previous = get().root; try { get().adopt(await desktop().workspace.reload()); if (previous) await noteRecoveryDiscarded(previous); } finally { set({ busy: false }); } },
   save: async () => {
     const state = useStudio.getState(); const context = state.getProjectContext();
     const unresolved = get().recoveryConflicts.filter((file) => Object.hasOwn(context.files, file));
     if (unresolved.length) throw new Error("磁盘内容在恢复草稿写入后已发生变化：" + unresolved.join("、") + "。请先按文件处理磁盘变更，或另存工程。");
+    const hostConflicts = get().recoveryHostConflicts;
+    if (hostConflicts.length) throw new Error("电路或工程元数据在恢复草稿写入后已发生变化：" + hostConflicts.join("、") + "。请另存工程到新目录，或重新读取磁盘版本；不会覆盖磁盘内容。");
     const root = get().root; const revision = recoveryRevision();
     await desktop().workspace.save(context);
     const current = useStudio.getState();
     if (current.files === state.files && current.components === state.components && current.wires === state.wires) useStudio.setState({ dirty: false });
     // Use the snapshot that was actually written; a buffer edited during the await stays dirty.
     const synced = persisted(context.files);
-    set((s) => ({ changed: false, error: "", synced, diskFiles: { ...s.diskFiles, ...synced }, recoveryConflicts: [] }));
+    set((s) => ({ changed: false, error: "", synced, diskFiles: { ...s.diskFiles, ...synced }, recoveryConflicts: [], recoveryHostConflicts: [], ...diskHostFiles(normalized(context)) }));
     plugins.emit("project:saved", { root: get().root, id: context.project.id });
     // Only the revision that was actually written is cleared; edits made during the save keep their newer draft.
     if (root) void noteRecoverySaved(root, revision).catch(() => {});
     await get().refresh();
   },
-  detach: () => { if (!get().root) return; set({ root: null, changed: false, directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [] }); void desktop().workspace.close().catch((error) => set({ error: String(error) })); },
+  detach: () => { if (!get().root) return; set({ root: null, changed: false, directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [], recoveryHostConflicts: [], diskCircuit: "", diskManifest: "" }); void desktop().workspace.close().catch((error) => set({ error: String(error) })); },
   refresh: async () => {
     if (!get().root || !isDesktop()) return;
     const listing = await desktop().workspace.files.listing();

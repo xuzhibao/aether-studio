@@ -18,6 +18,8 @@ protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard
 if (process.env.AETHER_USER_DATA_DIR) { mkdirSync(process.env.AETHER_USER_DATA_DIR, { recursive: true }); app.setPath("userData", path.resolve(process.env.AETHER_USER_DATA_DIR)); }
 let window: BrowserWindow;
 let dirty = false;
+// Set once the user explicitly confirms discarding unsaved changes; late autosaves must not resurrect a draft.
+let abandoned = false;
 const confirmClose = (detail = "选择放弃修改将关闭窗口。") => {
   if (!dirty) return true;
   const discard = dialog.showMessageBoxSync(window, { type: "question", message: "工程有未保存修改", detail, buttons: ["取消", "放弃修改并继续"], defaultId: 0, cancelId: 0 }) === 1;
@@ -59,7 +61,8 @@ function routes() {
   handle("files:import", async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project", properties: ["openFile"], filters: [{ name: "Aether Project", extensions: ["aether", "json"] }] }); return result.canceled ? null : fs.readFile(result.filePaths[0], "utf8"); });
   handle("workspace:setDirty", (value: boolean) => { dirty = value === true; });
   // Recovery drafts are plain files in the user data directory; they never write into the project folder.
-  handle("recovery:save", (draft) => recovery.save(draft));
+  // After an explicit "discard changes" at quit time, ignore writes so the draft cannot reappear.
+  handle("recovery:save", (draft) => abandoned ? Promise.resolve() : recovery.save(draft));
   handle("recovery:list", () => recovery.list());
   handle("recovery:read", (root: string) => recovery.read(root));
   handle("recovery:clear", (root: string, revision: number) => recovery.clear(root, revision));
@@ -115,8 +118,12 @@ function routes() {
 let quitting = false;
 app.on("before-quit", (event) => {
   if (quitting) return;
-  event.preventDefault(); if (!confirmClose()) return; dirty = false; quitting = true;
-  void enqueue(async () => { await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]); }).finally(() => app.quit());
+  event.preventDefault(); const hadUnsaved = dirty; if (!confirmClose()) return; if (hadUnsaved) abandoned = true; dirty = false; quitting = true;
+  void enqueue(async () => {
+    // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
+    if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
+    await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+  }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
 // Keep the ESM entry import complete so Electron can reach its ready event.
@@ -130,7 +137,7 @@ void app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(file).href);
   });
   window = new BrowserWindow({ width: 1728, height: 1080, minWidth: 1180, minHeight: 760, frame: false, backgroundColor: "#F5F6F8", webPreferences: { preload: path.join(directory, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false } });
-  window.on("close", (event) => { if (!confirmClose()) event.preventDefault(); else dirty = false; });
+  window.on("close", (event) => { const hadUnsaved = dirty; if (!confirmClose()) event.preventDefault(); else { if (hadUnsaved) abandoned = true; dirty = false; } });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   routes();

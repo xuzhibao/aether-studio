@@ -12,6 +12,8 @@ export interface RecoveryDraft {
   context: ProjectContext;
   /** Disk text this draft was based on; a later disk change stays visible as a per-file conflict. */
   disk?: Record<string, string>;
+  /** Host-managed files (circuit view and project manifest) as they were when the draft was written. */
+  host?: { circuit?: string; manifest?: string };
   openTabs: string[];
   activeTab: string;
 }

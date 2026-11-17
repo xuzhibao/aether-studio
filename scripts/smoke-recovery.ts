@@ -94,9 +94,20 @@ try {
   assert.match(list[0].error, /恢复草稿已损坏/);
   await assert.rejects(() => service.read(root), /损坏/);
   assert.equal(await fs.readFile(path.join(root, "src/main.cpp"), "utf8"), files["src/main.cpp"], "project source is untouched by a damaged draft");
+  // A damaged draft is never silently replaced by the next autosave; explicit discard is required.
+  await assert.rejects(() => service.save(draft(41, "Overwrite attempt")), /已损坏，未覆盖/);
+  assert.equal(await fs.readFile(path.join(stored!.dir, "draft.json"), "utf8"), "{ this is not json", "damaged draft bytes are preserved");
   assert.equal(await service.clear(root, 999), false, "an unreadable draft is not silently deleted by a save");
   assert.equal(await service.discard(root), true, "explicit discard removes a damaged draft");
   assert.equal((await service.list()).length, 0);
+
+  // Host-managed snapshots (circuit and manifest) round-trip and are validated like other draft fields.
+  const withHost = { ...draft(45, "Host snapshot"), host: { circuit: "{\n  \"components\": [],\n  \"wires\": []\n}", manifest: "{\n  \"format\": \"aether-directory\"\n}" } };
+  await service.save(withHost);
+  assert.deepEqual((await service.read(root)).host, withHost.host);
+  await assert.rejects(() => service.save({ ...draft(46, "Bad host"), host: { circuit: 7 as never } }), /宿主文件/);
+  assert.equal((await service.read(root)).revision, 45, "invalid host snapshot is refused without touching the draft");
+  assert.equal(await service.discard(root), true);
 
   // A deleted project directory is reported without blocking the draft.
   await service.save(draft(50, "Deleted root"));
@@ -116,7 +127,7 @@ try {
 
   await assert.rejects(() => service.save({ ...draft(70), root: "relative/path" }), /绝对路径/);
   await assert.rejects(() => service.save({ ...draft(70), revision: -1 }), /版本号/);
-  console.log("PASS recovery: per-root atomic drafts, revision-only clearing, newer edits during save, stale-write refusal, damaged-draft isolation, deleted root detection, size refusal, no project writes");
+  console.log("PASS recovery: per-root atomic drafts, revision-only clearing, newer edits during save, stale-write refusal, damaged-draft isolation and overwrite refusal, host snapshot round-trip, deleted root detection, size refusal, no project writes");
 } finally {
   await fs.rm(directory, { recursive: true, force: true });
   await fs.rm(temporary, { recursive: true, force: true });

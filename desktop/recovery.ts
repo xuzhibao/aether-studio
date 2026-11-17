@@ -30,6 +30,10 @@ const checkDraft = (draft: RecoveryDraft) => {
     if (!draft.disk || typeof draft.disk !== "object" || Array.isArray(draft.disk)) throw new Error("恢复草稿的磁盘快照无效");
     for (const [name, text] of Object.entries(draft.disk)) if (typeof name !== "string" || typeof text !== "string") throw new Error("恢复草稿的磁盘快照只能保存文本");
   }
+  if (draft.host !== undefined) {
+    if (!draft.host || typeof draft.host !== "object" || Array.isArray(draft.host)) throw new Error("恢复草稿的宿主文件快照无效");
+    for (const [name, text] of Object.entries(draft.host)) if (!["circuit", "manifest"].includes(name) || typeof text !== "string") throw new Error("恢复草稿的宿主文件快照只能保存电路与工程元数据");
+  }
   if (!Array.isArray(draft.openTabs) || typeof draft.activeTab !== "string") throw new Error("恢复草稿的标签页信息无效");
 };
 const summaryOf = (draft: RecoveryDraft, root: string, size: number, rootExists: boolean): RecoverySummary => ({
@@ -66,10 +70,14 @@ export class RecoveryService {
     await fs.mkdir(dir, { recursive: true });
     const existing = await this.readFile(draft.root);
     if (existing) {
-      let stored: RecoveryDraft | null = null;
-      try { stored = JSON.parse(existing.text) as RecoveryDraft; } catch { stored = null; }
+      let stored: RecoveryDraft;
+      try { stored = JSON.parse(existing.text) as RecoveryDraft; checkDraft(stored); }
+      catch (error) {
+        // Never replace bytes we cannot read: the damaged draft may still be recoverable by hand.
+        throw new Error("未写入恢复草稿：已有草稿已损坏，未覆盖。请先在恢复窗口丢弃此草稿，或手动备份后处理：" + path.join(dir, draftName) + "（" + (error instanceof Error ? error.message : String(error)) + "）");
+      }
       // A late write from an older editing session must not replace newer content.
-      if (stored && Number.isSafeInteger(stored.revision) && stored.revision > draft.revision) return;
+      if (Number.isSafeInteger(stored.revision) && stored.revision > draft.revision) return;
     }
     await this.writeAtomic(path.join(dir, rootName), draft.root);
     await this.writeAtomic(path.join(dir, draftName), text);
