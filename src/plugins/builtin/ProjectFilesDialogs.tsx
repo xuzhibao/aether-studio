@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { DiffEditor } from "@monaco-editor/react";
+import { DiffEditor, useMonaco } from "@monaco-editor/react";
 import { AlertTriangle, FilePlus2, FolderPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { CloseButton, Modal } from "../../components/Dialogs";
 import { useDisk, diskChanges } from "../../store/disk";
@@ -199,11 +199,17 @@ function DeleteEntryDialog({ target, directory }: { target: string; directory: b
 }
 
 const changeLabel = { modified: "磁盘已修改", deleted: "磁盘已删除", added: "磁盘新增" } as const;
+let diffSession = 0;
 
 function DiskChangesDialog() {
   const close = useProjectFiles((state) => state.close);
   const initial = useProjectFiles((state) => state.dialog);
   const disk = useDisk();
+  const root = useDisk((state) => state.root) ?? "";
+  const monaco = useMonaco();
+  const [session] = useState(() => ++diffSession);
+  const modelPaths = useRef(new Set<string>());
+  const touch = (kind: "disk" | "buffer", file: string) => `inmemory://aether/${encodeURIComponent(root)}/${session}/${kind}/${encodeURIComponent(file)}`;
   const changes = diskChanges();
   const [selected, setSelected] = useState<string | null>(initial && initial.kind === "changes" ? initial.file ?? null : null);
   const [error, setError] = useState("");
@@ -216,6 +222,17 @@ function DiskChangesDialog() {
     try { await action(); } catch (failure) { setError(errorText(failure)); } finally { setBusy(false); }
   };
   const local = change?.local ?? null;
+  const diskPath = change ? touch("disk", change.file) : "";
+  const localPath = change ? touch("buffer", change.file) : "";
+  if (change) { modelPaths.current.add(diskPath); modelPaths.current.add(localPath); }
+  useEffect(() => {
+    return () => {
+      const paths = [...modelPaths.current];
+      if (!monaco || !paths.length) return;
+      // The DiffEditor disposes its widget in a child cleanup; release the kept models after that.
+      setTimeout(() => { for (const path of paths) monaco.editor.getModel(monaco.Uri.parse(path))?.dispose(); }, 0);
+    };
+  }, [monaco]);
   return (
     <Modal open onOpenChange={(open) => !open && close()} width={1040}>
       <div className="flex items-start justify-between p-5">
@@ -264,10 +281,11 @@ function DiskChangesDialog() {
                   original={change.disk ?? ""}
                   modified={local ?? ""}
                   language={languageFor(change.file)}
-                  originalModelPath={"inmemory://aether/disk/" + encodeURIComponent(change.file)}
-                  modifiedModelPath={"inmemory://aether/buffer/" + encodeURIComponent(change.file)}
+                  originalModelPath={diskPath}
+                  modifiedModelPath={localPath}
                   keepCurrentOriginalModel
                   keepCurrentModifiedModel
+                  onMount={(editor) => { editor.getModel()?.original.setValue(change.disk ?? ""); editor.getModel()?.modified.setValue(local ?? ""); }}
                   options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, automaticLayout: true }}
                 />
               </div>

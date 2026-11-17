@@ -19,7 +19,8 @@ const launch = async () => {
   app = await electron.launch({ ...(process.env.AETHER_PACKAGED_EXECUTABLE ? { executablePath: process.env.AETHER_PACKAGED_EXECUTABLE, args: ['--no-sandbox'] } : { args: ['.', '--no-sandbox'] }), env, timeout: 30000 });
   page = await app.firstWindow();
   page.on('pageerror', (error) => errors.push('pageerror: ' + (error.stack ?? error.message)));
-  page.on('console', (message) => { if (message.type() === 'error') errors.push('console.error: ' + message.text() + ' @ ' + JSON.stringify(message.location())); });
+  // Monaco logs a canceled view-state restore/dispose during editor teardown; it is not a product error.
+  page.on('console', (message) => { const text = message.text(); if (message.type() === 'error' && !(/^Canceled: Canceled/.test(text) && /(restoreViewState|clearAndDisposeAll)/.test(text))) errors.push('console.error: ' + text + ' @ ' + JSON.stringify(message.location())); });
   await page.getByRole('button', { name: 'Plugins', exact: true }).first().waitFor();
   await app.evaluate(({ dialog }, { root, portable }) => {
     // Only the OS picker result is stubbed. All project and bundle I/O uses the real host.
@@ -152,8 +153,8 @@ try {
   assert.equal(await read('src/main.cpp'), before + '// external version\n');
   await page.getByRole('button', { name: '重新读取（放弃未保存修改）', exact: true }).click();
   await page.getByRole('button', { name: 'New file', exact: true }).click();
-  await page.getByRole('textbox', { name: 'File path', exact: true }).fill('src/extra.h');
-  await page.getByRole('button', { name: 'Create file', exact: true }).click(); await page.keyboard.press('Control+s');
+  await page.getByRole('textbox', { name: 'New file path', exact: true }).fill('src/extra.h');
+  await page.getByRole('button', { name: 'Create', exact: true }).click(); await page.keyboard.press('Control+s');
   await until(async () => !!(await fs.stat(path.join(root, 'src/extra.h')).catch(() => null)));
   await page.getByRole('button', { name: 'Build Tasks', exact: true }).click();
   await page.getByRole('button', { name: 'Build with PlatformIO', exact: true }).click();

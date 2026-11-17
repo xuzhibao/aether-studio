@@ -21,7 +21,7 @@ try {
   await fs.cp("examples/platformio-native", root, { recursive: true, filter: (source) => !source.split(path.sep).includes(".pio") });
   await fs.writeFile(path.join(root, file), code);
   await fs.writeFile(path.join(root, "src/math.hpp"), "#pragma once\ninline int sensor_value(int input) { return input + 1; }\n");
-  await workspace.open(root); tasks.register(platformio.platformioCompileDatabase);
+  await workspace.open(root); const canonical = workspace.root!; tasks.register(platformio.platformioCompileDatabase);
   const build = await tasks.start("platformio.compiledb");
   for (let n = 0; n < 1800 && tasks.list()[0].status === "running"; n++) await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(tasks.list()[0].status, "succeeded", tasks.list()[0].error + "\n" + tasks.list()[0].log);
@@ -29,8 +29,8 @@ try {
   assert.equal(JSON.parse(await fs.readFile(path.join(root, ".aether/compiledb.json"), "utf8")).id, build.id);
   assert.ok(JSON.parse(await fs.readFile(path.join(root, "compile_commands.json"), "utf8")).some((item: { file: string }) => item.file.endsWith("main.cpp")));
   service.register(clangdProvider);
-  await assert.rejects(() => service.start("clangd", root + "/not-open"), /磁盘工程/);
-  const session = await service.start("clangd", root); assert.equal(session.status, "ready"); assert.equal(session.compileDatabase, true);
+  await assert.rejects(() => service.start("clangd", canonical + "/not-open"), /磁盘工程/);
+  const session = await service.start("clangd", canonical); assert.equal(session.status, "ready"); assert.equal(session.compileDatabase, true);
   await service.open(session.id, file, code, 1);
   const line = code.split("\n")[1]; const position = { line: 1, character: line.indexOf("sensor_value") + 3 };
   const hover = await service.request(session.id, file, 1, "hover", position) as Hover;
@@ -53,11 +53,11 @@ try {
   await assert.rejects(() => service.open(session.id, "../outside.cpp", "", 1), /工程内/);
   await service.close(session.id, file); assert.equal(service.get()!.documents.length, 0);
   await service.stop(session.id); assert.equal(service.get(), null);
-  const restarted = await service.start("clangd", root); assert.ok(restarted.id > session.id);
+  const restarted = await service.start("clangd", canonical); assert.ok(restarted.id > session.id);
   await service.stop(session.id); assert.equal(service.get()!.status, "ready", "old cleanup must not stop a newer process");
   await service.stop();
-  service.register({ ...clangdProvider, id: "missing", executable: path.join(root, "not-installed-clangd") });
-  await assert.rejects(() => service.start("missing", root), /ENOENT/);
+  service.register({ ...clangdProvider, id: "missing", executable: path.join(canonical, "not-installed-clangd") });
+  await assert.rejects(() => service.start("missing", canonical), /ENOENT/);
   await service.stop();
   console.log("PASS language: real PlatformIO compilation database, clangd initialize, UTF-16 hover/definition/completion, unsaved diagnostics and recovery, stale version refusal, lifecycle restart/stop, missing executable and workspace boundary; no hardware");
 } finally { await service.stop(); await tasks.stopAll(); await workspace.close(); await fs.rm(root, { recursive: true, force: true }); }

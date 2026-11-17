@@ -15,6 +15,8 @@ let app, page; const errors = [];
 const executable = process.env.AETHER_PACKAGED_EXECUTABLE;
 assert.ok(executable, 'AETHER_PACKAGED_EXECUTABLE must point to the packaged app');
 const saveKey = process.platform === 'darwin' ? 'Meta+s' : 'Control+s';
+// Monaco logs a canceled view-state restore/dispose while rapid tab and editor teardown completes; no product error.
+const ignorableConsole = (text) => /^Canceled: Canceled/.test(text) && /(restoreViewState|clearAndDisposeAll)/.test(text);
 const until = async (test) => { for (let n = 0; n < 200; n++) { if (await test()) return; await new Promise((done) => setTimeout(done, 100)); } throw new Error('Release smoke timed out'); };
 const read = (name) => fs.readFile(path.join(root, name), 'utf8');
 const viewText = async () => (await page.locator('.monaco-editor .view-lines').allInnerTexts()).join(' ');
@@ -39,7 +41,7 @@ const launch = async () => {
   app = await electron.launch({ executablePath: executable, args: process.platform === 'linux' ? ['--no-sandbox'] : [], env, timeout: 45000 });
   page = await app.firstWindow();
   page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
-  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('console', (message) => { if (message.type() === 'error' && !ignorableConsole(message.text())) errors.push(message.text()); });
   // Only the OS picker result is stubbed; all project I/O uses the real host.
   await app.evaluate(({ dialog }, directory) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] }); }, root);
 };
@@ -87,6 +89,17 @@ try {
   await page.locator('.monaco-editor .view-lines').first().click();
   await page.keyboard.press(saveKey);
   await until(async () => (await read('b.txt')).includes('unsaved-local-buffer'));
+
+  // Reopening the diff after another disk change must show the new text, not a cached model.
+  await fs.writeFile(path.join(root, 'a.txt'), 'external-a-again\n');
+  await page.getByText('目录有外部变更', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '按文件处理…', exact: true }).click();
+  dialog = page.getByRole('dialog');
+  await dialog.getByText('磁盘与缓冲区差异', { exact: true }).waitFor();
+  await until(async () => (await viewText()).includes('external-a-again'));
+  await dialog.getByRole('button', { name: 'Use disk version', exact: true }).click();
+  await dialog.getByText('磁盘与本地缓冲区一致。', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
 
   // External addition and deletion are listed and handled per file.
   await fs.writeFile(path.join(root, 'added.txt'), 'disk-added\n');
@@ -204,6 +217,24 @@ try {
   await until(async () => (await fs.readFile(path.join(root, 'native-pty.txt'), 'utf8').catch(() => '')).trim() === 'RELEASE_PTY_OK');
   await page.getByRole('button', { name: 'Stop terminal', exact: true }).click();
   await page.locator('[data-terminal-status="stopped"]').waitFor();
+
+  // The same file name in another project previews that project's content, not a cached model.
+  const second = path.join(temp, 'second-project'); await fs.mkdir(second, { recursive: true });
+  await fs.writeFile(path.join(second, 'a.txt'), 'second-project-buffer\n');
+  const secondRoot = await fs.realpath(second);
+  await app.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, secondRoot);
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+  await command('Open project folder');
+  await page.getByText(secondRoot, { exact: true }).first().waitFor();
+  await fs.writeFile(path.join(secondRoot, 'a.txt'), 'second-project-external\n');
+  await page.getByText('目录有外部变更', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '按文件处理…', exact: true }).click();
+  dialog = page.getByRole('dialog');
+  await dialog.getByText('磁盘与缓冲区差异', { exact: true }).waitFor();
+  await until(async () => (await viewText()).includes('second-project-external'));
+  assert.equal((await viewText()).includes('external-a-again'), false, 'another project does not reuse the same-named file preview');
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.screenshot({ path: resultsDir + '/release-cross-project.png', fullPage: true });
   await page.screenshot({ path: resultsDir + '/release-' + process.platform + '-' + process.arch + '.png', fullPage: true });
   assert.deepEqual(errors, [], 'no renderer console errors');
   const version = await app.evaluate(({ app }) => app.getVersion());

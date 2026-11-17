@@ -251,7 +251,7 @@ export async function runToolSmoke() {
     const language = new LanguageService(languageWorkspace);
     language.register(createClangdProvider(tools));
     await tools.setPath("clangd", lspA);
-    const session = await language.start("clangd", project);
+    const session = await language.start("clangd", languageWorkspace.root!);
     assert.equal(session.status, "ready");
     assert.equal(session.executable, lspA);
     const untilLog = async (needle: string) => {
