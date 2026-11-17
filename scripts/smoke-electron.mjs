@@ -41,7 +41,7 @@ try {
   await page.getByText(root, { exact: true }).first().waitFor();
   await page.getByRole('button', { name: 'Source Code', exact: true }).click();
   await page.locator('.monaco-editor .view-lines').first().waitFor();
-  const replaceCode = async (text) => { await page.locator('.monaco-editor .view-lines').first().click(); await page.keyboard.press('Control+a'); await page.keyboard.type(text); };
+  const replaceCode = async (text) => { await page.locator('.monaco-editor .view-lines').first().click(); await page.keyboard.press('Control+a'); await page.keyboard.insertText(text); };
   const originalCode = await read('src/main.cpp');
   const workingCode = '#include "helper.hpp"\nint main() { return sensor_value(3); }\n';
   await replaceCode('#include "helper.hpp"\nint main() { return does_not_exist; }\n');
@@ -63,6 +63,7 @@ try {
   await page.screenshot({ path: 'smoke-results/electron-language-definition.png', fullPage: true });
   await page.getByRole('tab', { name: 'main.cpp', exact: true }).click();
   await replaceCode(originalCode); await page.keyboard.press('Control+s');
+  await until(async () => await read('src/main.cpp') === originalCode);
   await page.getByRole('button', { name: 'Build Tasks', exact: true }).click();
   await page.getByRole('button', { name: 'Generate compilation database', exact: true }).click();
   await page.locator('[data-task-provider="platformio.compiledb"] [data-task-status="succeeded"]').waitFor({ timeout: 180000 });
@@ -145,6 +146,9 @@ try {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'smoke-results/electron-failure.png', fullPage: true }); await fs.writeFile('smoke-results/electron-failure.txt', error.stack + '\n' + errors.join('\n') + '\n' + await page.locator('body').innerText()); }
   throw error;
 } finally {
-  if (app) app.process().kill('SIGKILL');
-  serialPeer?.kill(); await peer?.close(); await fs.rm(temp, { recursive: true, force: true });
+  if (app) {
+    const child = app.process();
+    if (child.exitCode === null && child.signalCode === null) await new Promise((resolve) => { child.once('exit', resolve); child.kill('SIGKILL'); });
+  }
+  serialPeer?.kill(); await peer?.close(); await fs.rm(temp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
