@@ -19,8 +19,7 @@ const launch = async () => {
   app = await electron.launch({ ...(process.env.AETHER_PACKAGED_EXECUTABLE ? { executablePath: process.env.AETHER_PACKAGED_EXECUTABLE, args: ['--no-sandbox'] } : { args: ['.', '--no-sandbox'] }), env, timeout: 30000 });
   page = await app.firstWindow();
   page.on('pageerror', (error) => errors.push('pageerror: ' + (error.stack ?? error.message)));
-  // Monaco logs a canceled view-state restore/dispose during editor teardown; it is not a product error.
-  page.on('console', (message) => { const text = message.text(); if (message.type() === 'error' && !(/^Canceled: Canceled/.test(text) && /(restoreViewState|clearAndDisposeAll)/.test(text))) errors.push('console.error: ' + text + ' @ ' + JSON.stringify(message.location())); });
+  page.on('console', (message) => { if (message.type() === 'error') errors.push('console.error: ' + message.text() + ' @ ' + JSON.stringify(message.location())); });
   await page.getByRole('button', { name: 'Plugins', exact: true }).first().waitFor();
   await app.evaluate(({ dialog }, { root, portable }) => {
     // Only the OS picker result is stubbed. All project and bundle I/O uses the real host.

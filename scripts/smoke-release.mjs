@@ -15,8 +15,6 @@ let app, page; const errors = [];
 const executable = process.env.AETHER_PACKAGED_EXECUTABLE;
 assert.ok(executable, 'AETHER_PACKAGED_EXECUTABLE must point to the packaged app');
 const saveKey = process.platform === 'darwin' ? 'Meta+s' : 'Control+s';
-// Monaco logs a canceled view-state restore/dispose while rapid tab and editor teardown completes; no product error.
-const ignorableConsole = (text) => /^Canceled: Canceled/.test(text) && /(restoreViewState|clearAndDisposeAll)/.test(text);
 const until = async (test) => { for (let n = 0; n < 200; n++) { if (await test()) return; await new Promise((done) => setTimeout(done, 100)); } throw new Error('Release smoke timed out'); };
 const read = (name) => fs.readFile(path.join(root, name), 'utf8');
 const viewText = async () => (await page.locator('.monaco-editor .view-lines').allInnerTexts()).join(' ');
@@ -41,7 +39,7 @@ const launch = async () => {
   app = await electron.launch({ executablePath: executable, args: process.platform === 'linux' ? ['--no-sandbox'] : [], env, timeout: 45000 });
   page = await app.firstWindow();
   page.on('pageerror', (error) => errors.push(error.stack ?? error.message));
-  page.on('console', (message) => { if (message.type() === 'error' && !ignorableConsole(message.text())) errors.push(message.text()); });
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   // Only the OS picker result is stubbed; all project I/O uses the real host.
   await app.evaluate(({ dialog }, directory) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [directory] }); }, root);
 };
