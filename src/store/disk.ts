@@ -37,6 +37,8 @@ export function diskChanges(): DiskChange[] {
 }
 export const useDisk = create<DiskState>((set, get) => {
   const recompute = () => set({ changed: diskChanges().length > 0 });
+  // Responses are tied to the project and refresh that requested them; a slower answer must not win.
+  let environmentRequest = 0;
   return {
   root: null, changed: false, busy: false, tasks: [], error: "", environments: [], environment: "", directories: [], synced: {}, diskFiles: {},
   adopt: ({ root, context, directories }) => {
@@ -108,8 +110,13 @@ export const useDisk = create<DiskState>((set, get) => {
     recompute();
   },
   loadEnvironments: async (provider = "platformio.build") => {
-    if (!get().root || !isDesktop()) return;
+    const root = get().root;
+    if (!root || !isDesktop()) return;
+    const request = ++environmentRequest;
     const environments = await desktop().tasks.environments(provider);
+    if (request !== environmentRequest || get().root !== root) return;
+    // While a task runs its environment is fixed; refreshing may update the list but never the selection.
+    if (get().tasks.some((task) => task.status === "running")) { set({ environments }); return; }
     const current = get().environment;
     const environment = environments.some((item) => item.name === current) ? current : (environments.find((item) => item.default) ?? environments[0])?.name ?? "";
     set({ environments, environment });

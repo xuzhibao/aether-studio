@@ -213,24 +213,29 @@ export async function runToolSmoke() {
     process.env.AETHER_FIXTURE_MARKER = markerFile;
     const build = await waitTask((await tasks.start("platformio.build")).id);
     assert.equal(build.status, "succeeded", build.error);
-    assert.ok(build.log.startsWith("$ " + executableB + " run"), build.log);
+    assert.ok(build.log.startsWith("$ " + executableB + " run -e fixture"), build.log);
+    assert.equal(build.environment, "fixture");
     assert.match(build.toolVersion ?? "", /FixtureTool 2\.0\.0/);
     assert.ok(build.artifacts.some((artifact) => artifact.path === ".pio/build/fixture/program"), JSON.stringify(build.artifacts));
     const invocations = await fs.readFile(markerFile, "utf8");
-    assert.ok(invocations.includes("CALL [run]"), invocations);
+    assert.ok(invocations.includes("CALL [run] [-e] [fixture]"), invocations);
     assert.ok(invocations.includes("CALL [project] [config] [--json-output]"), "artifact discovery uses the same executable: " + invocations);
     const compiledb = await waitTask((await tasks.start("platformio.compiledb")).id);
     assert.equal(compiledb.status, "succeeded", compiledb.error);
-    assert.ok(compiledb.log.startsWith("$ " + executableB + " run --target compiledb"), compiledb.log);
+    assert.ok(compiledb.log.startsWith("$ " + executableB + " run -e fixture --target compiledb"), compiledb.log);
+    assert.equal(compiledb.environment, "fixture");
     const upload = await waitTask((await tasks.start("platformio.upload", { port: "COM9" })).id);
     assert.equal(upload.status, "succeeded", upload.error);
-    assert.ok(upload.log.startsWith("$ " + executableB + " run --target upload --upload-port COM9"), upload.log);
+    assert.ok(upload.log.startsWith("$ " + executableB + " run -e fixture --target upload --upload-port COM9"), upload.log);
+    assert.equal(upload.environment, "fixture");
+    const uploadInvocations = await fs.readFile(markerFile, "utf8");
+    assert.ok(uploadInvocations.includes("CALL [run] [-e] [fixture] [--target] [upload] [--upload-port] [COM9]"), "upload receives the fixed environment: " + uploadInvocations);
 
     // The literal ;&& path also reaches spawn unchanged for a real build task.
     await tools.setPath("platformio", literalExecutable);
     const literalBuild = await waitTask((await tasks.start("platformio.build")).id);
     assert.equal(literalBuild.status, "succeeded", literalBuild.error);
-    assert.ok(literalBuild.log.startsWith("$ " + literalExecutable + " run"), literalBuild.log);
+    assert.ok(literalBuild.log.startsWith("$ " + literalExecutable + " run -e fixture"), literalBuild.log);
     await tools.setPath("platformio", executableB);
 
     // A saved change must not swap the executable of a running task.
@@ -243,7 +248,7 @@ export async function runToolSmoke() {
     assert.ok(slowDone.log.startsWith("$ " + executableB + " sleep"), "running task keeps its executable");
     assert.match(slowDone.toolVersion ?? "", /FixtureTool 2\.0\.0/);
     const next = await waitTask((await tasks.start("platformio.build")).id);
-    assert.ok(next.log.startsWith("$ " + executableA + " run"), "the next task uses the saved path");
+    assert.ok(next.log.startsWith("$ " + executableA + " run -e fixture"), "the next task uses the saved path");
 
     // clangd resolves the saved path and restarts with it when the setting changes.
     const languageWorkspace = new WorkspaceService();
