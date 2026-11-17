@@ -180,7 +180,7 @@ PlatformIO 默认不把工具链 include 路径写入数据库（`COMPILATIONDB_
 
 缓存中的编译器还必须同时满足：路径是字面绝对路径（不含 `*`、`?`、`[]` 等 glob 字符）、真实路径位于 PlatformIO 核心的 `packages` 目录（`PLATFORMIO_CORE_DIR`、默认 `~/.platformio`，或配置的 pio 可执行文件所属 `<core>/penv`）、并且正是当前编译数据库调用的编译器。否则不启用 query-driver。勾选后带有未保存缓冲区的运行中会话会自动重启。
 
-ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s3-elf-g++` 与 `-mlongcalls` 等真实交叉编译参数，不替换为宿主编译器，也不为迎合 clangd 修改构建参数。已知限制：上游 clang 把该 GCC 驱动选项写作 `-mlong-calls`，因此 clangd 会报告一条 `Unknown argument '-mlongcalls'`；这不影响 Arduino/框架头文件解析、补全、悬停和工程内定义跳转，实际构建结果仍以 PlatformIO 为准。
+ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s3-elf-g++` 与 `-mlongcalls` 等真实交叉编译参数，不替换为宿主编译器，也不为迎合 clangd 修改构建参数。已知限制：上游 clang 不认识或改名的 GCC 驱动选项（`-mlongcalls`、`-fstrict-volatile-bitfields`、`-fno-tree-switch-conversion`）会被 clangd 报告为 Unknown argument。启用 query-driver 后，Arduino/框架头文件和工具链头文件解析、补全、悬停与工程内定义跳转均可正常工作；这几条驱动选项诊断不影响这些结果，实际构建结果仍以 PlatformIO 为准。
 
 当前语言插件不启用 clangd 用户配置或后台全工程索引。只同步已打开的文件，保留打开标签页的缓冲区；关闭文件、停用插件、切换目录和退出应用会清理对应资源。尚未提供重命名、格式化、代码修复或全工程问题扫描。
 
