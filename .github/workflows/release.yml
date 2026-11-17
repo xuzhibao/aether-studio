@@ -79,6 +79,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-package-${{ matrix.name }}
+          retention-days: 1
           compression-level: 0
           if-no-files-found: error
           path: |
@@ -91,6 +92,7 @@ jobs:
         if: always()
         with:
           name: release-smoke-${{ matrix.name }}
+          retention-days: 7
           path: smoke-results/
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'

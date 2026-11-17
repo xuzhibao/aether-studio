@@ -5,7 +5,7 @@ module.exports = async ({ github, context }) => {
   const { version } = JSON.parse(await fs.readFile('package.json', 'utf8'));
   const tag = 'v' + version;
   const expected = [
-    ['linux', 'x64', 'AppImage'], ['linux', 'x64', 'tar.gz'],
+    ['linux', 'x86_64', 'AppImage'], ['linux', 'x64', 'tar.gz'],
     ['win', 'x64', 'exe'], ['win', 'x64', 'zip'],
     ['mac', 'x64', 'dmg'], ['mac', 'x64', 'zip'],
     ['mac', 'arm64', 'dmg'], ['mac', 'arm64', 'zip'],
