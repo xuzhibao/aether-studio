@@ -264,6 +264,10 @@ function DiskChangesDialog() {
                   original={change.disk ?? ""}
                   modified={local ?? ""}
                   language={languageFor(change.file)}
+                  originalModelPath={"inmemory://aether/disk/" + encodeURIComponent(change.file)}
+                  modifiedModelPath={"inmemory://aether/buffer/" + encodeURIComponent(change.file)}
+                  keepCurrentOriginalModel
+                  keepCurrentModifiedModel
                   options={{ readOnly: true, renderSideBySide: true, minimap: { enabled: false }, fontSize: 11, scrollBeyondLastLine: false, automaticLayout: true }}
                 />
               </div>

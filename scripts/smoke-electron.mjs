@@ -119,7 +119,8 @@ try {
   await pluginDialog.getByRole('button', { name: /^PlatformIO/ }).click();
   const platformioField = pluginDialog.locator('[data-tool-id="platformio"]');
   await platformioField.waitFor();
-  assert.equal(await platformioField.getAttribute('data-tool-available'), 'true');
+  await until(async () => (await platformioField.getAttribute('data-tool-available')) !== 'unknown');
+  assert.equal(await platformioField.getAttribute('data-tool-available'), 'true', await platformioField.innerText());
   await platformioField.getByRole('button', { name: /检测/ }).click();
   await platformioField.getByText(/PlatformIO Core/).first().waitFor();
   if (process.env.AETHER_PLATFORMIO_CLI) {
@@ -261,7 +262,11 @@ try {
   await restoredDialog.getByRole('button', { name: /^PlatformIO/ }).click();
   const restoredTool = restoredDialog.locator('[data-tool-id="platformio"]');
   await restoredTool.waitFor();
-  if (process.env.AETHER_PLATFORMIO_CLI) assert.equal(await restoredTool.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true }).inputValue(), process.env.AETHER_PLATFORMIO_CLI);
+  if (process.env.AETHER_PLATFORMIO_CLI) {
+    const restoredInput = restoredTool.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true });
+    await until(async () => (await restoredInput.inputValue()) === process.env.AETHER_PLATFORMIO_CLI);
+    assert.equal(await restoredInput.inputValue(), process.env.AETHER_PLATFORMIO_CLI);
+  }
   await restoredDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('treeitem', { name: '重命名 目录', exact: true }).waitFor();
   assert.equal(await page.getByRole('treeitem', { name: '重命名 目录/新 名字.txt', exact: true }).count(), 0, 'trashed file stays deleted after reopening');
