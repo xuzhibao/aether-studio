@@ -49,7 +49,7 @@ try {
   await page.locator('.monaco-editor .squiggly-error').first().waitFor();
   assert.equal(await read('src/main.cpp'), originalCode, 'language diagnostics must use the unsaved buffer');
   await page.getByRole('button', { name: 'C/C++ Language', exact: true }).click();
-  await page.getByText(/use of undeclared identifier 'does_not_exist'/).first().waitFor();
+  await page.getByText(/use of undeclared identifier 'does_not_exist'/i).first().waitFor();
   await page.getByRole('button', { name: /src\/main.cpp:2:/ }).click();
   await replaceCode('#include "helper.hpp"\nint main() { return sensor_v; }\n');
   await page.keyboard.press('Control+Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('End'); await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowLeft');
