@@ -14,6 +14,7 @@ export function DevicesDialog() {
   const transports = registry.all("transports");
   const io = useTransport();
   const taskRunning = useDisk((state) => state.tasks.some((task) => task.status === "running"));
+  const taskStarting = useDisk((state) => state.starting);
   const [selected, setSelected] = useState(() => transports[0]?.id ?? "");
   const [addresses, setAddresses] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<Record<string, Record<string, string>>>({});
@@ -25,7 +26,7 @@ export function DevicesDialog() {
   const transport = registry.get("transports", selected);
   // Upload/build tasks own the native port; do not let the monitor reopen it and break the running command.
   const ioBusy = ["connecting", "connected", "disconnecting"].includes(io.status);
-  const portBusy = taskRunning && selected === "native-serial";
+  const portBusy = (taskRunning || taskStarting) && !!transport?.list;
   const busy = ioBusy || portBusy;
   const address = addresses[selected] ?? "";
   const parameters = Object.fromEntries(transport?.parameters.map((field) => [field.key, settings[selected]?.[field.key] ?? field.initial]) ?? []);
@@ -35,7 +36,8 @@ export function DevicesDialog() {
   }, [revision, selected]);
   useEffect(() => {
     if (dialog !== "devices") return;
-    if (selected === "native-serial") setAddresses((current) => current[selected] ? current : (io.preferredAddress ? { ...current, [selected]: io.preferredAddress } : current));
+    const preferred = io.preferredAddress(selected);
+    if (preferred) setAddresses((current) => current[selected] ? current : { ...current, [selected]: preferred });
     let current = true;
     setPorts([]); setError(""); setLoading(!!transport?.list && !transport.unavailable);
     if (transport?.list && !transport.unavailable) void transport.list().then((ports) => { if (current) setPorts(ports); }, (error) => { if (current) setError(String(error)); }).finally(() => { if (current) setLoading(false); });
@@ -62,7 +64,7 @@ export function DevicesDialog() {
       </form>}
       <div className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]" role="status">{io.status === "connected" ? `已连接 ${io.label}` : io.status === "connecting" ? "正在建立连接…" : io.status === "disconnecting" ? "正在断开…" : "未建立连接"}</div>
       {(error || io.error) && <p role="alert" className="mt-3 whitespace-pre-wrap text-[11px] text-[#A8741F]">{error || io.error}</p>}
-      <div className="mt-4 flex justify-end gap-2 text-[11px]"><button className="btn px-3 py-1.5" onClick={() => setDialog("plugins")}>管理插件</button>{["connecting", "connected"].includes(io.status) && <button className="btn px-3 py-1.5" onClick={() => void io.disconnect()}>断开连接</button>}<button className="btn px-3 py-1.5" onClick={() => { setDialog(null); setTab("serial"); }}>打开 Serial Monitor</button></div>
+      <div className="mt-4 flex justify-end gap-2 text-[11px]"><button className="btn px-3 py-1.5" onClick={() => setDialog("plugins")}>管理插件</button>{["connecting", "connected", "error"].includes(io.status) && <button className="btn px-3 py-1.5" onClick={() => void io.disconnect()}>断开连接</button>}<button className="btn px-3 py-1.5" onClick={() => { setDialog(null); setTab("serial"); }}>打开 Serial Monitor</button></div>
     </div>
   </Modal>;
 }

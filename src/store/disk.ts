@@ -7,7 +7,7 @@ import { plugins } from "../plugins/runtime";
 export type DiskChangeKind = "modified" | "deleted" | "added";
 export interface DiskChange { file: string; kind: DiskChangeKind; disk: string | null; local: string | null; dirty: boolean }
 interface DiskState {
-  root: string | null; changed: boolean; busy: boolean; tasks: TaskSnapshot[]; error: string;
+  root: string | null; changed: boolean; busy: boolean; starting: boolean; tasks: TaskSnapshot[]; error: string;
   directories: string[]; synced: Record<string, string>; diskFiles: Record<string, string>;
   adopt: (disk: DiskWorkspace) => void; open: () => Promise<void>; saveAs: () => Promise<void>; reload: () => Promise<void>;
   save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<TaskSnapshot>; cancel: (id: string) => Promise<void>;
@@ -36,7 +36,7 @@ export function diskChanges(): DiskChange[] {
 export const useDisk = create<DiskState>((set, get) => {
   const recompute = () => set({ changed: diskChanges().length > 0 });
   return {
-  root: null, changed: false, busy: false, tasks: [], error: "", directories: [], synced: {}, diskFiles: {},
+  root: null, changed: false, busy: false, starting: false, tasks: [], error: "", directories: [], synced: {}, diskFiles: {},
   adopt: ({ root, context, directories }) => {
     const { project, ...workspace } = context;
     useStudio.getState().cancelAgent(); void useTransport.getState().disconnect();
@@ -107,13 +107,17 @@ export const useDisk = create<DiskState>((set, get) => {
   },
   build: async (provider, options) => {
     if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
-    await get().save();
-    await useTransport.getState().disconnect();
-    // Do not start an upload while a serial session still owns the port; PlatformIO would fail with a misleading error.
-    if (useTransport.getState().status !== "disconnected") throw new Error("串口监视器尚未释放端口，已取消任务。请手动断开连接后重试。");
-    const task = await desktop().tasks.start(provider, options);
-    set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
-    return task;
+    // Reserve the port for the whole release/start window so the monitor cannot reopen it before the task is registered.
+    set({ starting: true });
+    try {
+      await get().save();
+      await useTransport.getState().disconnect();
+      // Do not start an upload while a serial session still owns the port; PlatformIO would fail with a misleading error.
+      if (useTransport.getState().status !== "disconnected") throw new Error("串口监视器尚未释放端口，已取消任务。请手动断开连接后重试。");
+      const task = await desktop().tasks.start(provider, options);
+      set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
+      return task;
+    } finally { set({ starting: false }); }
   },
   cancel: async (id) => { await desktop().tasks.cancel(id); },
   };

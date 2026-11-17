@@ -280,7 +280,7 @@ try {
   await page.getByRole("button", { name: "Deploy to Device", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("heading", { name: "Deploy to device", exact: true }).waitFor();
-  await dialog.getByText(/不枚举串口|未启用桌面串口插件/).waitFor();
+  await dialog.getByText(/不提供此能力|不提供端口枚举|未启用桌面串口插件/).waitFor();
   await dialog.getByText(/不能据此判断开发板型号或固件/).waitFor();
   const uploadPort = dialog.getByLabel("Upload port", { exact: true });
   await uploadPort.fill("COM_TEST");

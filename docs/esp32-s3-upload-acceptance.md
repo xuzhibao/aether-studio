@@ -73,6 +73,7 @@
 | `npm run smoke` | 串口状态清理、关闭并发、读取失败后重连、默认波特率、首选端口 | 真实硬件、真实 PlatformIO 上传 |
 | `npm run smoke:host` | PlatformIO 上传参数校验、非零退出、失败后重试为独立任务、取消 | 实际芯片烧录与 boot 日志 |
 | `npm run smoke:ui` | Deploy 端口选择/手输、浏览器不伪造上传、真实错误展示 | 桌面原生串口枚举与上传 |
+| `npm run smoke:desktop` | 桌面 OS PTY 串口、任务运行时禁止抢端口、真实 PlatformIO 上传非零失败与改端口重试 | 真实 ESP32-S3 芯片、烧录成功与 boot 日志 |
 | 本说明 | 真实开发板、真实 USB 串口、真实 boot 日志 | 其他型号/固件的兼容性 |
 
 只有在真实开发板上完成第 1–5 步，才可将实机验收记为 PASS；否则应记录为“未验证（无目标硬件）”。

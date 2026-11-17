@@ -15,11 +15,12 @@ interface TransportState {
   lines: SerialLine[];
   receivedBytes: number;
   sentBytes: number;
-  /** Last address the user explicitly connected to or deployed to; prefills port fields. */
-  preferredAddress: string;
+  /** Last address per transport, so a WebSocket URL cannot overwrite a serial port prefill. */
+  preferredAddresses: Record<string, string>;
+  preferredAddress: (transportId: string) => string;
   connect: (id: string, options: TransportOptions) => Promise<void>;
   connectSerial: (address: string, baudRate?: number) => Promise<void>;
-  setPreferredAddress: (address: string) => void;
+  setPreferredAddress: (address: string, transportId: string) => void;
   disconnect: () => Promise<void>;
   send: (text: string) => Promise<void>;
   clear: () => void;
@@ -32,7 +33,7 @@ let pendingConnection: Promise<TransportConnection> | undefined;
 let closeInFlight: Promise<void> | undefined;
 const line = (text: string, level: SerialLine["level"] = "info"): SerialLine => ({ id: uid("io"), time: new Date().toLocaleTimeString("en-GB", { hour12: false }), text, level });
 export const useTransport = create<TransportState>((set, get) => ({
-  status: "disconnected", transportId: "", address: "", label: "", sendHint: "", error: "", lines: [], receivedBytes: 0, sentBytes: 0, preferredAddress: "",
+  status: "disconnected", transportId: "", address: "", label: "", sendHint: "", error: "", lines: [], receivedBytes: 0, sentBytes: 0, preferredAddresses: {},
   connect: async (id, options) => {
     if (get().status === "disconnecting") await closeInFlight;
     if (["connecting", "connected"].includes(get().status)) return;
@@ -70,7 +71,7 @@ export const useTransport = create<TransportState>((set, get) => ({
       const opened = await opening;
       if (attempt !== generation) { await opened.close(); return; }
       connection = opened;
-      set((s) => ({ status: "connected", label: opened.label, preferredAddress: options.address.trim(), lines: [...s.lines, line("已连接 " + opened.label, "success")].slice(-500) }));
+      set((s) => ({ status: "connected", label: opened.label, preferredAddresses: { ...s.preferredAddresses, [id]: options.address.trim() }, lines: [...s.lines, line("已连接 " + opened.label, "success")].slice(-500) }));
       plugins.emit("transport:connected", { id, ...options });
     } catch (error) {
       if (attempt === generation) set({ status: "error", error: String(error) });
@@ -87,7 +88,8 @@ export const useTransport = create<TransportState>((set, get) => ({
     if (baudRate && Number.isInteger(baudRate) && baudRate > 0) parameters.baudRate = String(baudRate);
     await get().connect("native-serial", { address: address.trim(), parameters });
   },
-  setPreferredAddress: (address) => set({ preferredAddress: address.trim() }),
+  preferredAddress: (transportId) => get().preferredAddresses[transportId] ?? "",
+  setPreferredAddress: (address, transportId) => set((s) => ({ preferredAddresses: { ...s.preferredAddresses, [transportId]: address.trim() } })),
   disconnect: async () => {
     const current = get().status;
     if (current === "disconnected") return;
@@ -97,8 +99,8 @@ export const useTransport = create<TransportState>((set, get) => ({
     const opening = pendingConnection;
     pendingController?.abort();
     pendingController = undefined; pendingConnection = undefined;
+    // Keep the handle until close succeeds: a failed close must be retryable instead of pretending the port is free.
     const connectionClosing = connection;
-    connection = undefined;
     const id = get().transportId;
     set({ status: "disconnecting" });
     let release!: () => void;
@@ -108,6 +110,7 @@ export const useTransport = create<TransportState>((set, get) => ({
       await connectionClosing?.close();
       // A cancelled handshake must release its resource before another connection starts.
       await opening?.then((opened) => opened.close(), () => {});
+      if (connection === connectionClosing) connection = undefined;
       set((s) => ({ status: "disconnected", error: "", lines: [...s.lines, line("连接已断开")].slice(-500) }));
       plugins.emit("transport:disconnected", { id });
     } catch (error) { set({ status: "error", error: "关闭连接失败：" + String(error) }); }

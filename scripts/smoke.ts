@@ -232,12 +232,13 @@ let nextSession = 0;
 let readFailure = false;
 let openGate: Promise<void> | undefined;
 let closeGate: Promise<void> | undefined;
+let closeFailures = 0;
 let lastOpen = "";
 const serialFixture = createNativeSerialPlugin({
   list: async () => [{ path: "fixture-port", label: "Backend fixture (not hardware)" }],
   open: async (path, baudRate) => { lastOpen = path + "@" + baudRate; await openGate; return ++nextSession; },
   read: async () => { if (readFailure) throw new Error("fixture unplugged"); return received.shift() ?? []; },
-  write: async (_id, bytes) => { written.push(bytes); }, close: async (id) => { closed.push(id); await closeGate; },
+  write: async (_id, bytes) => { written.push(bytes); }, close: async (id) => { closed.push(id); if (closeFailures > 0) { closeFailures--; throw new Error("fixture close failed"); } await closeGate; },
 }, true);
 const until = async (condition: () => boolean) => { for (let n = 0; n < 100 && !condition(); n++) await new Promise((resolve) => setTimeout(resolve, 10)); assert.ok(condition()); };
 plugins.unregister("aether.serial.native");
@@ -276,24 +277,42 @@ assert.ok(closed.includes(3));
 readFailure = false;
 await io().connect("native-serial", { address: "fixture-port", parameters: { baudRate: "115200" } });
 assert.equal(io().status, "connected", "an unplugged session can reconnect with a fresh handle");
-assert.equal(io().preferredAddress, "fixture-port");
+assert.equal(io().preferredAddress("native-serial"), "fixture-port");
 await io().disconnect();
 await io().connectSerial("fixture-port");
 assert.equal(io().status, "connected");
 assert.equal(lastOpen, "fixture-port@115200", "connectSerial uses the transport's declared default baud rate");
+await io().disconnect();
+await io().connectSerial("fixture-port", 9600);
+assert.equal(lastOpen, "fixture-port@9600", "an explicit monitor baud rate overrides the default");
 await assert.rejects(() => io().connectSerial("other-port"), /串口正在使用/, "one native port at a time; an upload cannot share the monitor's handle");
 // A retry must not race a still-closing session: both disconnect and connect wait for the real backend close.
 let releaseClose!: () => void;
 closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
 const firstClose = io().disconnect();
-const secondClose = io().disconnect();
+let secondClosed = false;
+const secondClose = io().disconnect().then(() => { secondClosed = true; });
 assert.equal(io().status, "disconnecting");
+assert.equal(secondClosed, false, "a concurrent disconnect waits for the real close");
 const reconnectDuringClose = io().connect("native-serial", { address: "fixture-port", parameters: { baudRate: "115200" } });
 assert.equal(io().status, "disconnecting", "a connect waits while the old port is still closing");
 releaseClose(); closeGate = undefined;
 await Promise.all([firstClose, secondClose, reconnectDuringClose]);
+assert.equal(secondClosed, true);
 assert.equal(io().status, "connected");
 assert.equal(lastOpen, "fixture-port@115200");
+await io().disconnect();
+// A failed close must keep the handle; a second disconnect retries the same backend session instead of faking a free port.
+await io().connect("native-serial", { address: "fixture-port", parameters: { baudRate: "115200" } });
+closeFailures = 1;
+await io().disconnect();
+assert.equal(io().status, "error");
+assert.match(io().error, /fixture close failed/);
+await io().disconnect();
+assert.equal(io().status, "disconnected", "retry closes the retained handle");
+await io().connect("native-serial", { address: "fixture-port", parameters: { baudRate: "115200" } });
+assert.equal(io().status, "connected", "a new connection starts only after the close really succeeded");
+assert.equal(io().preferredAddress("native-serial"), "fixture-port");
 await io().disconnect();
 plugins.unregister("aether.serial.native");
 plugins.register(nativeSerialPlugin); plugins.enable("aether.serial.native");

@@ -222,7 +222,6 @@ export function DeployDialog() {
   const io = useTransport();
   const revision = registry.getRevision();
   const providers = registry.all("deployments").filter((provider) => provider.toolchain === capabilities.toolchain);
-  const serial = registry.get("transports", "native-serial");
   const [selected, setSelected] = useState("");
   const [address, setAddress] = useState("");
   const [ports, setPorts] = useState<TransportPort[]>([]);
@@ -232,36 +231,40 @@ export function DeployDialog() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [taskId, setTaskId] = useState("");
+  const [monitorBaud, setMonitorBaud] = useState("115200");
   const provider = providers.find((item) => item.id === selected);
+  const monitor = provider?.monitor;
+  const portSource = provider?.ports;
   const task = taskId ? disk.tasks.find((item) => item.id === taskId) : undefined;
   const taskPort = task?.options?.port ?? "";
   const uploadRunning = task?.status === "running";
-  const busy = submitting || !!uploadRunning || ["connecting", "disconnecting"].includes(io.status);
+  const busy = submitting || !!uploadRunning || disk.starting || ["connecting", "disconnecting"].includes(io.status);
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);
     const first = available[0];
     setSelected(first?.id ?? "");
     setError(""); setSubmitting(false);
-    const latest = first ? disk.tasks.filter((item) => item.provider === first.id).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1) : undefined;
-    setAddress(useTransport.getState().preferredAddress || latest?.options?.port || "");
+    setMonitorBaud(first?.monitor?.defaultBaudRate ?? "115200");
+    // Results belong to the current disk project only; another project's upload must not look like this one.
+    const latest = first ? disk.tasks.filter((item) => item.provider === first.id && item.root === disk.root).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1) : undefined;
+    setAddress(useTransport.getState().preferredAddress(first?.monitor?.transportId ?? "") || latest?.options?.port || "");
     setTaskId(latest?.id ?? "");
   }, [dialog, revision]);
   useEffect(() => {
-    if (dialog !== "deploy" || !serial?.list || serial.unavailable) { setPorts([]); setPortsError(""); return; }
+    if (dialog !== "deploy" || !portSource) { setPorts([]); setPortsLoading(false); setPortsError(""); return; }
     let current = true;
-    setPortsLoading(true); setPortsError("");
-    void serial.list().then((items) => { if (current) setPorts(items); }, (reason) => { if (current) setPortsError(String(reason)); }).finally(() => { if (current) setPortsLoading(false); });
+    setPorts([]); setPortsLoading(true); setPortsError("");
+    void portSource.list().then((items) => { if (current) setPorts(items); }, (reason) => { if (current) setPortsError(String(reason)); }).finally(() => { if (current) setPortsLoading(false); });
     return () => { current = false; };
-  }, [dialog, serial?.id, serial?.unavailable, revision, refreshToken]);
+  }, [dialog, provider?.id, revision, refreshToken]);
   const deploy = (event: React.FormEvent) => {
     event.preventDefault();
     if (!provider || !address.trim() || busy || !isDesktop()) return;
     const port = address.trim();
     setSubmitting(true); setError(""); setTaskId("");
-    io.setPreferredAddress(port);
     void provider.deploy(getProjectContext(), port).then((result) => {
-      if (result?.taskId) setTaskId(result.taskId);
+      if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); }
       else { setDialog(null); setTab("panel:build.tasks"); }
     }).catch((reason) => {
       // A rejected hand-off (no disk project, serial still busy, invalid arguments) did not start an upload.
@@ -269,31 +272,27 @@ export function DeployDialog() {
     }).finally(() => setSubmitting(false));
   };
   const connectMonitor = async () => {
-    const port = taskPort || address.trim();
-    if (!port) return;
+    const port = address.trim() || taskPort;
+    if (!port || !monitor) return;
     setError("");
-    // Use the project's monitor_speed when declared; otherwise the serial transport default (115200).
-    const declared = Number(getProjectContext().files["platformio.ini"]?.match(/^\s*monitor_speed\s*=\s*(\d+)/m)?.[1] ?? 0);
-    try { await io.connectSerial(port, declared > 0 ? declared : undefined); }
+    try { await monitor.connect(port, monitorBaud); }
     catch (reason) { setError(String(reason)); return; }
-    const state = useTransport.getState();
-    if (state.status === "connected") { setDialog(null); setTab("serial"); }
-    else setError(state.error || "串口连接未建立，请重试");
+    setDialog(null); setTab("serial");
   };
   const openLogs = () => { setDialog(null); setTab("panel:build.tasks"); };
   const statusText = !task ? "" : task.status === "running" ? "正在上传…" : task.status === "succeeded" ? "上传命令成功（退出码 0）" : task.status === "cancelled" ? "上传已取消" : "上传失败";
-  const monitorPort = taskPort || address.trim();
-  const canConnect = !!serial && !serial.unavailable && !["connecting", "disconnecting"].includes(io.status) && (io.status !== "connected" || io.address === monitorPort);
+  const monitorPort = address.trim() || taskPort;
+  const canConnect = !!monitor && !["connecting", "disconnecting"].includes(io.status) && (io.status !== "connected" || io.address === monitorPort);
   return <Modal open={dialog === "deploy"} onOpenChange={(open) => !open && setDialog(null)} width={560}><form className="p-5" onSubmit={deploy}>
     <div className="flex justify-between"><Dialog.Title className="text-sm font-semibold">Deploy to device</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div>
-    <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">明确选择端口后调用已注册的部署插件。PlatformIO 会先构建，再通过该端口写入固件；上传前会断开现有串口监视器。上传命令退出码为 0 仅代表命令成功，不代表固件已启动或设备已识别。</Dialog.Description>
-    {!providers.length ? <p className="mt-4 text-xs text-[#A8741F]">当前工具链没有已启用的部署插件。请切换到使用 PlatformIO 的工程。</p> : <>
+    <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">明确选择端口后调用已注册的部署插件。插件会先构建，再通过该端口写入固件；上传前断开现有设备连接。命令退出码为 0 仅代表命令成功，不代表固件已启动或设备已识别。</Dialog.Description>
+    {!providers.length ? <p className="mt-4 text-xs text-[#A8741F]">当前工具链没有已启用的部署插件。</p> : <>
       <div className="mt-3 rounded-md border border-[#E9EBEE] p-3">
-        <div className="flex items-center justify-between text-[11px]"><span className="font-medium">已枚举端口（操作系统报告）</span><button type="button" className="btn px-2 py-1 text-[10px]" disabled={portsLoading || !serial?.list || !!serial.unavailable || busy} onClick={() => setRefreshToken((token) => token + 1)}>{portsLoading ? "正在枚举…" : "刷新端口"}</button></div>
-        {portsError ? <p role="alert" className="mt-2 text-[10px] text-[#A8741F]">{portsError}</p> : !serial?.list || serial.unavailable ? <p className="mt-2 text-[10px] text-[#90969E]">{serial ? "当前环境不枚举串口；请在 Electron 桌面端使用，或手动输入路径。" : "未启用桌面串口插件；可手动输入端口路径。"}</p> : portsLoading ? <p className="mt-2 text-[10px] text-[#90969E]">正在读取系统串口列表…</p> : ports.length ? <ul className="mt-2 space-y-1">{ports.map((item) => <li key={item.path}><button type="button" aria-pressed={address === item.path} className={cn("w-full rounded border px-2 py-1 text-left text-[10px]", address === item.path ? "border-[#007AFF] bg-[#F2F8FF]" : "border-[#E9EBEE] hover:bg-[#F8F9FB]")} onClick={() => setAddress(item.path)}><span className="font-mono">{item.path}</span><span className="ml-2 text-[#59616A]">{item.label}</span>{item.detail && <span className="ml-2 text-[#90969E]">{item.detail}</span>}</button></li>)}</ul> : <p className="mt-2 text-[10px] text-[#90969E]">未枚举到串口。可手动输入路径。</p>}
-        <p className="mt-2 text-[10px] leading-5 text-[#90969E]">列表只表示系统报告了串口和厂商描述，不能据此判断开发板型号或固件；不自动识别、不自动刷写未知设备。</p>
+        <div className="flex items-center justify-between text-[11px]"><span className="font-medium">已枚举端口（操作系统报告）</span><button type="button" className="btn px-2 py-1 text-[10px]" disabled={!portSource || portsLoading || busy} onClick={() => setRefreshToken((token) => token + 1)}>{portsLoading ? "正在枚举…" : "刷新端口"}</button></div>
+        {!portSource ? <p className="mt-2 text-[10px] text-[#90969E]">该部署插件不提供端口枚举；可手动输入端口路径。</p> : portsError ? <p role="alert" className="mt-2 text-[10px] text-[#A8741F]">{portsError}</p> : portsLoading ? <p className="mt-2 text-[10px] text-[#90969E]">正在读取系统串口列表…</p> : ports.length ? <ul className="mt-2 space-y-1">{ports.map((item) => <li key={item.path}><button type="button" aria-pressed={address === item.path} className={cn("w-full rounded border px-2 py-1 text-left text-[10px]", address === item.path ? "border-[#007AFF] bg-[#F2F8FF]" : "border-[#E9EBEE] hover:bg-[#F8F9FB]")} onClick={() => setAddress(item.path)}><span className="font-mono">{item.path}</span><span className="ml-2 text-[#59616A]">{item.label}</span>{item.detail && <span className="ml-2 text-[#90969E]">{item.detail}</span>}</button></li>)}</ul> : <p className="mt-2 text-[10px] text-[#90969E]">未枚举到端口。可手动输入路径。</p>}
+        <p className="mt-2 text-[10px] leading-5 text-[#90969E]">列表只表示系统报告了端口和厂商描述，不能据此判断开发板型号或固件；不自动识别、不自动刷写未知设备。</p>
       </div>
-      {providers.length > 1 && <label className="mt-3 block text-xs">Deployment plugin<select aria-label="Deployment plugin" className="input mt-1 w-full" disabled={busy} value={selected} onChange={(event) => setSelected(event.target.value)}>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+      {providers.length > 1 && <label className="mt-3 block text-xs">Deployment plugin<select aria-label="Deployment plugin" className="input mt-1 w-full" disabled={busy} value={selected} onChange={(event) => { const next = providers.find((item) => item.id === event.target.value); setSelected(event.target.value); setTaskId(""); setError(""); setMonitorBaud(next?.monitor?.defaultBaudRate ?? "115200"); setAddress(next?.monitor ? io.preferredAddress(next.monitor.transportId) : ""); }}>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
       <label className="mt-3 block text-xs">{provider?.endpointLabel}<input aria-label={provider?.endpointLabel} data-deploy-port className="input mt-1 w-full" list="deploy-ports" placeholder="COM3 / /dev/ttyUSB0 / /dev/cu.usbserial…" value={address} disabled={busy} onChange={(event) => setAddress(event.target.value)} /><datalist id="deploy-ports">{ports.map((item) => <option key={item.path} value={item.path}>{item.label}</option>)}</datalist></label>
       <p className="mt-1 text-[10px] leading-5 text-[#90969E]">必须明确填写或选择端口；留空不会开始上传。也可以手动输入未枚举到的端口路径。</p>
       <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px]">
@@ -301,16 +300,17 @@ export function DeployDialog() {
         {uploadRunning && <button type="button" className="btn px-3 py-1.5" onClick={() => { if (task) void disk.cancel(task.id).catch((reason) => setError(String(reason))); }}>取消上传</button>}
         <button type="button" className="btn px-3 py-1.5" onClick={openLogs} disabled={!task}>查看完整日志</button>
       </div>
-      {!isDesktop() && <p className="mt-2 text-[10px] leading-5 text-[#A8741F]">真实上传需要 Electron 桌面端和已配置的 PlatformIO；浏览器预览不会执行命令。</p>}
-      {task && <section data-deploy-task={task.id} data-deploy-status={task.status} className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]">
+      {!isDesktop() && <p className="mt-2 text-[10px] leading-5 text-[#A8741F]">真实上传需要 Electron 桌面端和部署插件所需的工具；浏览器预览不会执行命令。</p>}
+      {task && <section data-deploy-task={task.id} data-deploy-status={task.status} data-deploy-port={taskPort} className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]">
         <div className="flex flex-wrap items-center gap-2"><strong>上传任务</strong><span role="status">{statusText}</span><span className="text-[10px] text-[#90969E]">exit {task.exitCode ?? "—"}</span></div>
         <p className="mt-1 text-[10px] text-[#90969E]">端口 {taskPort || "—"} · {task.status === "running" ? "命令仍在运行" : "命令已结束"} · 任务 {task.id.slice(0, 8)}</p>
         {task.error && <p role="alert" className="mt-2 text-[#A8741F]">{task.error}</p>}
         <pre className="mt-2 max-h-[160px] overflow-auto whitespace-pre-wrap rounded bg-[#F8F9FB] p-2 font-mono text-[10px] leading-5">{task.log.slice(-4000)}</pre>
-        {task.status !== "running" && <div className="mt-2 flex flex-wrap gap-2">
-          <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={!canConnect} onClick={() => void connectMonitor()}>{io.status === "connected" && io.address === monitorPort ? "打开串口监视器" : task.status === "succeeded" ? "连接串口监视器" : "连接串口查看日志"}</button>
-          {io.status === "connected" && io.address !== monitorPort && <button type="button" className="btn px-3 py-1.5 text-[10px]" onClick={() => void io.disconnect()}>断开当前连接</button>}
-          {task.status !== "succeeded" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={busy || !isDesktop() || !(taskPort || address.trim())} onClick={() => void (async () => { if (!provider) return; const port = taskPort || address.trim(); setSubmitting(true); setError(""); try { const result = await provider.deploy(getProjectContext(), port); if (result?.taskId) setTaskId(result.taskId); } catch (reason) { setError(String(reason)); } finally { setSubmitting(false); } })()}>重试上传</button>}
+        {task.status !== "running" && <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={!canConnect} onClick={() => void connectMonitor()}>{io.status === "connected" && io.address === monitorPort ? `打开${monitor?.label ?? "设备监视器"}` : task.status === "succeeded" ? `连接${monitor?.label ?? "设备监视器"}` : `连接${monitor?.label ?? "设备监视器"}查看日志`}</button>
+          {monitor && <label className="text-[10px] text-[#59616A]">波特率<input aria-label="监视波特率" type="number" min="1" step="1" className="input ml-1 w-[72px] px-1 py-0.5 text-[10px]" value={monitorBaud} onChange={(event) => setMonitorBaud(event.target.value)} /></label>}
+          {["connected", "error"].includes(io.status) && io.address !== monitorPort && <button type="button" className="btn px-3 py-1.5 text-[10px]" onClick={() => void io.disconnect()}>断开当前连接</button>}
+          {task.status !== "succeeded" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={busy || !isDesktop() || !address.trim()} onClick={() => void (async () => { if (!provider) return; const port = address.trim(); setSubmitting(true); setError(""); try { const result = await provider.deploy(getProjectContext(), port); if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); } } catch (reason) { setError(String(reason)); } finally { setSubmitting(false); } })()}>重试上传</button>}
         </div>}
         {task.status === "succeeded" && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">上传命令已完成；设备可能已复位。连接同一端口可查看串口输出，若没有日志可手动复位设备。</p>}
         {task.status === "cancelled" && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">任务已取消，端口交由操作系统回收；可重试上传或连接监视器。</p>}
