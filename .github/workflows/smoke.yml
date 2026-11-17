@@ -4,8 +4,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 concurrency:
-  group: mvp-smoke-${{ github.ref }}
+  group: mvp-smoke-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read

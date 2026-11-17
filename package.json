@@ -1,7 +1,7 @@
 {
   "name": "aether-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
@@ -19,7 +19,9 @@
     "licenses": "npm run desktop:runtime && node scripts/licenses.mjs",
     "desktop:runtime": "node node_modules/electron/install.js",
     "smoke:language": "node --import tsx scripts/smoke-language.ts",
-    "smoke:terminal": "node --import tsx scripts/smoke-terminal.ts"
+    "smoke:terminal": "node --import tsx scripts/smoke-terminal.ts",
+    "desktop:release": "npm run build && npm run build:desktop && npm run licenses && electron-builder --publish never",
+    "smoke:release": "node scripts/smoke-release.mjs"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -87,20 +89,40 @@
     },
     "linux": {
       "target": [
-        "dir"
+        "AppImage",
+        "tar.gz"
       ],
       "category": "Development",
       "executableName": "aether-studio"
     },
     "mac": {
       "target": [
-        "dir"
-      ]
+        "dmg",
+        "zip"
+      ],
+      "identity": "-",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false,
+      "gatekeeperAssess": false
     },
     "win": {
       "target": [
-        "dir"
-      ]
+        "nsis",
+        "zip"
+      ],
+      "executableName": "AetherStudio"
+    },
+    "artifactName": "Aether-Studio-${version}-${os}-${arch}.${ext}",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "dmg": {
+      "sign": false
     }
   }
 }

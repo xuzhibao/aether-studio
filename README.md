@@ -21,6 +21,23 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 
 **Demo Simulation 只生成演示数据，不执行 Python、不验证电气接线、不连接真实硬件。** C++ 模板不绑定演示仿真器。构建成功不代表已烧录，上传成功应以实际任务结果为准。
 
+## 下载桌面包
+
+[GitHub Releases](https://github.com/xuzhibao/aether-studio/releases) 提供预发行测试包：
+
+| 系统 | 架构 | 文件 |
+| --- | --- | --- |
+| Windows | x64 | `.exe` 安装包，或 `.zip` 解压后运行 `AetherStudio.exe` |
+| macOS | Apple Silicon / arm64 | 对应 `arm64` 的 `.dmg` 或 `.zip` |
+| macOS | Intel / x64 | 对应 `x64` 的 `.dmg` 或 `.zip` |
+| Linux | x64 | `.AppImage` 或 `.tar.gz` |
+
+macOS 将 Aether Studio.app 放入应用程序目录。Linux AppImage 需添加执行权限；无 FUSE 时可添加 `--appimage-extract-and-run` 参数，或使用 tar.gz 解压目录中的 `aether-studio`。
+
+macOS 包使用 ad-hoc 临时签名，未经 Apple 公证；Windows 包未做发布者签名。系统可能要求手动允许运行。`SHA256SUMS` 提供所有下载文件的 SHA-256。
+
+下载包不捆绑 PlatformIO、clangd、芯片 SDK 或 AI 服务。可以先体验工程编辑、Demo Simulation 和交互终端，再按需安装开发工具。
+
 ## 安装与启动
 
 需要 Node.js 22.12.0 或更新版本：
@@ -44,7 +61,15 @@ npm run dev
 npm run desktop:package
 ```
 
-首次启动或打包会下载 Electron 运行时。输出位于 `release/`。打包命令包含前端、主进程、第三方许可收集及 Electron 打包。当前不生成签名安装器或自动更新包。
+首次启动或打包会下载 Electron 运行时。输出位于 `release/`。打包命令包含前端、主进程、第三方许可收集及 Electron 打包。此命令只生成应用目录；发布包使用下面的发行构建命令。尚未提供自动更新。
+
+发行构建需要在对应操作系统及架构上执行：
+
+```bash
+npm run desktop:release
+```
+
+Windows 输出安装包和 ZIP，macOS 输出 DMG 和 ZIP，Linux 输出 AppImage 和 tar.gz。GitHub 的 **Desktop release** 工作流会构建并启动检查四种目标；主分支通过完整冒烟和全部目标检查后才创建 Release，并在全部文件上传后公开。已发布版本不会被自动覆盖，下一次发布需更新版本号。
 
 ## 配置 PlatformIO
 
@@ -222,4 +247,4 @@ Aether 原创代码采用 Apache-2.0，见 `LICENSE` 和 `NOTICE`。第三方组
 
 PlatformIO Core 使用 Apache-2.0；其下载的开发平台、编译器和 SDK 按各自许可提供。IDE 不要求商业模拟器、账号或付费模型。支持 ESP32 不代表其无线固件依赖全部提供源码。
 
-当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 桌面运行需要对应环境验证。
+当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 的完整硬件工作流仍需在对应环境验证，发行检查仅覆盖打包启动和基础操作。
