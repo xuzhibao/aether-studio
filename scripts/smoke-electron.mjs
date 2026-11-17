@@ -110,7 +110,8 @@ try {
   await page.getByRole('button', { name: 'C/C++ Language', exact: true }).click();
   await page.getByRole('button', { name: 'Restart clangd', exact: true }).click();
   await page.locator('[data-language-status="ready"]').waitFor();
-  await page.getByText('启动时已找到 compile_commands.json', { exact: true }).waitFor();
+  await page.locator('[data-language-database="ready"]').waitFor();
+  await page.getByText(/已就绪（使用根目录 compile_commands.json）/).first().waitFor();
   await page.getByRole('tab', { name: 'main.cpp', exact: true }).click();
   await until(async () => (await page.evaluate(() => window.aether.language.get()))?.documents.some((doc) => doc.file === 'src/main.cpp'));
   await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
