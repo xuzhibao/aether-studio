@@ -74,6 +74,20 @@ try {
   assert.equal(restored.compileDatabase, "ready");
   await service.open(restored.id, file, code, 1);
 
+  // A beta.2 record has no environment: an explicit selection cannot claim it, while no selection still uses it.
+  const legacyRecord = JSON.parse(recordText); delete legacyRecord.environment;
+  await fs.writeFile(recordPath, JSON.stringify(legacyRecord, null, 2));
+  const legacyStale = await service.restart(restored.id, { environment: "native" });
+  assert.equal(legacyStale.compileDatabase, "stale");
+  assert.match(legacyStale.compileDatabaseMessage, /旧版本|没有环境信息/);
+  const legacyReady = await service.restart(legacyStale.id, { environment: "" });
+  assert.equal(legacyReady.compileDatabase, "ready");
+  assert.equal(legacyReady.environment, "");
+  await fs.writeFile(recordPath, recordText);
+  const verified = await service.restart(legacyReady.id, { environment: "native" });
+  assert.equal(verified.compileDatabase, "ready");
+  await service.open(verified.id, file, code, 1);
+
   // Query-driver only lists compilers that exist inside a PlatformIO core directory; a native database has none.
   const nativeQuery = await service.start("clangd", canonical, { environment: "native", queryDriver: true });
   assert.deepEqual(nativeQuery.queryDrivers, [], "compilers outside the PlatformIO core are never trusted");
@@ -95,9 +109,9 @@ try {
   assert.equal(unverified.compileDatabase, "stale", "an environment without a build record cannot claim the database");
   assert.match(unverified.compileDatabaseMessage, /无法确认数据库所属环境|没有环境/);
   await fs.rename(recordBackup, recordPath);
-  const verified = await service.restart(unverified.id, { environment: "native" });
-  assert.equal(verified.compileDatabase, "ready");
-  await service.open(verified.id, file, code, 1);
+  const recorded = await service.restart(unverified.id, { environment: "native" });
+  assert.equal(recorded.compileDatabase, "ready");
+  await service.open(recorded.id, file, code, 1);
 
   // A successful regeneration refreshes clangd without closing buffers: no stopped/error snapshot is emitted.
   const latest = service.get()!; const unsaved = '#include "math.hpp"\nint main() { return sensor_value(9); }\n';

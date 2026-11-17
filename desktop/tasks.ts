@@ -11,14 +11,14 @@ export interface TaskProvider {
   // Host-side behavior is declared by the provider: main only reacts to this generic kind.
   kind?: string;
   // Runs after a successful task (still inside the explicit user action); the result is stored in .aether/<record>.
-  afterSuccess?: (root: string, executable: string, options: Record<string, string>) => Promise<unknown>;
+  afterSuccess?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal) => Promise<unknown>;
   // Providers that build one selected environment at a time expose what the project currently declares.
   environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
   artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
 }
 export class TaskService {
   private providers = new Map<string, TaskProvider>();
-  private jobs = new Map<string, { task: TaskSnapshot; child: ChildProcess; done: Promise<void>; cancel: () => void }>();
+  private jobs = new Map<string, { task: TaskSnapshot; child: ChildProcess; done: Promise<void>; cancel: () => void; abort: AbortController }>();
   constructor(private workspace: WorkspaceService, private changed: (task: TaskSnapshot) => void = () => {}) {}
   register(provider: TaskProvider) { if (this.providers.has(provider.id)) throw new Error("Duplicate task provider: " + provider.id); this.providers.set(provider.id, provider); }
   list() { return [...this.jobs.values()].map((job) => structuredClone(job.task)); }
@@ -58,8 +58,9 @@ export class TaskService {
       if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }).on("error", (error) => { task.error = error.message; emit(); });
       else { try { process.kill(-child.pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") { task.error = String(error); emit(); } } }
     };
-    const cancel = () => { if (task.status !== "running" || processClosed) return; cancelled = true; kill("SIGTERM"); killTimer = setTimeout(() => kill("SIGKILL"), 1500); };
-    this.jobs.set(task.id, { task, child, done, cancel });
+    const abort = new AbortController();
+    const cancel = () => { cancelled = true; abort.abort(); if (task.status !== "running" || processClosed) return; kill("SIGTERM"); killTimer = setTimeout(() => kill("SIGKILL"), 1500); };
+    this.jobs.set(task.id, { task, child, done, cancel, abort });
     const append = (chunk: Buffer) => { task.log = (task.log + chunk.toString()).slice(-250000); emit(); };
     child.stdout?.on("data", append); child.stderr?.on("data", append);
     child.on("error", (error) => { task.error = error.message; });
@@ -72,25 +73,35 @@ export class TaskService {
       try {
         if (result === "succeeded") {
           if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
-          const artifacts: BuildArtifact[] = [];
-          for (const relative of await provider.artifacts(root, executable, resolved)) {
-            const bytes = await fs.readFile(path.join(root, relative));
-            artifacts.push({ path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
-          }
-          if (!artifacts.length) throw new Error("进程已退出，但未找到构建产物");
-          task.artifacts = artifacts;
           let metadata: unknown;
           let metadataError = "";
           if (provider.afterSuccess) {
-            try { metadata = await provider.afterSuccess(root, executable, resolved); }
+            try { metadata = await provider.afterSuccess(root, executable, resolved, abort.signal); }
             catch (error) {
-              // Auxiliary metadata must not turn a successful build into a failure, but the reason stays visible.
-              metadataError = String(error);
-              task.log = (task.log + "\n[aether] 任务成功，但附加步骤失败：" + metadataError).slice(-250000);
+              // The hook is part of the task: a cancellation stops here without writing a cache or a success record.
+              if (cancelled) result = "cancelled";
+              else {
+                metadataError = String(error);
+                task.log = (task.log + "\n[aether] 任务成功，但附加步骤失败：" + metadataError).slice(-250000);
+              }
             }
           }
-          await fs.mkdir(path.join(root, ".aether"), { recursive: true });
-          await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadata !== undefined ? { metadata } : {}), ...(metadataError ? { metadataError } : {}) }, null, 2));
+          if (result !== "cancelled") {
+            // The hook can touch the project: verify inputs again and hash the final artifacts after it finished.
+            if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("任务附加步骤期间源文件发生变化，未登记产物，请重新构建");
+            const artifacts: BuildArtifact[] = [];
+            for (const relative of await provider.artifacts(root, executable, resolved)) {
+              const bytes = await fs.readFile(path.join(root, relative));
+              artifacts.push({ path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+            }
+            if (!artifacts.length) throw new Error("进程已退出，但未找到构建产物");
+            if (cancelled) result = "cancelled";
+            else {
+              task.artifacts = artifacts;
+              await fs.mkdir(path.join(root, ".aether"), { recursive: true });
+              await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadata !== undefined ? { metadata } : {}), ...(metadataError ? { metadataError } : {}) }, null, 2));
+            }
+          }
         }
       } catch (error) { result = "failed"; task.error = String(error); }
       task.status = result;

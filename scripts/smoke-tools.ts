@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -275,6 +276,37 @@ export async function runToolSmoke() {
     assert.equal(await language.restartForTool("platformio"), false);
     await language.stop();
     await languageWorkspace.close();
+
+    // afterSuccess is part of the task: source edits it makes invalidate the run, and final artifact hashes are recomputed.
+    await fs.mkdir(path.join(project, "src"), { recursive: true });
+    tasks.register({ id: "fixture.hook-edit", executable: process.execPath, args: ["-e", "0"], recordName: "hook-edit.json", artifacts: async () => ["platformio.ini"], afterSuccess: async () => { await fs.writeFile(path.join(project, "src/hook.txt"), "side effect\n"); } });
+    const hookEdit = await waitTask((await tasks.start("fixture.hook-edit")).id);
+    assert.equal(hookEdit.status, "failed");
+    assert.match(hookEdit.error ?? "", /附加步骤期间源文件发生变化/);
+    assert.equal(await fs.stat(path.join(project, ".aether/hook-edit.json")).catch(() => null), null, "a hook-side source change must not register a record");
+    const hookBytes = "[]\n// hook rewrote the database\n";
+    tasks.register({ id: "fixture.hook-artifact", executable: process.execPath, args: ["-e", "0"], recordName: "hook-artifact.json", inputExcludes: ["compile_commands.json"], artifacts: async () => ["compile_commands.json"], afterSuccess: async () => { await fs.writeFile(path.join(project, "compile_commands.json"), hookBytes); } });
+    const hookArtifact = await waitTask((await tasks.start("fixture.hook-artifact")).id);
+    assert.equal(hookArtifact.status, "succeeded", hookArtifact.error);
+    const artifactRecord = JSON.parse(await fs.readFile(path.join(project, ".aether/hook-artifact.json"), "utf8"));
+    assert.equal(artifactRecord.artifacts[0].sha256, createHash("sha256").update(hookBytes).digest("hex"), "artifact hashes must be computed after the hook");
+
+    // Cancelling while the hook runs stops it, reports cancelled and writes no success record.
+    const hookMarker = path.join(toolTemp, "hook-started.txt");
+    tasks.register({ id: "fixture.hook-cancel", executable: process.execPath, args: ["-e", "0"], recordName: "hook-cancel.json", artifacts: async () => ["platformio.ini"], afterSuccess: (_root, _executable, _options, signal) => {
+      return fs.writeFile(hookMarker, "started").then(() => new Promise<void>((_resolve, reject) => {
+        if (signal.aborted) { reject(new Error("hook aborted")); return; }
+        signal.addEventListener("abort", () => reject(new Error("hook aborted")), { once: true });
+      }));
+    } });
+    const pendingHook = await tasks.start("fixture.hook-cancel");
+    for (let n = 0; n < 300 && !(await fs.stat(hookMarker).catch(() => null)); n++) await new Promise((resolve) => setTimeout(resolve, 20));
+    await tasks.cancel(pendingHook.id);
+    const cancelledHook = tasks.list().find((item) => item.id === pendingHook.id)!;
+    assert.equal(cancelledHook.status, "cancelled");
+    assert.deepEqual(cancelledHook.artifacts, []);
+    assert.equal(await fs.stat(path.join(project, ".aether/hook-cancel.json")).catch(() => null), null, "a cancelled hook must not write a success record");
+
     await tasks.stopAll();
     await workspace.close();
     console.log("PASS tool settings: setting/env/PATH priority, user-data persistence and fresh-process restore, actual --version from paths with spaces, Chinese, ; and &&, cached probe errors, invalid and missing path errors, build/compiledb/upload executable wiring, no tool swap mid-task, clangd restart with the new path (real CLI and LSP fixtures, not PlatformIO/clangd themselves)");

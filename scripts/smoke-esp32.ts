@@ -149,10 +149,15 @@ with open(".aether/script_runs.txt", "a") as log:
   await fs.writeFile(recordPath, JSON.stringify(tampered));
   const rejectedGlob = await service.restart(rejectedCore.id, { environment: "esp32-s3", queryDriver: true });
   assert.deepEqual(rejectedGlob.queryDrivers, [], "glob characters are never forwarded to query-driver");
+  tampered.metadata.drivers = [authorized.queryDrivers[0] + ",/tmp/other-g++"];
+  await fs.writeFile(recordPath, JSON.stringify(tampered));
+  const rejectedComma = await service.restart(rejectedGlob.id, { environment: "esp32-s3", queryDriver: true });
+  assert.deepEqual(rejectedComma.queryDrivers, [], "commas would split the allow-list into extra patterns");
   await fs.writeFile(recordPath, recordText);
-  const restored = await service.restart(rejectedGlob.id, { environment: "esp32-s3", queryDriver: true });
+  const restored = await service.restart(rejectedComma.id, { environment: "esp32-s3", queryDriver: true });
   assert.deepEqual(restored.queryDrivers, authorized.queryDrivers);
   assert.equal(await fs.readFile(path.join(root, ".aether", "script_runs.txt"), "utf8"), scriptRuns, "reading the cache must not rerun project scripts");
+  await service.open(restored.id, file, source, 1);
 
   // Toolchain-only headers (newlib) need the compiler's system include paths, which query-driver supplies.
   const toolchainText = `#include <Arduino.h>
@@ -163,8 +168,8 @@ void loop() { char text[16]; snprintf(text, sizeof text, "%d", (int)strlen("aeth
 `;
   const toolchainLines = toolchainText.split("\n"); const strlenLine = toolchainLines.findIndex((item) => item.includes("strlen"));
   const beforeToolchain = service.get()!.diagnosticsReceived;
-  await service.change(authorized.id, file, toolchainText, 2);
-  const toolchainHover = await service.request(authorized.id, file, 2, "hover", { line: strlenLine, character: toolchainLines[strlenLine].indexOf("strlen") + 2 }) as Hover;
+  await service.change(restored.id, file, toolchainText, 2);
+  const toolchainHover = await service.request(restored.id, file, 2, "hover", { line: strlenLine, character: toolchainLines[strlenLine].indexOf("strlen") + 2 }) as Hover;
   assert.match(JSON.stringify(toolchainHover.contents), /strlen|size_t/i, "toolchain headers must resolve through query-driver");
   await until(() => service.get()!.diagnosticsReceived > beforeToolchain && document(2) !== undefined && errors(2).length === 0, "query-driver must keep ESP32 diagnostics clean");
 

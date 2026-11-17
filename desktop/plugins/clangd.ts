@@ -16,8 +16,9 @@ export const clangdTool: ToolDefinition = {
 const EMPTY_DATABASE = path.join(".aether", "no-compile-database");
 const databaseArtifact = "compile_commands.json";
 const shellScript = /\.(bat|cmd|ps1)$/i;
-// --query-driver accepts globs; a literal path containing these characters would widen the match.
+// --query-driver accepts globs and comma-separated lists; such characters would widen or split the allow-list.
 const globCharacters = /[*?[\]]/;
+const literalUnsafe = (value: string) => globCharacters.test(value) || value.includes(",");
 
 interface CompilerCache { environment?: unknown; drivers?: unknown }
 interface RecordedTask { environment?: string; artifacts?: { path: string; sha256: string }[]; metadata?: CompilerCache }
@@ -63,10 +64,12 @@ async function packageRoots(executable: string) {
 
 // Only an existing literal executable inside <core>/packages is ever authorized for query-driver.
 async function trustedCompiler(candidate: string, packages: string[]) {
-  if (typeof candidate !== "string" || !path.isAbsolute(candidate) || globCharacters.test(candidate) || shellScript.test(candidate)) return null;
+  if (typeof candidate !== "string" || !path.isAbsolute(candidate) || literalUnsafe(candidate) || shellScript.test(candidate)) return null;
   const real = await realDirectory(candidate);
-  const stat = real ? await fs.stat(real).catch(() => null) : null;
-  if (!real || !stat?.isFile()) return null;
+  // Symlinks are resolved before the check: the target path must also be a literal inside the trusted packages.
+  if (!real || literalUnsafe(real)) return null;
+  const stat = await fs.stat(real).catch(() => null);
+  if (!stat?.isFile()) return null;
   const inside = packages.some((root) => fold(real).startsWith(fold(root) + path.sep));
   return inside ? real : null;
 }
@@ -147,7 +150,11 @@ export async function compileDatabaseContext(root: string, options: LanguageStar
       + (compilers.length ? "" : "编译数据库没有编译单元。");
     return { environment: "", compileDatabase: "ready", compileDatabaseMessage: message, queryDrivers: [] };
   }
-  if (task.environment && requested && task.environment !== requested) return missing("stale", "编译数据库属于环境 " + task.environment + "，当前选择 " + requested + "；请为该环境重新生成。");
+  if (requested && task.environment !== requested) {
+    return missing("stale", task.environment
+      ? "编译数据库属于环境 " + task.environment + "，当前选择 " + requested + "；请为该环境重新生成。"
+      : "任务记录没有环境信息（旧版本生成），当前选择 " + requested + "；请重新运行 Generate compilation database。");
+  }
   if (!digest) return missing("missing", "任务记录存在，但 compile_commands.json 不在工程根目录；请重新生成。");
   const recordedDigest = task.artifacts?.find((artifact) => artifact.path === databaseArtifact)?.sha256;
   if (recordedDigest && recordedDigest !== digest) return missing("stale", "compile_commands.json 与 .aether/compiledb.json 记录不一致；请重新生成。");
