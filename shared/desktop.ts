@@ -1,4 +1,5 @@
 import type { ProjectContext } from "../src/plugins/api";
+import type { ToolsAPI } from "./tools";
 export interface DiskWorkspace { root: string; context: ProjectContext }
 export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskSnapshot {
@@ -8,6 +9,7 @@ export interface TaskSnapshot {
 }
 export interface DesktopAPI {
   terminal: import("./terminal").TerminalAPI;
+  tools: ToolsAPI;
   language: import("./language").LanguageAPI;
   runtime: "electron";
   window: (action: "close" | "minimize" | "maximize") => Promise<void>;

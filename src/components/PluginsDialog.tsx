@@ -4,6 +4,7 @@ import { Puzzle } from "lucide-react";
 import { useStudio } from "../store/studio";
 import { usePlugins } from "../plugins/usePlugins";
 import { CloseButton, Modal } from "./Dialogs";
+import { ToolPathField } from "./ToolPathField";
 
 export function PluginsDialog() {
   const { dialog, setDialog, addToast } = useStudio();
@@ -43,7 +44,9 @@ export function PluginsDialog() {
           {current.manifest.type === "board" && current.enabled && <button className="btn btn-primary mt-4 px-3 py-1.5" onClick={() => setDialog("new-project")}>使用此开发板创建工程</button>}
           {current.manifest.settings && <div className="mt-4 space-y-3 border-t border-[#ECEEF1] pt-4">
             <h3 className="font-semibold">插件设置</h3>
-            {current.manifest.settings!.map(({ key, label, type, placeholder, persist }) => <label key={key} className="block text-[10px]">{label}<input aria-label={label} type={type} className="input mt-1 w-full text-[11px]" placeholder={placeholder} value={registry.getSetting(selected, key)} onChange={(e) => registry.setSetting(selected, key, e.target.value, persist)} /></label>)}
+            {current.manifest.settings!.map(({ key, label, type, placeholder, persist, tool, help }) => type === "tool-path" && tool
+              ? <ToolPathField key={key} tool={tool} label={label} placeholder={placeholder} help={help} />
+              : <label key={key} className="block text-[10px]">{label}<input aria-label={label} type={type} className="input mt-1 w-full text-[11px]" placeholder={placeholder} value={registry.getSetting(selected, key)} onChange={(e) => registry.setSetting(selected, key, e.target.value, persist)} /></label>)}
             <p className="text-[9px] leading-5 text-[#90969E]">{current.manifest.settingsHelp}</p>
           </div>}
           {registry.errors.map((issue) => <p key={issue} role="alert" className="mt-2 text-[#9A702C]">{issue}</p>)}

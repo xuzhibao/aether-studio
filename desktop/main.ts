@@ -4,12 +4,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdirSync, promises as fs } from "node:fs";
 import { WorkspaceService } from "./workspace";
 import { TaskService } from "./tasks";
-import { platformioBuild, platformioUpload, platformioCompileDatabase } from "./plugins/platformio";
+import { createPlatformioPlugins } from "./plugins/platformio";
 import { LanguageService } from "./language";
-import { clangdProvider } from "./plugins/clangd";
+import { createClangdProvider } from "./plugins/clangd";
 import { TerminalService } from "./terminal";
 import { shellProvider } from "./plugins/shell";
 import { SerialService } from "./plugins/serial";
+import { ToolService } from "./tools";
 import type { ProjectContext } from "../src/plugins/api";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -26,12 +27,18 @@ const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operat
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root));
 const tasks = new TaskService(workspace, (task) => emit("tasks:changed", task));
-tasks.register(platformioBuild); tasks.register(platformioUpload); tasks.register(platformioCompileDatabase);
 const serial = new SerialService();
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
 terminal.register(shellProvider);
 const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
-language.register(clangdProvider);
+// Tool paths live in the application data directory; plugins declare the tools and their UI.
+const tools = new ToolService(() => path.join(app.getPath("userData"), "tools.json"), (id) => {
+  void tools.list().then((list) => emit("tools:changed", list)).catch((error) => console.error("Tool settings update failed", error));
+  if (id === "clangd") void language.restartForTool("clangd").catch((error) => console.error("clangd restart failed", error));
+});
+const platformio = createPlatformioPlugins(tools);
+tasks.register(platformio.platformioBuild); tasks.register(platformio.platformioUpload); tasks.register(platformio.platformioCompileDatabase);
+language.register(createClangdProvider(tools));
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
@@ -72,6 +79,14 @@ function routes() {
   handle("terminal:write", (id, data) => terminal.write(id, data));
   handle("terminal:read", (id) => terminal.read(id));
   handle("terminal:resize", (id, cols, rows) => terminal.resize(id, cols, rows));
+  handle("tools:list", () => tools.list());
+  handle("tools:status", (id: string) => tools.status(id));
+  handle("tools:setPath", (id: string, value: string) => tools.setPath(id, value));
+  handle("tools:pick", async (id: string) => {
+    const tool = tools.require(id);
+    const result = await dialog.showOpenDialog(window, { title: "选择 " + tool.name + " 可执行文件", properties: ["openFile"], ...(process.platform === "win32" ? { filters: [{ name: "可执行文件", extensions: ["exe"] }] } : {}) });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
   handle("tasks:start", (provider: string, options: Record<string, string> = {}) => enqueue(() => tasks.start(provider, options)));
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   handle("tasks:list", () => tasks.list());
@@ -100,6 +115,8 @@ void app.whenReady().then(async () => {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   routes();
+  await tools.load();
+  for (const issue of tools.errors) console.error("Tool settings:", issue);
   if (process.env.AETHER_DEV_URL) {
     const url = new URL(process.env.AETHER_DEV_URL);
     if (url.hostname !== "127.0.0.1" || url.protocol !== "http:") throw new Error("开发服务器只能使用本机 HTTP 地址");

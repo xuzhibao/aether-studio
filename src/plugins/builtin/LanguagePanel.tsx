@@ -13,7 +13,7 @@ export default function LanguagePanel() {
     <p className="mt-2 leading-6">clangd 分析已打开的 C/C++ 缓冲区，诊断不等于实际编译结果。Ctrl+Space 补全，悬停查看说明，F12 跳转工程内定义。请先生成编译数据库，再启动或重启语言服务。</p>
     <div className="my-3 flex flex-wrap gap-2"><button className="btn px-3 py-1.5" disabled={!isDesktop() || !root} onClick={() => run(start)}>Start clangd</button><button className="btn px-3 py-1.5" disabled={!isDesktop() || !root} onClick={() => run(async () => { await provider.stop(); await start(); })}>Restart clangd</button><button className="btn px-3 py-1.5" disabled={!snapshot || snapshot.status !== "ready"} onClick={() => run(() => provider.stop())}>Stop clangd</button></div>
     <p role="status" data-language-status={snapshot?.status ?? "idle"}>{snapshot ? `clangd · ${snapshot.status}` : "尚未启动 clangd"}</p>
-    {snapshot && <><p className="mt-2 break-all">{snapshot.root}</p><p className="mt-2">{snapshot.compileDatabase ? "启动时已找到 compile_commands.json" : "启动时未找到编译数据库，使用 clangd 默认参数；诊断可能不准确。"}</p></>}
+    {snapshot && <><p className="mt-2 break-all">{snapshot.root}</p><p className="mt-2 break-all">clangd 可执行文件：{snapshot.executable}</p><p className="mt-2">{snapshot.compileDatabase ? "启动时已找到 compile_commands.json" : "启动时未找到编译数据库，使用 clangd 默认参数；诊断可能不准确。"}</p></>}
     {error && <p role="alert" className="mt-3 whitespace-pre-wrap text-[#A8741F]">{error}</p>}
     {!isDesktop() && <p className="mt-3">语言服务需要 Electron 桌面端和本机 clangd。</p>}
     <h2 className="mt-5 font-semibold">打开文件的诊断</h2>

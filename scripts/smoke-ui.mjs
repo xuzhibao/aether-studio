@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile, readFile } from "node:fs/promises";
 import { chromium } from "playwright";
 
-const server = spawn("npm", ["run", "preview", "--", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], { stdio: "pipe", detached: process.platform !== "win32" });
+// Run Vite directly: spawning npm is not portable on Windows without a shell.
+const server = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "preview", "--host", "127.0.0.1", "--port", "1421", "--strictPort"], { stdio: "pipe", detached: process.platform !== "win32" });
 let serverLog = "";
 server.stdout.on("data", (chunk) => { serverLog += chunk; });
 server.stderr.on("data", (chunk) => { serverLog += chunk; });
@@ -30,6 +31,15 @@ try {
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
   await dialog.getByText("本地内置插件 · 14 / 14 已启用", { exact: true }).waitFor();
+  // Browser preview cannot reach desktop tools; the plugin settings must say so instead of pretending.
+  await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
+  const platformioTool = dialog.locator('[data-tool-id="platformio"]');
+  await platformioTool.waitFor();
+  assert.equal(await platformioTool.getAttribute("data-tool-available"), "false");
+  await platformioTool.getByText(/桌面工具仅在安装版/).first().waitFor();
+  assert.equal(await platformioTool.locator("input").count(), 0);
+  await dialog.getByRole("button", { name: /^C\/C\+\+ · clangd/ }).click();
+  assert.equal(await dialog.locator('[data-tool-id="clangd"]').getAttribute("data-tool-available"), "false");
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();

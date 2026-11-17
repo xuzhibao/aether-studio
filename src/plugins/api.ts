@@ -9,6 +9,16 @@ export interface ProjectWorkspace {
 }
 export interface ProjectContext extends ProjectWorkspace { project: ProjectMeta }
 export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language" | "terminal";
+export interface PluginSettingField {
+  key: string;
+  label: string;
+  type: "text" | "url" | "password" | "tool-path";
+  placeholder?: string;
+  persist?: boolean;
+  /** Desktop tool identity owned by the plugin; the host provides storage and status probing. */
+  tool?: string;
+  help?: string;
+}
 export interface PluginManifest {
   id: string;
   name: string;
@@ -19,7 +29,7 @@ export interface PluginManifest {
   dependencies?: string[];
   enabled: boolean;
   settingsHelp?: string;
-  settings?: { key: string; label: string; type: "text" | "url" | "password"; placeholder?: string; persist?: boolean }[];
+  settings?: PluginSettingField[];
 }
 export interface PartViewProps {
   comp: HwComponent;

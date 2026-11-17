@@ -4,7 +4,7 @@ export type LanguageRequest = "completion" | "hover" | "definition";
 export interface DefinitionTarget { file: string; uri: string; range: Range }
 export interface LanguageDocument { file: string; version: number; diagnostics: Diagnostic[] }
 export interface LanguageSnapshot {
-  id: number; provider: string; root: string; status: "starting" | "ready" | "stopped" | "error";
+  id: number; provider: string; root: string; executable: string; status: "starting" | "ready" | "stopped" | "error";
   compileDatabase: boolean; error: string; log: string; documents: LanguageDocument[];
 }
 export interface LanguageAPI {

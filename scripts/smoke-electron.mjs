@@ -77,6 +77,20 @@ try {
   await until(async () => (await page.evaluate(() => window.aether.language.get()))?.documents.some((doc) => doc.file === 'src/main.cpp'));
   await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
   let pluginDialog = page.getByRole('dialog');
+  // Plugin-owned tool settings: actual status probe, saved executable and user-data persistence.
+  await pluginDialog.getByRole('button', { name: /^PlatformIO/ }).click();
+  const platformioField = pluginDialog.locator('[data-tool-id="platformio"]');
+  await platformioField.waitFor();
+  assert.equal(await platformioField.getAttribute('data-tool-available'), 'true');
+  await platformioField.getByRole('button', { name: /检测/ }).click();
+  await platformioField.getByText(/PlatformIO Core/).first().waitFor();
+  if (process.env.AETHER_PLATFORMIO_CLI) {
+    const toolInput = platformioField.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true });
+    await toolInput.fill(process.env.AETHER_PLATFORMIO_CLI);
+    await toolInput.press('Enter');
+    await until(async () => JSON.parse(await fs.readFile(path.join(profile, 'tools.json'), 'utf8').catch(() => '{}')).paths?.platformio === process.env.AETHER_PLATFORMIO_CLI);
+    assert.equal(await toolInput.inputValue(), process.env.AETHER_PLATFORMIO_CLI);
+  }
   await pluginDialog.getByRole('button', { name: /^C\/C\+\+ · clangd/ }).click();
   await pluginDialog.getByRole('button', { name: '停用', exact: true }).click();
   await until(async () => (await page.evaluate(() => window.aether.language.get())) === null);
@@ -204,6 +218,13 @@ try {
   await until(() => processGone(terminalPidAtExit));
   await launch(); await page.getByText(root, { exact: true }).first().waitFor();
   assert.equal(await page.evaluate(() => window.aether.runtime), 'electron');
+  await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
+  const restoredDialog = page.getByRole('dialog');
+  await restoredDialog.getByRole('button', { name: /^PlatformIO/ }).click();
+  const restoredTool = restoredDialog.locator('[data-tool-id="platformio"]');
+  await restoredTool.waitFor();
+  if (process.env.AETHER_PLATFORMIO_CLI) assert.equal(await restoredTool.getByRole('textbox', { name: 'PlatformIO CLI 可执行文件', exact: true }).inputValue(), process.env.AETHER_PLATFORMIO_CLI);
+  await restoredDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await app.close(); app = undefined;
   console.log('PASS Electron: isolated preload, real disk folder open/edit/save/reopen, portable files, external edit refusal, new file, real clangd unsaved diagnostics/completion/F12 and plugin restart, PlatformIO compilation database and build/failure/cancel, OS PTY and WebSocket UI round trips, real interactive shell keyboard/UTF-8/resize/Ctrl+C, panel persistence and process cleanup on disable/reload/exit; picker selection fixture only, no hardware');
 } catch (error) {

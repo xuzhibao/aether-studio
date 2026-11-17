@@ -7,8 +7,8 @@ import type { CompletionItem, CompletionList, Definition, DefinitionLink, Hover,
 import { validProjectPath } from "../shared/projectFormat";
 import type { LanguageRequest, LanguageSnapshot, Position, DefinitionTarget } from "../shared/language";
 import type { WorkspaceService } from "./workspace";
-export interface LanguageProvider { id: string; executable: string; args: (root: string) => string[] }
-interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void> }
+export interface LanguageProvider { id: string; executable: string | (() => string); args: (root: string) => string[]; tool?: string }
+interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void>; toolId?: string }
 const methods = { completion: "textDocument/completion", hover: "textDocument/hover", definition: "textDocument/definition" } as const;
 export class LanguageService {
   private providers = new Map<string, LanguageProvider>();
@@ -38,12 +38,13 @@ export class LanguageService {
     if (this.session?.snapshot.provider === providerId && this.session.snapshot.root === root && this.session.snapshot.status === "ready") return this.get()!;
     await this.stop();
     const provider = this.providers.get(providerId); if (!provider) throw new Error("未注册的语言服务：" + providerId);
-    const snapshot: LanguageSnapshot = { id: ++this.sequence, provider: providerId, root, status: "starting", compileDatabase: !!await fs.stat(path.join(root, "compile_commands.json")).catch(() => null), error: "", log: "", documents: [] };
-    const child = spawn(provider.executable, provider.args(root), { cwd: root, shell: false, windowsHide: true });
+    const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
+    const snapshot: LanguageSnapshot = { id: ++this.sequence, provider: providerId, root, executable, status: "starting", compileDatabase: !!await fs.stat(path.join(root, "compile_commands.json")).catch(() => null), error: "", log: "", documents: [] };
+    const child = spawn(executable, provider.args(root), { cwd: root, shell: false, windowsHide: true });
     const spawned = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     const rpc = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
     let resolve!: () => void; const done = new Promise<void>((finish) => { resolve = finish; });
-    const session: Session = { snapshot, child, rpc, done }; this.session = session;
+    const session: Session = { snapshot, child, rpc, done, toolId: provider.tool }; this.session = session;
     child.stderr.on("data", (chunk: Buffer) => { snapshot.log = (snapshot.log + chunk.toString()).slice(-30000); this.emit(session); });
     child.on("error", (error) => { snapshot.error = error.message; snapshot.status = "error"; this.emit(session); rpc.dispose(); });
     child.on("close", (code, signal) => {
@@ -116,11 +117,20 @@ export class LanguageService {
     }
     return targets;
   }
-  async stop(id?: number) {
+  async stop(id?: number, options: { quiet?: boolean } = {}) {
     const session = this.session; if (!session || (id !== undefined && id !== session.snapshot.id)) return;
-    session.snapshot.status = "stopped"; session.snapshot.documents = []; this.emit(session);
+    if (!options.quiet) { session.snapshot.status = "stopped"; session.snapshot.documents = []; this.emit(session); }
     session.rpc.dispose(); session.child.kill();
     const timer = setTimeout(() => session.child.kill("SIGKILL"), 1500);
     try { await session.done; } finally { clearTimeout(timer); if (this.session === session) this.session = undefined; }
+  }
+
+  // A saved tool change restarts a ready session so the next process uses the new executable.
+  async restartForTool(toolId: string) {
+    const session = this.session;
+    if (!session || session.toolId !== toolId || session.snapshot.status !== "ready") return false;
+    const { provider, root } = session.snapshot;
+    await this.stop(undefined, { quiet: true });
+    try { await this.start(provider, root); return true; } catch { return false; }
   }
 }

@@ -295,3 +295,6 @@ assert.equal(io().status, "disconnected");
 plugins.unregister("aether.transport.websocket");
 plugins.register(websocketPlugin); plugins.enable("aether.transport.websocket");
 console.log("PASS WebSocket cancellation: wait for deferred close event before allowing reconnect (event fixture)");
+
+const { runToolSmoke } = await import("./smoke-tools");
+await runToolSmoke();
