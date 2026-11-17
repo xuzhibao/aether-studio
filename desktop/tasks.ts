@@ -3,12 +3,14 @@ import { promisify } from "node:util";
 import { randomUUID, createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { TaskSnapshot, BuildArtifact } from "../shared/desktop";
+import type { TaskSnapshot, BuildArtifact, TaskEnvironment } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
 export interface TaskProvider {
   id: string; executable: string | (() => string); args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
   inputExcludes?: string[]; recordName?: string;
-  artifacts: (root: string, executable: string) => Promise<string[]>;
+  // Providers that build one selected environment at a time expose what the project currently declares.
+  environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
+  artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
 }
 export class TaskService {
   private providers = new Map<string, TaskProvider>();
@@ -16,6 +18,15 @@ export class TaskService {
   constructor(private workspace: WorkspaceService, private changed: (task: TaskSnapshot) => void = () => {}) {}
   register(provider: TaskProvider) { if (this.providers.has(provider.id)) throw new Error("Duplicate task provider: " + provider.id); this.providers.set(provider.id, provider); }
   list() { return [...this.jobs.values()].map((job) => structuredClone(job.task)); }
+  async environments(id: string): Promise<TaskEnvironment[]> {
+    const provider = this.providers.get(id);
+    if (!provider) throw new Error("未注册的任务：" + id);
+    if (!provider.environments) return [];
+    const root = this.workspace.root;
+    if (!root) throw new Error("请先打开工程目录");
+    const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
+    return provider.environments(root, executable);
+  }
   async start(id: string, options: Record<string, string> = {}) {
     const provider = this.providers.get(id);
     if (!provider) throw new Error("未注册的任务：" + id);
@@ -24,10 +35,13 @@ export class TaskService {
     if (this.list().some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
     // Resolve once so a settings change cannot swap the executable of a running task.
     const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
-    const args = typeof provider.args === "function" ? provider.args(options) : provider.args;
+    // The environment is fixed before the process starts; a settings change or a later UI selection cannot swap it.
+    const environment = await this.resolveEnvironment(provider, root, executable, options.environment);
+    const resolved = environment ? { ...options, environment } : options;
+    const args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
     const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
     let cancelled = false;
     let processClosed = false;
@@ -55,7 +69,7 @@ export class TaskService {
         if (result === "succeeded") {
           if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
           const artifacts: BuildArtifact[] = [];
-          for (const relative of await provider.artifacts(root, executable)) {
+          for (const relative of await provider.artifacts(root, executable, resolved)) {
             const bytes = await fs.readFile(path.join(root, relative));
             artifacts.push({ path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
           }
@@ -69,6 +83,18 @@ export class TaskService {
       emit(); finish();
     });
     emit(); return structuredClone(task);
+  }
+  private async resolveEnvironment(provider: TaskProvider, root: string, executable: string, requested?: string): Promise<string | undefined> {
+    if (!provider.environments) return undefined;
+    const declared = await provider.environments(root, executable);
+    if (!declared.length) throw new Error("工程中没有可用的构建环境；请先在 platformio.ini 中声明 env:*");
+    const wanted = requested?.trim();
+    if (wanted) {
+      if (!declared.some((item) => item.name === wanted)) throw new Error("未知的构建环境：" + wanted);
+      return wanted;
+    }
+    const fallback = declared.find((item) => item.default) ?? declared[0];
+    return fallback.name;
   }
   async cancel(id: string) { const job = this.jobs.get(id); if (!job) throw new Error("任务不存在"); job.cancel(); await job.done; }
   async stopAll() { await Promise.all([...this.jobs.values()].filter((job) => job.task.status === "running").map((job) => this.cancel(job.task.id))); }

@@ -130,9 +130,11 @@ npm run desktop
 
 点击 **Build**，或在左侧 **Build Tasks** 中选择 **Build with PlatformIO**。任务运行前保存工程文件，并断开设备通信。运行期间可以编辑缓冲区，但需等待或取消任务后再保存；下次构建才会使用这些编辑。
 
-最近成功任务保存在 `.aether/build.json`，包含已加载文本与元数据的快照指纹、工具版本、日志和产物校验和。构建前后若已加载的磁盘输入发生变化，不登记产物。此前成功任务的记录不代表当前未保存缓冲区已经构建。
+**Build Tasks** 顶部显示由 `platformio.ini` 解析出的环境。环境列表来自 `platformio project config --json-output`；声明了 `default_envs` 时标记默认环境，否则默认选第一个。构建、上传和生成编译数据库都会显式传入 `-e 环境名`，任务启动时固定该环境，运行期间不能切换。产物只按该环境的 `.pio/build/环境名` 目录登记，不会把其他环境的旧产物记为成功。
 
-上传时点击 **Deploy to Device**，选择 **PlatformIO Upload** 并明确填写端口。插件执行 `platformio run --target upload --upload-port PORT`，由工程配置决定芯片、构建和烧录方式。上传会修改设备固件；监视器先断开，完成后需手动重新连接。MicroPython 文件部署尚未接入。
+最近成功任务保存在 `.aether/build.json`，包含已加载文本与元数据的快照指纹、工具版本、所选环境、日志和产物校验和。构建前后若已加载的磁盘输入发生变化，不登记产物。此前成功任务的记录不代表当前未保存缓冲区已经构建。
+
+上传时点击 **Deploy to Device**，选择 **PlatformIO Upload** 并明确填写端口。插件执行 `platformio run -e ENV --target upload --upload-port PORT`，由工程配置决定芯片、构建和烧录方式。上传会修改设备固件；监视器先断开，完成后需手动重新连接。MicroPython 文件部署尚未接入。
 
 不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 提供固定平台版本的 ESP32-S3 Arduino 示例。
 
@@ -156,7 +158,7 @@ sudo apt-get install clangd
 - `F12`：跳转已加载工程文件内的定义；系统头文件和工程外跳转尚未接入。
 - 左侧 **C/C++ Language**：查看状态、日志和已打开文件的诊断，点击诊断定位代码，或停止、重启服务。
 
-先在 **Build Tasks** 点击 **Generate compilation database**，或运行命令面板的 **Generate compilation database (PlatformIO)**。该任务实际执行 `platformio run --target compiledb`，按工程配置运行构建脚本，并生成根目录 `compile_commands.json`；任务记录位于 `.aether/compiledb.json`。它不等于固件编译或上传。生成后在语言面板重启 clangd，必要时重新读取目录。
+先在 **Build Tasks** 点击 **Generate compilation database**，或运行命令面板的 **Generate compilation database (PlatformIO)**。该任务实际执行 `platformio run -e ENV --target compiledb`，按工程配置运行构建脚本，并生成根目录 `compile_commands.json`；任务记录位于 `.aether/compiledb.json`，其中记录本次环境。它不等于固件编译或上传。生成后语言面板会提示重新启动 clangd，必要时重新读取目录。
 
 没有编译数据库时，面板明确显示正在使用默认参数。clangd 对芯片专属编译器参数、目标架构和 SDK 的支持取决于安装版本，可能报告与真实工具链不同的诊断；当前语言插件以原生 C/C++ 工程为主要支持路径，ESP32 交叉工具链的语义分析仍有限制。实际构建结果以 PlatformIO 任务为准。
 
@@ -236,6 +238,7 @@ npm run build:desktop
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:platformio
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:language
 ```
 

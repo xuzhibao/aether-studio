@@ -61,6 +61,7 @@ jobs:
       - run: npx playwright install-deps chromium
       - run: npm run smoke:terminal
       - run: npm run smoke:host
+      - run: npm run smoke:platformio
       - run: npm run smoke:language
       - run: platformio run -d examples/platformio-esp32s3
       - run: npm run desktop:package

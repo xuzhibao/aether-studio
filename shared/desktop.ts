@@ -12,8 +12,9 @@ export interface WorkspaceFileOptions {
   accept: (path: string) => Promise<void>;
 }
 export interface BuildArtifact { path: string; sha256: string; size: number }
+export interface TaskEnvironment { name: string; default: boolean }
 export interface TaskSnapshot {
-  id: string; provider: string; root: string; status: "running" | "succeeded" | "failed" | "cancelled";
+  id: string; provider: string; root: string; environment?: string; status: "running" | "succeeded" | "failed" | "cancelled";
   startedAt: string; endedAt?: string; exitCode: number | null; log: string; error?: string;
   inputHash: string; toolVersion?: string; artifacts: BuildArtifact[];
 }
@@ -33,6 +34,7 @@ export interface DesktopAPI {
   };
   tasks: {
     start: (provider: string, options?: Record<string, string>) => Promise<TaskSnapshot>; cancel: (id: string) => Promise<void>;
+    environments: (provider: string) => Promise<TaskEnvironment[]>;
     list: () => Promise<TaskSnapshot[]>; onChanged: (listener: (task: TaskSnapshot) => void) => () => void;
   };
   serial: {

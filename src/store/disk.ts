@@ -2,12 +2,14 @@ import { create } from "zustand";
 import { isDesktop } from "../lib/desktop";
 import { useStudio } from "./studio";
 import { useTransport } from "./transport";
-import type { DiskWorkspace, TaskSnapshot } from "../../shared/desktop";
+import type { DiskWorkspace, TaskSnapshot, TaskEnvironment } from "../../shared/desktop";
 import { plugins } from "../plugins/runtime";
 export type DiskChangeKind = "modified" | "deleted" | "added";
 export interface DiskChange { file: string; kind: DiskChangeKind; disk: string | null; local: string | null; dirty: boolean }
 interface DiskState {
   root: string | null; changed: boolean; busy: boolean; tasks: TaskSnapshot[]; error: string;
+  environments: TaskEnvironment[]; environment: string;
+  loadEnvironments: (provider?: string) => Promise<void>; setEnvironment: (name: string) => void;
   directories: string[]; synced: Record<string, string>; diskFiles: Record<string, string>;
   adopt: (disk: DiskWorkspace) => void; open: () => Promise<void>; saveAs: () => Promise<void>; reload: () => Promise<void>;
   save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<void>; cancel: (id: string) => Promise<void>;
@@ -36,13 +38,13 @@ export function diskChanges(): DiskChange[] {
 export const useDisk = create<DiskState>((set, get) => {
   const recompute = () => set({ changed: diskChanges().length > 0 });
   return {
-  root: null, changed: false, busy: false, tasks: [], error: "", directories: [], synced: {}, diskFiles: {},
+  root: null, changed: false, busy: false, tasks: [], error: "", environments: [], environment: "", directories: [], synced: {}, diskFiles: {},
   adopt: ({ root, context, directories }) => {
     const { project, ...workspace } = context;
     useStudio.getState().cancelAgent(); void useTransport.getState().disconnect();
     useStudio.setState({ projects: [project], activeProjectId: project.id, workspaces: { [project.id]: workspace }, ...workspace, activeTab: "circuit", activeNav: "circuit", openTabs: ["circuit", ...Object.keys(workspace.files).filter((name) => name !== "circuit.json").slice(0, 1), "serial"], dirty: false, dialog: null, selectedId: null, selectedPin: null, libraryOpen: false, runState: "idle", elapsed: 0, serial: [], console: [], agentMessages: [], proposalReview: null });
     const synced = persisted(workspace.files);
-    set({ root, changed: false, error: "", directories: directories ?? [], synced, diskFiles: synced }); plugins.emit("project:opened", { root, id: project.id });
+    set({ root, changed: false, error: "", environments: [], environment: "", directories: directories ?? [], synced, diskFiles: synced }); plugins.emit("project:opened", { root, id: project.id });
   },
   open: async () => { set({ busy: true }); try { const result = await desktop().workspace.open(); if (result) get().adopt(result); } finally { set({ busy: false }); } },
   saveAs: async () => { set({ busy: true }); try { const result = await desktop().workspace.saveAs(useStudio.getState().getProjectContext()); if (result) get().adopt(result); } finally { set({ busy: false }); } },
@@ -58,7 +60,7 @@ export const useDisk = create<DiskState>((set, get) => {
     plugins.emit("project:saved", { root: get().root, id: context.project.id });
     await get().refresh();
   },
-  detach: () => { if (!get().root) return; set({ root: null, changed: false, directories: [], synced: {}, diskFiles: {} }); void desktop().workspace.close().catch((error) => set({ error: String(error) })); },
+  detach: () => { if (!get().root) return; set({ root: null, changed: false, environments: [], environment: "", directories: [], synced: {}, diskFiles: {} }); void desktop().workspace.close().catch((error) => set({ error: String(error) })); },
   refresh: async () => {
     if (!get().root || !isDesktop()) return;
     const listing = await desktop().workspace.files.listing();
@@ -105,11 +107,26 @@ export const useDisk = create<DiskState>((set, get) => {
     set((s) => ({ synced: { ...s.synced, [file]: text }, diskFiles: { ...s.diskFiles, [file]: text }, error: "" }));
     recompute();
   },
+  loadEnvironments: async (provider = "platformio.build") => {
+    if (!get().root || !isDesktop()) return;
+    const environments = await desktop().tasks.environments(provider);
+    const current = get().environment;
+    const environment = environments.some((item) => item.name === current) ? current : (environments.find((item) => item.default) ?? environments[0])?.name ?? "";
+    set({ environments, environment });
+  },
+  setEnvironment: (name) => {
+    const state = get();
+    if (state.tasks.some((task) => task.status === "running")) throw new Error("任务运行中，请等待或取消后再切换环境");
+    if (!state.environments.some((item) => item.name === name)) throw new Error("未知的构建环境：" + name);
+    set({ environment: name });
+  },
   build: async (provider, options) => {
     if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
     await get().save();
     await useTransport.getState().disconnect();
-    const task = await desktop().tasks.start(provider, options);
+    // PlatformIO 的构建、上传和编译数据库共用当前选定的环境，避免产物和数据库串用。
+    const environment = get().environment;
+    const task = await desktop().tasks.start(provider, provider.startsWith("platformio.") && environment ? { ...options, environment } : options);
     set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
   },
   cancel: async (id) => { await desktop().tasks.cancel(id); },

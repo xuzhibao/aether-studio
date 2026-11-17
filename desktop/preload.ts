@@ -20,7 +20,7 @@ const api: DesktopAPI = {
       accept: (path) => ipcRenderer.invoke("workspace:files:accept", path),
     },
   },
-  tasks: { start: (provider, options) => ipcRenderer.invoke("tasks:start", provider, options), cancel: (id) => ipcRenderer.invoke("tasks:cancel", id), list: () => ipcRenderer.invoke("tasks:list"), onChanged: (callback) => event("tasks:changed", callback) },
+  tasks: { start: (provider, options) => ipcRenderer.invoke("tasks:start", provider, options), cancel: (id) => ipcRenderer.invoke("tasks:cancel", id), environments: (provider) => ipcRenderer.invoke("tasks:environments", provider), list: () => ipcRenderer.invoke("tasks:list"), onChanged: (callback) => event("tasks:changed", callback) },
   serial: { list: () => ipcRenderer.invoke("serial:list"), open: (port, baud) => ipcRenderer.invoke("serial:open", port, baud), read: (id) => ipcRenderer.invoke("serial:read", id), write: (id, bytes) => ipcRenderer.invoke("serial:write", id, bytes), close: (id) => ipcRenderer.invoke("serial:close", id) },
 };
 contextBridge.exposeInMainWorld("aether", api);
