@@ -54,10 +54,12 @@ jobs:
             ~/.cache/electron
           key: hardware-tools-${{ runner.os }}-pio6.1.19-esp6.12.0-${{ hashFiles('package-lock.json') }}
           restore-keys: hardware-tools-${{ runner.os }}-pio6.1.19-esp6.12.0-
+      - run: sudo apt-get update && sudo apt-get install -y clangd
       - run: python -m pip install platformio==6.1.19
       - run: npm ci
       - run: npx playwright install-deps chromium
       - run: npm run smoke:host
+      - run: npm run smoke:language
       - run: platformio run -d examples/platformio-esp32s3
       - run: npm run desktop:package
       - run: xvfb-run -a npm run smoke:desktop

@@ -4,7 +4,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdirSync, promises as fs } from "node:fs";
 import { WorkspaceService } from "./workspace";
 import { TaskService } from "./tasks";
-import { platformioBuild, platformioUpload } from "./plugins/platformio";
+import { platformioBuild, platformioUpload, platformioCompileDatabase } from "./plugins/platformio";
+import { LanguageService } from "./language";
+import { clangdProvider } from "./plugins/clangd";
 import { SerialService } from "./plugins/serial";
 import type { ProjectContext } from "../src/plugins/api";
 
@@ -22,12 +24,14 @@ const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operat
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root));
 const tasks = new TaskService(workspace, (task) => emit("tasks:changed", task));
-tasks.register(platformioBuild); tasks.register(platformioUpload);
+tasks.register(platformioBuild); tasks.register(platformioUpload); tasks.register(platformioCompileDatabase);
 const serial = new SerialService();
+const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
+language.register(clangdProvider);
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { await tasks.stopAll(); await serial.dispose(); };
+const beforeSwitch = async () => { await tasks.stopAll(); await serial.dispose(); await language.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -51,6 +55,13 @@ function routes() {
     if (!content) return null;
     const saved = JSON.parse(content); return saved.root ? workspace.open(saved.root) : null;
   }));
+  handle("language:start", (provider, root) => enqueue(() => language.start(provider, root)));
+  handle("language:stop", (id) => enqueue(() => language.stop(id)));
+  handle("language:get", () => language.get());
+  handle("language:open", (id, file, text, version) => enqueue(() => language.open(id, file, text, version)));
+  handle("language:change", (id, file, text, version) => enqueue(() => language.change(id, file, text, version)));
+  handle("language:close", (id, file) => enqueue(() => language.close(id, file)));
+  handle("language:request", (id, file, version, method, position) => language.request(id, file, version, method, position));
   handle("tasks:start", (provider: string, options: Record<string, string> = {}) => enqueue(() => tasks.start(provider, options)));
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   handle("tasks:list", () => tasks.list());
@@ -61,7 +72,7 @@ let quitting = false;
 app.on("before-quit", (event) => {
   if (quitting) return;
   event.preventDefault(); if (!confirmClose()) return; dirty = false; quitting = true;
-  void Promise.all([tasks.stopAll(), serial.dispose(), workspace.close()]).finally(() => app.quit());
+  void Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), workspace.close()]).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
 // Keep the ESM entry import complete so Electron can reach its ready event.

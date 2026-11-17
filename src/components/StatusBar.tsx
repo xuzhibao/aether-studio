@@ -1,3 +1,5 @@
+import { useDisk } from "../store/disk";
+import { useLanguage } from "../store/language";
 import { usePlugins } from "../plugins/usePlugins";
 import { useTransport } from "../store/transport";
 import {
@@ -12,6 +14,8 @@ import { cn, formatElapsed } from "../lib/utils";
 
 export function StatusBar() {
   const io = useTransport();
+  const root = useDisk((state) => state.root);
+  const language = useLanguage((state) => state.snapshot);
   const registry = usePlugins();
   const context = useStudio((s) => s.capabilities);
   const {
@@ -29,6 +33,10 @@ export function StatusBar() {
     agentCollapsed,
   } = useStudio();
 
+  const provider = language && registry.get("languages", language.provider);
+  const languageReady = provider && language.root === root && language.status === "ready";
+  const diagnostics = languageReady ? language.documents.flatMap((item) => item.diagnostics) : [];
+
   return (
     <footer className="flex h-[28px] flex-none items-center gap-2 border-t border-[#E5E8EC] bg-[#F8F9FA] px-3 text-[9.5px] text-[#6F757D]">
       <button
@@ -42,10 +50,10 @@ export function StatusBar() {
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <span className="flex items-center gap-1"><Cpu size={10} className="text-[#878D95]" /> {registry.get("boards", context.board)?.name || "File workspace"} <span className="text-[#B8BCC2]">·</span> {registry.get("toolchains", context.toolchain)?.name || "No toolchain"}</span>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
-      <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => { setDockOpen(true); setDockTab("console"); }}>
-        <CheckCircle2 size={10} className="text-[#2B9661]" /> {errors} Errors
+      <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => { if (languageReady) useStudio.getState().openFile("panel:" + provider.diagnosticsPanel); else { setDockOpen(true); setDockTab("console"); } }}>
+        <CheckCircle2 size={10} className="text-[#2B9661]" /> {languageReady && <span>C/C++ ·</span>} {languageReady ? diagnostics.filter((item) => item.severity === 1).length : errors} Errors
         <span className="mx-0.5 text-[#B8BCC2]">·</span>
-        <span className="flex items-center gap-1 text-[#986C1F]"><AlertTriangle size={10} /> {warnings} Warnings</span>
+        <span className="flex items-center gap-1 text-[#986C1F]"><AlertTriangle size={10} /> {languageReady ? diagnostics.filter((item) => item.severity === 2).length : warnings} Warnings</span>
       </button>
       <span className="h-[11px] w-px bg-[#DFE2E6]" />
       <button className="flex items-center gap-1 hover:text-[#1D1D1F]" onClick={() => setTab("serial")}>

@@ -7,6 +7,7 @@ import type { TaskSnapshot, BuildArtifact } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
 export interface TaskProvider {
   id: string; executable: string; args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
+  inputExcludes?: string[]; recordName?: string;
   artifacts: (root: string) => Promise<string[]>;
 }
 export class TaskService {
@@ -23,7 +24,7 @@ export class TaskService {
     if (this.list().some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
     const args = typeof provider.args === "function" ? provider.args(options) : provider.args;
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(provider.executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
-    const inputHash = await this.workspace.fingerprint();
+    const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
     const task: TaskSnapshot = { id: randomUUID(), provider: id, root, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + provider.executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
     const child = spawn(provider.executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
     let cancelled = false;
@@ -50,7 +51,7 @@ export class TaskService {
       let result: TaskSnapshot["status"] = cancelled ? "cancelled" : code === 0 && !task.error ? "succeeded" : "failed";
       try {
         if (result === "succeeded") {
-          if (inputHash !== await this.workspace.fingerprint()) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
+          if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
           const artifacts: BuildArtifact[] = [];
           for (const relative of await provider.artifacts(root)) {
             const bytes = await fs.readFile(path.join(root, relative));
@@ -59,7 +60,7 @@ export class TaskService {
           if (!artifacts.length) throw new Error("进程已退出，但未找到构建产物");
           task.artifacts = artifacts;
           await fs.mkdir(path.join(root, ".aether"), { recursive: true });
-          await fs.writeFile(path.join(root, ".aether", "build.json"), JSON.stringify({ ...task, status: result }, null, 2));
+          await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result }, null, 2));
         }
       } catch (error) { result = "failed"; task.error = String(error); }
       task.status = result;

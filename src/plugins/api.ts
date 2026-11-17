@@ -8,7 +8,7 @@ export interface ProjectWorkspace {
   capabilities: { board: string; toolchain: string; simulator: string; editor: string };
 }
 export interface ProjectContext extends ProjectWorkspace { project: ProjectMeta }
-export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment";
+export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language";
 export interface PluginManifest {
   id: string;
   name: string;
@@ -51,7 +51,12 @@ export interface TransportOptions { address: string; parameters: Record<string, 
 export interface TransportParameter { key: string; label: string; type: "text" | "number"; initial: string; min?: number }
 export interface TransportHandlers { data: (bytes: Uint8Array) => void; error: (message: string) => void; closed: () => void }
 export interface TransportConnection { label: string; write: (bytes: Uint8Array) => Promise<void>; close: () => Promise<void> }
+export interface EditorAttachment {
+  monaco: typeof import("monaco-editor"); editor: import("monaco-editor").editor.IStandaloneCodeEditor;
+  model: import("monaco-editor").editor.ITextModel; file: string; root: string;
+}
 export interface CapabilityMap {
+  languages: { id: string; name: string; languageIds: string[]; diagnosticsPanel: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; attach: (attachment: EditorAttachment) => () => void };
   deployments: { id: string; name: string; toolchain: string; endpointLabel: string; deploy: (project: ProjectContext, address: string) => Promise<void> };
   transports: { id: string; name: string; unavailable?: string; endpoint: { label: string; placeholder: string }; parameters: TransportParameter[]; description: string; sendHint: string; list?: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers, signal?: AbortSignal) => Promise<TransportConnection> };
   boards: { id: string; name: string; component: string; description: string };

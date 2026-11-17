@@ -100,4 +100,8 @@ This inventory records installed package metadata; it is not a claim that all up
 | tslib | 2.8.1 | 0BSD |
 | use-callback-ref | 1.3.3 | MIT |
 | use-sidecar | 1.1.3 | MIT |
+| vscode-jsonrpc | 8.2.0 | MIT |
+| vscode-jsonrpc | 8.2.1 | MIT |
+| vscode-languageserver-protocol | 3.17.5 | MIT |
+| vscode-languageserver-types | 3.17.5 | MIT |
 | zustand | 5.0.16 | MIT |

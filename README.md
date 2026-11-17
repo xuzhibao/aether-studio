@@ -9,6 +9,7 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 - 保留 macOS 风格布局、电路画布、Monaco、命令面板和 Agent 面板。
 - 插件启停、依赖检查、事件、设置，以及命令、菜单和面板贡献。
 - 打开真实工程目录，编辑 UTF-8 文本、新建文件、保存、检测外部变更和重启后重开。
+- C/C++ 语言插件：调用本机 clangd，提供已打开文件的诊断、补全、悬停和工程内定义跳转。
 - PlatformIO C++ 工程构建：实际进程、实时日志、退出码、取消任务和子进程清理。
 - 构建成功后记录已加载工程文本快照 SHA-256、PlatformIO 版本、产物路径、大小和校验和。
 - PlatformIO 部署插件：明确填写端口后，运行实际构建及上传命令。不会因为打开串口而显示烧录成功。
@@ -81,7 +82,7 @@ npm run desktop
 
 保存使用外部变更检查和逐文件临时写入。文件被外部修改后，Aether 拒绝覆盖；可重新读取目录，或将当前缓冲区另存到空目录。保存不是整个工程的文件系统事务，异常中断后不要直接删除 `.aether-saving` 文件，应先检查其中内容。
 
-当前加载不超过 1 MiB 的 UTF-8 文本文件，跳过链接、二进制和工具缓存目录，包括 `.git`、`.pio`、`.aether`、`node_modules`、`build`、`dist`、`target`、`release`。未加载的文件不会被保存操作删除或改写。尚未提供重命名、删除、外部编辑自动合并或多根工作区。
+当前加载不超过 1 MiB 的 UTF-8 文本文件，跳过链接、二进制和工具缓存目录，包括 `.git`、`.pio`、`.aether`、`.cache`、`node_modules`、`build`、`dist`、`target`、`release`。未加载的文件不会被保存操作删除或改写。尚未提供重命名、删除、外部编辑自动合并或多根工作区。
 
 磁盘工程源码以文件系统为准；`localStorage` 用于浏览器工作区和界面偏好。桌面最近打开目录记录在应用用户数据目录，重启时重新读取文件。可通过 `AETHER_USER_DATA_DIR` 指定用户数据位置。
 
@@ -96,6 +97,30 @@ npm run desktop
 上传时点击 **Deploy to Device**，选择 **PlatformIO Upload** 并明确填写端口。插件执行 `platformio run --target upload --upload-port PORT`，由工程配置决定芯片、构建和烧录方式。上传会修改设备固件；监视器先断开，完成后需手动重新连接。MicroPython 文件部署尚未接入。
 
 不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 提供固定平台版本的 ESP32-S3 Arduino 示例。
+
+## C/C++ 编辑
+
+安装本机 clangd，并确保它在应用进程的 PATH 中，或通过 `AETHER_CLANGD_CLI` 指定完整可执行文件路径。Ubuntu / Debian：
+
+```bash
+sudo apt-get update
+sudo apt-get install clangd
+```
+
+其他系统可从 [clangd 官方安装说明](https://clangd.llvm.org/installation) 获取。clangd 采用 Apache-2.0 WITH LLVM-exception；Aether 不捆绑该程序。
+
+打开磁盘 C/C++ 工程并启用 **C/C++ · clangd** 插件。编辑 `.c`、`.cpp`、`.cc`、`.cxx` 或头文件时启动语言服务。它分析未保存缓冲区，使用 UTF-16 位置同步；不会为诊断而自动保存源码。
+
+- `Ctrl+Space` / `⌃Space`：补全。
+- 悬停符号：查看类型和说明。
+- `F12`：跳转已加载工程文件内的定义；系统头文件和工程外跳转尚未接入。
+- 左侧 **C/C++ Language**：查看状态、日志和已打开文件的诊断，点击诊断定位代码，或停止、重启服务。
+
+先在 **Build Tasks** 点击 **Generate compilation database**，或运行命令面板的 **Generate compilation database (PlatformIO)**。该任务实际执行 `platformio run --target compiledb`，按工程配置运行构建脚本，并生成根目录 `compile_commands.json`；任务记录位于 `.aether/compiledb.json`。它不等于固件编译或上传。生成后在语言面板重启 clangd，必要时重新读取目录。
+
+没有编译数据库时，面板明确显示正在使用默认参数。clangd 对芯片专属编译器参数、目标架构和 SDK 的支持取决于安装版本，可能报告与真实工具链不同的诊断；当前语言插件以原生 C/C++ 工程为主要支持路径，ESP32 交叉工具链的语义分析仍有限制。实际构建结果以 PlatformIO 任务为准。
+
+当前语言插件不执行 compilation database 中的编译器，也不启用 clangd 用户配置或后台全工程索引。只同步已打开的文件，保留打开标签页的缓冲区；关闭文件、停用插件、切换目录和退出应用会清理对应资源。尚未提供重命名、格式化、代码修复或全工程问题扫描。
 
 ## 设备通信
 
@@ -115,7 +140,7 @@ npm run desktop
 
 `src/plugins/api.ts` 定义 Manifest 和能力接口，`src/plugins/registry.ts` 管理注册、依赖、启停和清理。当前官方前端插件由 `src/plugins/builtin/index.tsx` 静态导入，运行在可信应用进程内。
 
-插件通过 `api.register(kind, contribution)` 提供开发板、元器件、编辑器、工具链、部署、仿真器、通信、模型、Agent、工具、模板、命令、工程格式、菜单、面板和叠加视图。操作时使用 `api.project.get()` 读取当前工程；事件订阅在停用时移除。
+插件通过 `api.register(kind, contribution)` 提供开发板、元器件、编辑器、语言服务、工具链、部署、仿真器、通信、模型、Agent、工具、模板、命令、工程格式、菜单、面板和叠加视图。操作时使用 `api.project.get()` 读取当前工程；事件订阅在停用时移除。
 
 例如，在内置插件目录新增：
 
@@ -134,7 +159,7 @@ export const hello: StudioPlugin = {
 
 将插件加入 `builtinPlugins` 数组后，可在命令面板运行，停用后命令被移除。
 
-桌面受限 API 定义在 `shared/desktop.ts`，preload 只暴露指定操作，不暴露 Node、任意 IPC 或任意 shell 执行。后台任务只能调用已注册提供者。PlatformIO 的后台命令和产物发现位于 `desktop/plugins/platformio.ts`，串口适配位于 `desktop/plugins/serial.ts`。
+桌面受限 API 定义在 `shared/desktop.ts`，preload 只暴露指定操作，不暴露 Node、任意 IPC 或任意 shell 执行。后台任务只能调用已注册提供者。PlatformIO 的后台命令和产物发现位于 `desktop/plugins/platformio.ts`，串口适配位于 `desktop/plugins/serial.ts`。语言服务进程由 `desktop/language.ts` 管理，clangd 启动参数在 `desktop/plugins/clangd.ts`；`languages` 能力负责 Monaco 接入及诊断面板。
 
 当前还没有本地插件包安装器、独立插件进程、完整沙箱和插件市场。前后端注册入口仍随应用构建，不宣称支持不可信外部插件。
 
@@ -148,10 +173,11 @@ npm run build
 npm run build:desktop
 ```
 
-真实文件和构建检查需要 PlatformIO：
+真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:language
 ```
 
 浏览器检查：
@@ -176,4 +202,4 @@ Aether 原创代码采用 Apache-2.0，见 `LICENSE` 和 `NOTICE`。第三方组
 
 PlatformIO Core 使用 Apache-2.0；其下载的开发平台、编译器和 SDK 按各自许可提供。IDE 不要求商业模拟器、账号或付费模型。支持 ESP32 不代表其无线固件依赖全部提供源码。
 
-当前尚未提供 LSP、DAP 调试、交互式 PTY 终端、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 桌面运行需要对应环境验证。
+当前尚未提供其他语言的 LSP、DAP 调试、交互式 PTY 终端、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 桌面运行需要对应环境验证。

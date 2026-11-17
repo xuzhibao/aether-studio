@@ -25,3 +25,9 @@ export const platformioUpload: TaskProvider = {
   ...platformioBuild, id: "platformio.upload",
   args: ({ port }) => { if (!port?.trim()) throw new Error("请明确选择烧录端口"); return ["run", "--target", "upload", "--upload-port", port]; },
 };
+
+export const platformioCompileDatabase: TaskProvider = {
+  ...platformioBuild, id: "platformio.compiledb", args: ["run", "--target", "compiledb"],
+  inputExcludes: ["compile_commands.json"], recordName: "compiledb.json",
+  artifacts: async () => ["compile_commands.json"],
+};

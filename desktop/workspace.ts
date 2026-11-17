@@ -6,7 +6,7 @@ import { watch, type FSWatcher } from "chokidar";
 import { decodeProject, encodeProject, validProjectPath } from "../shared/projectFormat";
 import type { ProjectContext } from "../src/plugins/api";
 import type { DiskWorkspace } from "../shared/desktop";
-const ignored = new Set([".git", ".pio", ".aether", "node_modules", "dist", "build", "target", "release", "desktop-dist"]);
+const ignored = new Set([".git", ".pio", ".aether", "node_modules", "dist", "build", "target", "release", "desktop-dist", ".cache"]);
 const manifestName = "aether.project.json";
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
 const diskName = (file: string) => file === "circuit.json" ? "hardware/circuit.json" : file;
@@ -88,7 +88,7 @@ export class WorkspaceService {
     }
   }
   async reload() { return this.open(this.requireRoot()); }
-  async fingerprint() { return digest(encodeProject((await this.read(this.requireRoot())).context)); }
+  async fingerprint(exclude: string[] = []) { const context = (await this.read(this.requireRoot())).context; for (const file of exclude) delete context.files[file]; return digest(encodeProject(context)); }
   async save(context: ProjectContext) {
     const validated = decodeProject(encodeProject(context));
     const root = this.requireRoot();

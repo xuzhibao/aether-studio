@@ -29,7 +29,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 12 / 12 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 13 / 13 已启用", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: /^Demo Simulation/ }).click();
   await dialog.getByText("simulators/demo", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
@@ -92,6 +92,8 @@ try {
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
   await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
+  await dialog.getByRole("button", { name: /^C\/C\+\+ · clangd/ }).click();
+  await dialog.getByRole("button", { name: "停用", exact: true }).click();
   await dialog.getByRole("button", { name: /^Monaco 编辑器/ }).click();
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
@@ -102,6 +104,8 @@ try {
   await dialog.getByRole("button", { name: /^ESP32 示例工程/ }).click();
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
   await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
+  await dialog.getByRole("button", { name: "启用", exact: true }).click();
+  await dialog.getByRole("button", { name: /^C\/C\+\+ · clangd/ }).click();
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
   await page.screenshot({ path: "smoke-results/plugins.png", fullPage: true });
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();

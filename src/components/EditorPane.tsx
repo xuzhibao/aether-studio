@@ -1,5 +1,8 @@
 import { useDisk } from "../store/disk";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { Uri } from "monaco-editor";
+import { usePlugins } from "../plugins/usePlugins";
+import { useLanguage } from "../store/language";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import {
   ChevronRight,
@@ -14,7 +17,7 @@ import { cn } from "../lib/utils";
 import { Tip } from "./ui";
 
 const languageFor = (file: string) => {
-  if (/\.(cpp|hpp|cc|h|c)$/.test(file)) return "cpp";
+  if (/\.(cpp|hpp|cc|cxx|h|hh|hxx|c)$/.test(file)) return file.endsWith(".c") ? "c" : "cpp";
   if (file.endsWith(".ini")) return "ini";
   if (file.endsWith(".py")) return "python";
   if (file.endsWith(".json")) return "json";
@@ -23,6 +26,20 @@ const languageFor = (file: string) => {
 };
 
 export function EditorPane({ file }: { file: string }) {
+  const root = useDisk((state) => state.root);
+  const registry = usePlugins(); const revision = registry.getRevision();
+  const [mounted, setMounted] = useState<{ editor: Parameters<OnMount>[0]; monaco: Parameters<OnMount>[1] } | null>(null);
+  const modelUri = root ? Uri.file(root.replaceAll("\\", "/") + "/" + file).toString() : useStudio.getState().activeProjectId + "/" + file;
+  const jump = useLanguage((state) => state.jump);
+  useEffect(() => {
+    const model = mounted?.editor.getModel(); if (!mounted || !model || !root || model.uri.toString() !== modelUri) return;
+    const disposers = registry.all("languages").filter((item) => item.languageIds.includes(languageFor(file))).map((item) => item.attach({ ...mounted, model, root, file }));
+    return () => disposers.forEach((dispose) => dispose());
+  }, [mounted, root, file, revision, modelUri]);
+  useEffect(() => {
+    if (!mounted || jump?.file !== file || mounted.editor.getModel()?.uri.toString() !== modelUri) return;
+    mounted.editor.setPosition({ lineNumber: jump.range.start.line + 1, column: jump.range.start.character + 1 }); mounted.editor.revealLineInCenter(jump.range.start.line + 1); mounted.editor.focus(); useLanguage.setState({ jump: null });
+  }, [mounted, jump, file, modelUri]);
   const diskBusy = useDisk((s) => s.busy);
   const content = useStudio((s) => s.files[file] ?? "");
   const updateFile = useStudio((s) => s.updateFile);
@@ -89,6 +106,7 @@ export function EditorPane({ file }: { file: string }) {
   };
 
   const onMount: OnMount = (editor, monaco) => {
+    setMounted({ editor, monaco });
     editor.onDidChangeCursorPosition((event) => {
       setCursor({ line: event.position.lineNumber, column: event.position.column });
     });
@@ -130,8 +148,9 @@ export function EditorPane({ file }: { file: string }) {
       </div>
       <div className="relative min-h-0 flex-1">
         <Editor
-          key={file}
-          path={useStudio.getState().activeProjectId + "/" + file}
+          key={modelUri}
+          path={modelUri}
+          keepCurrentModel={!!root}
           language={languageFor(file)}
           value={content}
           theme="aether-light"
