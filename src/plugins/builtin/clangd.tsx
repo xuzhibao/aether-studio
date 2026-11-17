@@ -1,6 +1,7 @@
-import { lazy } from "react";
+import { lazy, Suspense } from "react";
 import type { StudioPlugin } from "../api";
-const LanguagePanel = lazy(() => import("./LanguagePanel"));
+const LazyPanel = lazy(() => import("./LanguagePanel"));
+function LanguagePanel() { return <Suspense fallback={<div className="p-5 text-xs">Loading language service…</div>}><LazyPanel /></Suspense>; }
 export const clangdPlugin: StudioPlugin = (() => {
   let active = false;
   let client: Promise<ReturnType<typeof import("../../language/clangdClient").createLanguageClient>> | undefined;

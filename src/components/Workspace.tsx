@@ -42,6 +42,9 @@ function SplitDivider({ percent, onChange }: { percent: number; onChange: (p: nu
 }
 
 export function Workspace() {
+  const files = useStudio((s) => s.files);
+  const openTabs = useStudio((s) => s.openTabs);
+  const splitFile = [...openTabs].reverse().find((file) => file !== "circuit.json" && Object.hasOwn(files, file)) ?? Object.keys(files).find((file) => file !== "circuit.json");
   const activeTab = useStudio((s) => s.activeTab);
   const splitMode = useStudio((s) => s.splitMode);
   const plugins = usePlugins();
@@ -60,11 +63,11 @@ export function Workspace() {
               <div className="min-w-0" style={{ width: splitMode ? leftWidth + "%" : "100%" }}>
                 <CircuitCanvas />
               </div>
-              {splitMode && (
+              {splitMode && splitFile && (
                 <>
                   <SplitDivider percent={leftWidth} onChange={setLeftWidth} />
                   <div className="min-w-0 flex-1">
-                    <EditorPane file="main.py" />
+                    <EditorPane file={splitFile} />
                   </div>
                 </>
               )}
