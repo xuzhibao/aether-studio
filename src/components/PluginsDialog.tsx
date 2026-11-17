@@ -25,7 +25,7 @@ export function PluginsDialog() {
         <CloseButton onClick={() => setDialog(null)} />
       </div>
       <div className="grid grid-cols-[235px_1fr] border-t border-[#ECEEF1]">
-        <div className="space-y-1 border-r border-[#ECEEF1] bg-[#FAFBFC] p-2">
+        <div className="max-h-[65vh] space-y-1 overflow-y-auto border-r border-[#ECEEF1] bg-[#FAFBFC] p-2">
           {installed.map(({ manifest, enabled }) => <button key={manifest.id} onClick={() => { setSelected(manifest.id); setError(""); }} className={`w-full rounded-md p-2.5 text-left ${selected === manifest.id ? "bg-[#EAF3FF]" : "hover:bg-[#F0F2F5]"}`}>
             <span className="flex items-center justify-between text-[11px] font-medium">{manifest.name}<span className={`ml-1 h-1.5 w-1.5 flex-none rounded-full ${enabled ? "bg-[#2B9661]" : "bg-[#B9BEC5]"}`} /></span>
             <span className="mt-1 block text-[9px] text-[#90969E]">{manifest.type} · v{manifest.version} · {enabled ? "已启用" : "已停用"}</span>

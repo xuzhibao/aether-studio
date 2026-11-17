@@ -160,6 +160,8 @@ export function EditorPane({ file }: { file: string }) {
           loading={<div className="flex h-full items-center justify-center text-[10px] text-[#9AA0A8]">Preparing editor…</div>}
           options={{
             automaticLayout: true,
+            // Monaco 0.52 word-highlight timers reject on disposal during definition navigation.
+            occurrencesHighlight: /\.(c|cc|cpp|cxx|h|hh|hpp|hxx)$/.test(file) ? "off" : "singleFile",
             readOnly: diskBusy || file === "circuit.json",
             fontFamily: '"JetBrains Mono Variable", "SF Mono", monospace',
             fontSize,
