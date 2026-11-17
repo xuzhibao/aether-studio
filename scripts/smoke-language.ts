@@ -8,9 +8,10 @@ import { createClangdProvider } from "../desktop/plugins/clangd";
 import { ToolService } from "../desktop/tools";
 import { TaskService } from "../desktop/tasks";
 import { createPlatformioPlugins } from "../desktop/plugins/platformio";
-import type { CompletionItem, CompletionList, DefinitionTarget, Hover } from "../shared/language";
+import type { CompletionItem, CompletionList, DefinitionTarget, Hover, LanguageSnapshot } from "../shared/language";
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "aether-language-"));
-const workspace = new WorkspaceService(); const service = new LanguageService(workspace); const tasks = new TaskService(workspace);
+const events: LanguageSnapshot[] = [];
+const workspace = new WorkspaceService(); const service = new LanguageService(workspace, (snapshot) => events.push(snapshot)); const tasks = new TaskService(workspace);
 const tools = new ToolService(() => path.join(root, "tool-settings.json")); const clangdProvider = createClangdProvider(tools);
 const platformio = createPlatformioPlugins(tools);
 const file = "src/main.cpp";
@@ -26,11 +27,16 @@ try {
   for (let n = 0; n < 1800 && tasks.list()[0].status === "running"; n++) await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(tasks.list()[0].status, "succeeded", tasks.list()[0].error + "\n" + tasks.list()[0].log);
   assert.equal(tasks.list()[0].artifacts[0].path, "compile_commands.json");
-  assert.equal(JSON.parse(await fs.readFile(path.join(root, ".aether/compiledb.json"), "utf8")).id, build.id);
+  assert.equal(tasks.list()[0].environment, "native", "the compilation database is pinned to the selected environment");
+  const recordPath = path.join(root, ".aether/compiledb.json");
+  assert.equal(JSON.parse(await fs.readFile(recordPath, "utf8")).id, build.id);
   assert.ok(JSON.parse(await fs.readFile(path.join(root, "compile_commands.json"), "utf8")).some((item: { file: string }) => item.file.endsWith("main.cpp")));
   service.register(clangdProvider);
   await assert.rejects(() => service.start("clangd", canonical + "/not-open"), /磁盘工程/);
-  const session = await service.start("clangd", canonical); assert.equal(session.status, "ready"); assert.equal(session.compileDatabase, true);
+  const session = await service.start("clangd", canonical, { environment: "native" });
+  assert.equal(session.status, "ready"); assert.equal(session.compileDatabase, "ready"); assert.equal(session.environment, "native");
+  assert.ok(session.args.some((arg) => arg === "--compile-commands-dir=" + canonical));
+  assert.ok(!session.args.some((arg) => arg.startsWith("--query-driver=")), "query-driver is off unless the user enables it");
   await service.open(session.id, file, code, 1);
   const line = code.split("\n")[1]; const position = { line: 1, character: line.indexOf("sensor_value") + 3 };
   const hover = await service.request(session.id, file, 1, "hover", position) as Hover;
@@ -51,13 +57,51 @@ try {
   assert.equal(await service.request(session.id, file, 5, "hover", position), null);
   await service.request(session.id, file, 6, "hover", position); await until(() => diagnostic(6, false));
   await assert.rejects(() => service.open(session.id, "../outside.cpp", "", 1), /工程内/);
-  await service.close(session.id, file); assert.equal(service.get()!.documents.length, 0);
-  await service.stop(session.id); assert.equal(service.get(), null);
-  const restarted = await service.start("clangd", canonical); assert.ok(restarted.id > session.id);
-  await service.stop(session.id); assert.equal(service.get()!.status, "ready", "old cleanup must not stop a newer process");
+
+  // A database recorded for another environment must not be reused for the selected one.
+  const recordText = await fs.readFile(recordPath, "utf8");
+  const record = JSON.parse(recordText) as { environment: string };
+  record.environment = "another-env"; await fs.writeFile(recordPath, JSON.stringify(record, null, 2));
+  const stale = await service.start("clangd", canonical, { environment: "native" });
+  assert.equal(stale.status, "ready");
+  assert.equal(stale.compileDatabase, "stale");
+  assert.match(stale.compileDatabaseMessage, /another-env/);
+  assert.ok(stale.args.some((arg) => arg.startsWith("--compile-commands-dir=") && arg.includes("no-compile-database")), "stale database must not fall back to the project root: " + stale.args);
+  await service.open(stale.id, file, code, 1);
+  assert.ok(await service.request(stale.id, file, 1, "hover", position), "the service stays usable without the stale flags");
+  await fs.writeFile(recordPath, recordText);
+  const restored = await service.restart(stale.id, { environment: "native" });
+  assert.equal(restored.compileDatabase, "ready");
+  await service.open(restored.id, file, code, 1);
+
+  // Query-driver only lists compilers that exist inside a PlatformIO core directory; a native database has none.
+  const nativeQuery = await service.start("clangd", canonical, { environment: "native", queryDriver: true });
+  assert.deepEqual(nativeQuery.queryDrivers, [], "compilers outside the PlatformIO core are never trusted");
+  assert.ok(!nativeQuery.args.some((arg) => arg.startsWith("--query-driver=")));
+  await service.open(nativeQuery.id, file, code, 1);
+
+  // A successful regeneration refreshes clangd without closing buffers: no stopped/error snapshot is emitted.
+  const latest = service.get()!; const unsaved = '#include "math.hpp"\nint main() { return sensor_value(9); }\n';
+  await service.change(latest.id, file, unsaved, 7);
+  const regenerated = await tasks.start("platformio.compiledb");
+  for (let n = 0; n < 1800 && tasks.list().find((item) => item.id === regenerated.id)!.status === "running"; n++) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(tasks.list().find((item) => item.id === regenerated.id)!.status, "succeeded");
+  events.length = 0;
+  assert.equal(await service.refreshCompileDatabase(canonical, "native"), true);
+  const refreshed = service.get()!;
+  assert.ok(refreshed.id > latest.id); assert.equal(refreshed.status, "ready"); assert.equal(refreshed.compileDatabase, "ready");
+  assert.ok(events.every((event) => event.status !== "stopped" && event.status !== "error"), "refresh must not emit stopped/error");
+  // The renderer reopens open models with their current (unsaved) text; the host keeps the same file and version stream.
+  await service.open(refreshed.id, file, unsaved, 7);
+  assert.ok(await service.request(refreshed.id, file, 7, "hover", position));
+  assert.equal(await fs.readFile(path.join(root, file), "utf8"), code, "refresh must not write the unsaved buffer");
+  await service.close(refreshed.id, file); assert.equal(service.get()!.documents.length, 0);
+  await service.stop(refreshed.id); assert.equal(service.get(), null);
+  const restarted = await service.start("clangd", canonical, { environment: "native" }); assert.ok(restarted.id > refreshed.id);
+  await service.stop(refreshed.id); assert.equal(service.get()!.status, "ready", "old cleanup must not stop a newer process");
   await service.stop();
-  service.register({ ...clangdProvider, id: "missing", executable: path.join(canonical, "not-installed-clangd") });
+  service.register({ ...clangdProvider, id: "missing", executable: path.join(canonical, "not-installed-clangd"), context: undefined });
   await assert.rejects(() => service.start("missing", canonical), /ENOENT/);
   await service.stop();
-  console.log("PASS language: real PlatformIO compilation database, clangd initialize, UTF-16 hover/definition/completion, unsaved diagnostics and recovery, stale version refusal, lifecycle restart/stop, missing executable and workspace boundary; no hardware");
+  console.log("PASS language: real PlatformIO compilation database with a pinned environment, clangd initialize, UTF-16 hover/definition/completion, unsaved diagnostics and recovery, stale environment/hash refusal, explicit query-driver opt-in, quiet refresh after regeneration, lifecycle restart/stop, missing executable and workspace boundary; no hardware");
 } finally { await service.stop(); await tasks.stopAll(); await workspace.close(); await fs.rm(root, { recursive: true, force: true }); }

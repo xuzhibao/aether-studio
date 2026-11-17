@@ -143,11 +143,12 @@ npm run desktop
 安装本机 clangd，并确保它在应用进程的 PATH 中，或通过 `AETHER_CLANGD_CLI` 指定完整可执行文件路径。Ubuntu / Debian：
 
 ```bash
+# ESP32-S3 的 Xtensa 目标需要 clangd 20+（LLVM 20 起包含 Xtensa 支持）；Ubuntu 24.04 自带的 clangd 18 不够。
 sudo apt-get update
-sudo apt-get install clangd
+sudo apt-get install clangd-20
 ```
 
-其他系统可从 [clangd 官方安装说明](https://clangd.llvm.org/installation) 获取。clangd 采用 Apache-2.0 WITH LLVM-exception；Aether 不捆绑该程序。
+其他系统可从 [clangd 官方安装说明](https://clangd.llvm.org/installation) 获取 clangd 20 或更新版本。原生 C/C++ 工程可用较旧版本，但 ESP32 交叉目标会在分析时报告不支持的目标架构。clangd 采用 Apache-2.0 WITH LLVM-exception；Aether 不捆绑该程序。
 
 安装版可在 **Plugins** → **C/C++ · clangd** → **插件设置** 中保存 clangd 可执行文件路径，查找顺序同样为：应用内保存的路径 → `AETHER_CLANGD_CLI` → `PATH`。保存新路径后，正在运行的 clangd 会重启并重新载入已打开的 C/C++ 文档；启动失败时在 **C/C++ Language** 面板显示实际错误和当前使用的可执行文件。
 
@@ -158,11 +159,19 @@ sudo apt-get install clangd
 - `F12`：跳转已加载工程文件内的定义；系统头文件和工程外跳转尚未接入。
 - 左侧 **C/C++ Language**：查看状态、日志和已打开文件的诊断，点击诊断定位代码，或停止、重启服务。
 
-先在 **Build Tasks** 点击 **Generate compilation database**，或运行命令面板的 **Generate compilation database (PlatformIO)**。该任务实际执行 `platformio run -e ENV --target compiledb`，按工程配置运行构建脚本，并生成根目录 `compile_commands.json`；任务记录位于 `.aether/compiledb.json`，其中记录本次环境。它不等于固件编译或上传。生成后语言面板会提示重新启动 clangd，必要时重新读取目录。
+先在 **Build Tasks** 点击 **Generate compilation database**，或运行命令面板的 **Generate compilation database (PlatformIO)**。该任务实际执行 `platformio run -e ENV --target compiledb`，按工程配置运行构建脚本，并生成根目录 `compile_commands.json`；任务记录位于 `.aether/compiledb.json`，其中记录本次环境与文件校验和。它不等于固件编译或上传。
 
-没有编译数据库时，面板明确显示正在使用默认参数。clangd 对芯片专属编译器参数、目标架构和 SDK 的支持取决于安装版本，可能报告与真实工具链不同的诊断；当前语言插件以原生 C/C++ 工程为主要支持路径，ESP32 交叉工具链的语义分析仍有限制。实际构建结果以 PlatformIO 任务为准。
+语言服务使用**当前选定环境**的数据库。生成成功后，正在运行的 clangd 会自动重启并重新载入已打开的缓冲区（包括未保存内容），不需要重开目录或重新打开文件。面板会区分三种状态：
 
-当前语言插件不执行 compilation database 中的编译器，也不启用 clangd 用户配置或后台全工程索引。只同步已打开的文件，保留打开标签页的缓冲区；关闭文件、停用插件、切换目录和退出应用会清理对应资源。尚未提供重命名、格式化、代码修复或全工程问题扫描。
+- **未生成**：没有任务记录，clangd 使用默认参数。
+- **已就绪**：任务记录的环境与当前选择一致，且 `compile_commands.json` 的 SHA-256 与记录一致。
+- **已过期**：记录属于其他环境、数据库被改动或记录无法解析。此时 clangd 只读取一个空数据库，不会回退到根目录或上级目录的旧参数；请为当前环境重新生成。
+
+PlatformIO 默认不把工具链 include 路径写入数据库（`COMPILATIONDB_INCLUDE_TOOLCHAIN` 默认为 false），但会写入框架依赖路径。需要在 **C/C++ Language** 面板显式勾选 **允许 clangd 运行当前环境解析出的编译器（--query-driver）**，clangd 才会运行所选环境的编译器来获取系统头文件路径。允许列表由 `platformio project metadata --json-output -e ENV` 解析出该环境实际的 `cc_path`/`cxx_path`，再要求它们位于 PlatformIO 核心目录（或 `PLATFORMIO_CORE_DIR`）内并确实被当前编译数据库使用；不会使用通配符，也不会执行数据库里的任意编译器。勾选后带有未保存缓冲区的运行中会话会自动重启。
+
+ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s3-elf-g++` 与 `-mlongcalls` 等真实交叉编译参数，不替换为宿主编译器。clangd 的解析结果仍可能与真实工具链不同，实际构建结果以 PlatformIO 任务为准。
+
+当前语言插件不启用 clangd 用户配置或后台全工程索引。只同步已打开的文件，保留打开标签页的缓冲区；关闭文件、停用插件、切换目录和退出应用会清理对应资源。尚未提供重命名、格式化、代码修复或全工程问题扫描。
 
 ## 终端
 
@@ -239,7 +248,8 @@ npm run build:desktop
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:platformio
-AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:language
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" AETHER_CLANGD_CLI=/usr/bin/clangd-20 npm run smoke:language
+AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" AETHER_CLANGD_CLI=/usr/bin/clangd-20 npm run smoke:esp32
 ```
 
 浏览器检查：

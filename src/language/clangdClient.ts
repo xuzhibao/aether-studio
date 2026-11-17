@@ -3,13 +3,14 @@ import type { CompletionItem, CompletionList, Hover, DefinitionTarget, Range, La
 import type { EditorAttachment } from "../plugins/api";
 import { useStudio } from "../store/studio";
 import { useLanguage } from "../store/language";
+import { useDisk } from "../store/disk";
 import { isDesktop } from "../lib/desktop";
 const markerOwner = "aether.clangd";
 const range = (value: Range) => ({ startLineNumber: value.start.line + 1, startColumn: value.start.character + 1, endLineNumber: value.end.line + 1, endColumn: value.end.character + 1 });
 interface LanguageBinding { root: string; file: string; model: Monaco.editor.ITextModel; sessionId: number | null; ready: Promise<LanguageSnapshot>; flush: () => Promise<void>; dispose: () => void }
 const kinds = ["Text", "Method", "Function", "Constructor", "Field", "Variable", "Class", "Interface", "Module", "Property", "Unit", "Value", "Enum", "Keyword", "Snippet", "Color", "File", "Reference", "Folder", "EnumMember", "Constant", "Struct", "Event", "Operator", "TypeParameter"] as const;
 export function createLanguageClient() {
-  if (!isDesktop()) return { start: async (_root: string) => { throw new Error("语言服务需要 Electron 桌面端"); }, stop: async () => {}, attach: (_attachment: EditorAttachment) => () => {}, dispose: () => {} };
+  if (!isDesktop()) return { start: async (_root: string) => { throw new Error("语言服务需要 Electron 桌面端"); }, stop: async () => {}, restart: async () => { throw new Error("语言服务需要 Electron 桌面端"); }, attach: (_attachment: EditorAttachment) => () => {}, dispose: () => {} };
   const api = window.aether!.language;
   let latest: LanguageSnapshot | null = null;
   const starting = new Set<Promise<LanguageSnapshot>>();
@@ -102,17 +103,28 @@ export function createLanguageClient() {
       return navigate(file, { start: { line: line - 1, character: column - 1 }, end: { line: line - 1, character: column - 1 } });
     } }));
   }
+  // The process is pinned to the selected PlatformIO environment and the stored query-driver opt-in.
+  const launch = () => ({ environment: useDisk.getState().environment || undefined, queryDriver: useLanguage.getState().queryDriver });
   const start = async (root: string) => {
-    const pending = api.start("clangd", root); starting.add(pending);
+    const pending = api.start("clangd", root, launch()); starting.add(pending);
     try {
       const session = await pending;
       if (!active) { await api.stop(session.id); throw new Error("语言插件已停用"); }
       return session;
     } finally { starting.delete(pending); }
   };
+  // Switching environments must not keep the previous environment's flags or diagnostics alive.
+  const offEnvironment = useDisk.subscribe((state, previous) => {
+    if (state.environment === previous.environment || !latest || latest.status !== "ready") return;
+    void start(latest.root).catch(report);
+  });
   return {
     start: async (root: string) => { await start(root); },
     stop: async () => { await Promise.allSettled(starting); if (latest) await api.stop(latest.id); },
+    restart: async () => {
+      if (!latest) throw new Error("语言服务尚未启动");
+      await api.restart(latest.id, launch());
+    },
     attach(attachment: EditorAttachment) {
       if (!monaco) install(attachment.monaco);
       const { model, file, root } = attachment; const uri = model.uri.toString();
@@ -135,7 +147,7 @@ export function createLanguageClient() {
       return () => {}; // Open tabs retain their language documents when switching to a panel.
     },
     dispose() {
-      active = false; offStatus(); offStore(); clear(); providers.forEach((item) => item.dispose());
+      active = false; offStatus(); offStore(); offEnvironment(); clear(); providers.forEach((item) => item.dispose());
       const id = latest?.id; if (id !== undefined) void api.stop(id).catch(() => {});
       useLanguage.setState({ snapshot: null, error: "", jump: null });
     },

@@ -26,7 +26,13 @@ let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
-const tasks = new TaskService(workspace, (task) => emit("tasks:changed", task));
+const tasks = new TaskService(workspace, (task) => {
+  emit("tasks:changed", task);
+  // A successful compilation database rewrites the flags clangd uses; restart it without closing unsaved buffers.
+  if (task.status === "succeeded" && task.provider === "platformio.compiledb") {
+    void enqueue(() => language.refreshCompileDatabase(task.root, task.environment ?? "")).catch((error) => console.error("clangd compile database refresh failed", error));
+  }
+});
 const serial = new SerialService();
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
 terminal.register(shellProvider);
@@ -77,7 +83,8 @@ function routes() {
     if (!content) return null;
     const saved = JSON.parse(content); return saved.root ? workspace.open(saved.root) : null;
   }));
-  handle("language:start", (provider, root) => enqueue(() => language.start(provider, root)));
+  handle("language:start", (provider, root, options) => enqueue(() => language.start(provider, root, options)));
+  handle("language:restart", (id, options) => enqueue(() => language.restart(id, options)));
   handle("language:stop", (id) => enqueue(() => language.stop(id)));
   handle("language:get", () => language.get());
   handle("language:open", (id, file, text, version) => enqueue(() => language.open(id, file, text, version)));
