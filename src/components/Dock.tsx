@@ -26,8 +26,11 @@ const tabs: Array<{ id: DockTab; label: string; icon: typeof Terminal }> = [
 ];
 
 function CodePreview() {
-  const { files, openFile } = useStudio();
-  return <div className="flex h-full flex-col"><button className="border-b border-[#EEF0F3] px-3 py-1 text-left text-[10px] text-[#68717A]" onClick={() => openFile("main.py")}>main.py · 点击编辑</button><pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[10px] leading-5 text-[#59616A]">{files["main.py"] || "尚无文件"}</pre></div>;
+  const { files, openFile, activeTab, openTabs } = useStudio();
+  const candidates = [activeTab, ...[...openTabs].reverse(), ...Object.keys(files)];
+  const file = candidates.find((file) => file !== "circuit.json" && Object.hasOwn(files, file));
+  if (!file) return <div className="p-3 text-[10px] text-[#68717A]">尚无文件</div>;
+  return <div data-code-preview={file} className="flex h-full flex-col"><button className="border-b border-[#EEF0F3] px-3 py-1 text-left text-[10px] text-[#68717A]" onClick={() => openFile(file)}>{file} · 点击编辑</button><pre className="min-h-0 flex-1 overflow-auto p-3 font-mono text-[10px] leading-5 text-[#59616A]">{files[file]}</pre></div>;
 }
 
 function VariablesPane() {

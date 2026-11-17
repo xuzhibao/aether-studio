@@ -60,6 +60,7 @@ try {
   await page.locator('.monaco-editor .view-line').filter({ hasText: 'sensor_value' }).getByText('sensor_value', { exact: true }).click();
   await page.keyboard.press('F12');
   await page.getByRole('tab', { name: 'helper.hpp', exact: true }).waitFor();
+  await page.locator('[data-code-preview="src/helper.hpp"]').waitFor();
   await page.screenshot({ path: 'smoke-results/electron-language-definition.png', fullPage: true });
   await page.getByRole('tab', { name: 'main.cpp', exact: true }).click();
   await replaceCode(originalCode); await page.keyboard.press('Control+s');
