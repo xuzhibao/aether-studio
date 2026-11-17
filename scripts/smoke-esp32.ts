@@ -57,7 +57,13 @@ try {
   await fs.writeFile(path.join(root, "src/sensor.h"), "#pragma once\ninline int sensor_value(int input) { return input + 1; }\n");
   await fs.writeFile(path.join(root, file), source);
   // PlatformIO re-runs integration scripts for project metadata; only the explicit compiledb task may do that.
-  await fs.writeFile(path.join(root, "extra_marker.py"), "Import(\"env\")\nwith open(\"script_runs.txt\", \"a\") as log:\n    log.write(\"run\\n\")\n");
+  const markerScript = `import os
+Import("env")
+os.makedirs(".aether", exist_ok=True)
+with open(".aether/script_runs.txt", "a") as log:
+    log.write("run\n")
+`;
+  await fs.writeFile(path.join(root, "extra_marker.py"), markerScript);
   const iniPath = path.join(root, "platformio.ini");
   await fs.writeFile(iniPath, (await fs.readFile(iniPath, "utf8")).trimEnd() + "\nextra_scripts = pre:extra_marker.py\n");
 
@@ -82,14 +88,14 @@ try {
   assert.equal(record.metadata.environment, "esp32-s3");
   assert.ok(record.metadata.drivers.some((driver: string) => /xtensa-esp32s3-elf-g\+\+/.test(driver)), JSON.stringify(record.metadata));
   assert.ok(!record.metadataError, "compiler metadata must resolve during the explicit task: " + record.metadataError);
-  const scriptRuns = await fs.readFile(path.join(root, "script_runs.txt"), "utf8");
+  const scriptRuns = await fs.readFile(path.join(root, ".aether", "script_runs.txt"), "utf8");
   assert.ok(scriptRuns.includes("run"), "the explicit compiledb task runs the project's integration script");
 
   service.register(clangd);
   const session = await service.start("clangd", canonical, { environment: "esp32-s3" });
   assert.equal(session.status, "ready"); assert.equal(session.compileDatabase, "ready"); assert.equal(session.environment, "esp32-s3");
   assert.ok(session.args.some((arg) => arg === "--compile-commands-dir=" + canonical));
-  assert.equal(await fs.readFile(path.join(root, "script_runs.txt"), "utf8"), scriptRuns, "starting clangd must not run PlatformIO or project scripts");
+  assert.equal(await fs.readFile(path.join(root, ".aether", "script_runs.txt"), "utf8"), scriptRuns, "starting clangd must not run PlatformIO or project scripts");
 
   const beforeOpen = session.diagnosticsReceived;
   await service.open(session.id, file, source, 1);
@@ -124,7 +130,7 @@ try {
     assert.match(driver.replaceAll("\\", "/"), /\.platformio\/packages\//, "only PlatformIO core packages are allowed: " + driver);
   }
   assert.ok(authorized.args.some((arg) => arg === "--query-driver=" + authorized.queryDrivers.join(",")));
-  assert.equal(await fs.readFile(path.join(root, "script_runs.txt"), "utf8"), scriptRuns, "language restart must not rerun project scripts");
+  assert.equal(await fs.readFile(path.join(root, ".aether", "script_runs.txt"), "utf8"), scriptRuns, "language restart must not rerun project scripts");
   await service.open(authorized.id, file, source, 1);
   const second = await service.request(authorized.id, file, 1, "hover", valuePosition) as Hover;
   assert.match(JSON.stringify(second.contents), /sensor_value/);
@@ -146,7 +152,7 @@ try {
   await fs.writeFile(recordPath, recordText);
   const restored = await service.restart(rejectedGlob.id, { environment: "esp32-s3", queryDriver: true });
   assert.deepEqual(restored.queryDrivers, authorized.queryDrivers);
-  assert.equal(await fs.readFile(path.join(root, "script_runs.txt"), "utf8"), scriptRuns, "reading the cache must not rerun project scripts");
+  assert.equal(await fs.readFile(path.join(root, ".aether", "script_runs.txt"), "utf8"), scriptRuns, "reading the cache must not rerun project scripts");
 
   // Toolchain-only headers (newlib) need the compiler's system include paths, which query-driver supplies.
   const toolchainText = `#include <Arduino.h>
