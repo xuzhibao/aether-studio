@@ -3,7 +3,7 @@ import { _electron as electron } from 'playwright';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'aether-release-'));
 const directory = path.join(temp, 'project'); await fs.mkdir(directory); const root = await fs.realpath(directory);
@@ -12,9 +12,21 @@ await fs.writeFile(path.join(root, 'release.txt'), 'Release launch smoke\n');
 const resultsDir = process.env.AETHER_SMOKE_RESULTS ?? 'smoke-results';
 await fs.mkdir(resultsDir, { recursive: true });
 let app, page; const errors = [];
+let unrelated; let unrelatedPid = 0; let ptyChild = 0;
 const executable = process.env.AETHER_PACKAGED_EXECUTABLE;
 assert.ok(executable, 'AETHER_PACKAGED_EXECUTABLE must point to the packaged app');
 const saveKey = process.platform === 'darwin' ? 'Meta+s' : 'Control+s';
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { if (error && error.code === 'ESRCH') return false; throw error; } };
+const processRows = async () => {
+  const { stdout } = await promisify(execFile)('ps', ['-A', '-o', 'pid=,ppid=,comm=']);
+  return stdout.trim().split('\n').map((line) => { const [pid, ppid, ...comm] = line.trim().split(/\s+/); return [Number(pid), Number(ppid), comm.join(' ')]; }).filter(([pid, ppid]) => Number.isFinite(pid) && Number.isFinite(ppid));
+};
+const foregroundChild = async (parent) => {
+  const rows = await processRows();
+  const self = rows.find(([pid]) => pid === parent);
+  if (self && /sleep/.test(self[2])) return parent;
+  return rows.find(([, ppid, comm]) => ppid === parent && /sleep/.test(comm))?.[0] ?? 0;
+};
 const until = async (test) => { for (let n = 0; n < 200; n++) { if (await test()) return; await new Promise((done) => setTimeout(done, 100)); } throw new Error('Release smoke timed out'); };
 const read = (name) => fs.readFile(path.join(root, name), 'utf8');
 const viewText = async () => (await page.locator('.monaco-editor .view-lines').allInnerTexts()).join(' ');
@@ -208,14 +220,23 @@ try {
   assert.equal(await restoredInput.inputValue(), process.execPath, 'tool path survives an app restart');
   await pluginsDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
 
+  unrelated = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' });
+  if (unrelated.pid === undefined) await new Promise((resolve, reject) => { unrelated.once('spawn', resolve); unrelated.once('error', reject); });
+  unrelatedPid = unrelated.pid;
   await page.locator('nav').getByRole('button', { name: 'Terminal', exact: true }).click();
   await page.getByRole('button', { name: 'Start terminal', exact: true }).click();
   await page.locator('[data-terminal-status="running"]').waitFor();
   const session = await page.evaluate(() => window.aether.terminal.get()); assert.equal(session.root, root);
   await page.evaluate(({ id, windows }) => window.aether.terminal.write(id, windows ? 'echo RELEASE_PTY_OK> native-pty.txt\r' : "printf RELEASE_PTY_OK > native-pty.txt\r"), { id: session.id, windows: process.platform === 'win32' });
   await until(async () => (await fs.readFile(path.join(root, 'native-pty.txt'), 'utf8').catch(() => '')).trim() === 'RELEASE_PTY_OK');
+  if (process.platform !== 'win32') {
+    await page.evaluate(({ id }) => window.aether.terminal.write(id, 'sleep 300\r'), { id: session.id });
+    await until(async () => (ptyChild = await foregroundChild(session.pid)) > 0);
+  }
   await page.getByRole('button', { name: 'Stop terminal', exact: true }).click();
   await page.locator('[data-terminal-status="stopped"]').waitFor();
+  if (ptyChild) await until(() => !alive(ptyChild));
+  assert.ok(alive(unrelatedPid), 'unrelated process survives terminal stop');
 
   // Save dirty buffers through the normal path (a refused save must fail) before switching projects.
   await page.locator('nav').getByRole('button', { name: 'Source Code', exact: true }).click();
@@ -261,5 +282,6 @@ try {
     else if (child.exitCode === null) child.kill('SIGKILL');
     await new Promise((resolve) => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else { child.once('exit', resolve); setTimeout(resolve, 3000); } });
   }
+  try { if (unrelatedPid && alive(unrelatedPid)) unrelated.kill('SIGKILL'); } catch {}
   await fs.rm(temp, { recursive: true, force: true, maxRetries: 30, retryDelay: 250 });
 }
