@@ -25,6 +25,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run smoke
+      - run: npm run smoke:recovery
       - run: npm run smoke:network
       - run: npm run build
       - run: npx playwright install --with-deps chromium
@@ -64,6 +65,7 @@ jobs:
       - run: npm run smoke:language
       - run: platformio run -d examples/platformio-esp32s3
       - run: npm run desktop:package
+      - run: xvfb-run -a npm run smoke:crash
       - run: xvfb-run -a npm run smoke:desktop
         env:
           AETHER_PACKAGED_EXECUTABLE: release/linux-unpacked/aether-studio

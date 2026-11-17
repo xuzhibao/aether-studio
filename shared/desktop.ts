@@ -2,6 +2,32 @@ import type { ProjectContext } from "../src/plugins/api";
 import type { ToolsAPI } from "./tools";
 export interface DiskWorkspace { root: string; context: ProjectContext; directories: string[] }
 export interface DiskListing { files: Record<string, string>; directories: string[] }
+/** One unsaved editing session, stored outside the project folder while the user keeps working. */
+export interface RecoveryDraft {
+  version: 1;
+  root: string;
+  /** Monotonic content revision; saving or discarding only clears the revision it actually processed. */
+  revision: number;
+  updatedAt: string;
+  context: ProjectContext;
+  /** Disk text this draft was based on; a later disk change stays visible as a per-file conflict. */
+  disk?: Record<string, string>;
+  openTabs: string[];
+  activeTab: string;
+}
+export interface RecoverySummary {
+  root: string; projectName: string; revision: number; updatedAt: string;
+  fileCount: number; size: number; openTabs: string[]; activeTab: string; rootExists: boolean; error: string;
+}
+export interface RecoveryAPI {
+  save: (draft: RecoveryDraft) => Promise<void>;
+  list: () => Promise<RecoverySummary[]>;
+  read: (root: string) => Promise<RecoveryDraft>;
+  /** Deletes only when the stored draft is not newer than the revision that was saved or discarded. */
+  clear: (root: string, revision: number) => Promise<boolean>;
+  /** Explicit user discard, including drafts whose JSON is unreadable. Never touches project files. */
+  discard: (root: string) => Promise<boolean>;
+}
 export interface WorkspaceFileOptions {
   listing: () => Promise<DiskListing>;
   createFile: (path: string) => Promise<void>;
@@ -24,6 +50,7 @@ export interface DesktopAPI {
   runtime: "electron";
   window: (action: "close" | "minimize" | "maximize") => Promise<void>;
   files: { export: (name: string, content: string) => Promise<string | null>; import: () => Promise<string | null> };
+  recovery: RecoveryAPI;
   workspace: {
     open: () => Promise<DiskWorkspace | null>; saveAs: (context: ProjectContext) => Promise<DiskWorkspace | null>;
     save: (context: ProjectContext) => Promise<void>; reload: () => Promise<DiskWorkspace>;

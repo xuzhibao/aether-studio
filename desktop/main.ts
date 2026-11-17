@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdirSync, promises as fs } from "node:fs";
 import { WorkspaceService } from "./workspace";
+import { RecoveryService } from "./recovery";
 import { TaskService } from "./tasks";
 import { createPlatformioPlugins } from "./plugins/platformio";
 import { LanguageService } from "./language";
@@ -26,6 +27,7 @@ let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
+const recovery = new RecoveryService(() => path.join(app.getPath("userData"), "recovery"));
 const tasks = new TaskService(workspace, (task) => emit("tasks:changed", task));
 const serial = new SerialService();
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
@@ -56,6 +58,12 @@ function routes() {
   });
   handle("files:import", async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project", properties: ["openFile"], filters: [{ name: "Aether Project", extensions: ["aether", "json"] }] }); return result.canceled ? null : fs.readFile(result.filePaths[0], "utf8"); });
   handle("workspace:setDirty", (value: boolean) => { dirty = value === true; });
+  // Recovery drafts are plain files in the user data directory; they never write into the project folder.
+  handle("recovery:save", (draft) => recovery.save(draft));
+  handle("recovery:list", () => recovery.list());
+  handle("recovery:read", (root: string) => recovery.read(root));
+  handle("recovery:clear", (root: string, revision: number) => recovery.clear(root, revision));
+  handle("recovery:discard", (root: string) => recovery.discard(root));
   handle("workspace:open", () => enqueue(async () => { const folder = await chooseFolder(); if (!folder || !confirmClose("打开另一个目录将放弃当前未保存修改。")) return null; await beforeSwitch(); const result = await workspace.open(folder); await remember(); return result; }));
   handle("workspace:saveAs", (context: ProjectContext) => enqueue(async () => { const folder = await chooseFolder(); if (!folder) return null; await beforeSwitch(); const result = await workspace.saveAs(folder, context); await remember(); return result; }));
   handle("workspace:save", (context: ProjectContext) => enqueue(async () => { if (tasks.list().some((task) => task.status === "running")) throw new Error("构建运行中，请等待或取消任务后保存"); await workspace.save(context); }));
