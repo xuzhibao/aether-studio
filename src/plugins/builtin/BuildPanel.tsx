@@ -3,7 +3,7 @@ import { useStudio } from "../../store/studio";
 import { isDesktop } from "../../lib/desktop";
 export default function BuildPanel() {
   const disk = useDisk(); const setDialog = useStudio((s) => s.setDialog); const openFile = useStudio((s) => s.openFile);
-  const run = (action: () => Promise<void>) => { void action().catch((error) => useDisk.setState({ error: String(error) })); };
+  const run = (action: () => Promise<unknown>) => { void action().catch((error) => useDisk.setState({ error: String(error) })); };
   return <div className="flex min-w-0 flex-1 flex-col overflow-auto bg-white p-5 text-[11px] text-[#59616A]">
     <h1 className="text-base font-semibold">Build Tasks</h1><p className="mt-2 break-all">{disk.root || "尚未打开磁盘工程目录"}</p>
     <p className="mt-2 leading-5 text-[#90969E]">构建执行本机 PlatformIO，并运行工程中声明的构建脚本。使用已保存文件；运行期间的编辑需另行保存并重新构建。成功仅表示构建完成，不代表固件已运行或烧录。</p>

@@ -268,8 +268,27 @@ try {
   await nav.getByRole("button", { name: "Devices", exact: true }).click();
   await dialog.getByText("没有已启用的通信插件。", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "Close dialog" }).click();
+  // Deploy: a PlatformIO project must offer an explicit port field, OS enumeration is not board identification,
+  // and the browser preview must not pretend to run an upload.
+  await page.locator("header button").filter({ hasText: "Aether Studio" }).first().click();
+  await page.getByRole("menuitem", { name: /New Project/ }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("textbox").fill("Deploy Smoke");
+  await dialog.getByRole("button", { name: /^ESP32-S3 C\+\+/ }).click();
+  await dialog.getByRole("button", { name: "Create Project", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "Deploy to Device", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("heading", { name: "Deploy to device", exact: true }).waitFor();
+  await dialog.getByText(/不枚举串口|未启用桌面串口插件/).waitFor();
+  await dialog.getByText(/不能据此判断开发板型号或固件/).waitFor();
+  const uploadPort = dialog.getByLabel("Upload port", { exact: true });
+  await uploadPort.fill("COM_TEST");
+  assert.equal(await uploadPort.inputValue(), "COM_TEST", "manual port input stays available");
+  assert.equal(await dialog.getByRole("button", { name: "开始构建并烧录", exact: true }).isDisabled(), true, "browser preview must not fake an upload");
+  await dialog.getByRole("button", { name: "Close dialog" }).click();
   assert.deepEqual(errors, [], "no browser console errors");
-  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, real WebSocket text/binary round trip, pause/clear and disable cleanup, no console errors");
+  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, real WebSocket text/binary round trip, pause/clear and disable cleanup, explicit deploy port selection without fake browser upload, no console errors");
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: `${resultsDir}/failure.png`, fullPage: true });

@@ -10,7 +10,7 @@ interface DiskState {
   root: string | null; changed: boolean; busy: boolean; tasks: TaskSnapshot[]; error: string;
   directories: string[]; synced: Record<string, string>; diskFiles: Record<string, string>;
   adopt: (disk: DiskWorkspace) => void; open: () => Promise<void>; saveAs: () => Promise<void>; reload: () => Promise<void>;
-  save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<void>; cancel: (id: string) => Promise<void>;
+  save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<TaskSnapshot>; cancel: (id: string) => Promise<void>;
   refresh: () => Promise<void>; acceptDisk: (file: string) => Promise<void>; keepLocal: (file: string) => Promise<void>; saveFile: (file: string) => Promise<void>;
 }
 const desktop = () => { if (!isDesktop()) throw new Error("此功能需要 Electron 桌面端"); return window.aether!; };
@@ -109,8 +109,11 @@ export const useDisk = create<DiskState>((set, get) => {
     if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
     await get().save();
     await useTransport.getState().disconnect();
+    // Do not start an upload while a serial session still owns the port; PlatformIO would fail with a misleading error.
+    if (useTransport.getState().status !== "disconnected") throw new Error("串口监视器尚未释放端口，已取消任务。请手动断开连接后重试。");
     const task = await desktop().tasks.start(provider, options);
     set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
+    return task;
   },
   cancel: async (id) => { await desktop().tasks.cancel(id); },
   };

@@ -2,7 +2,14 @@ import { SerialPort } from "serialport";
 export class SerialService {
   private next = 0;
   private session?: { id: number; port: SerialPort; bytes: number[]; error?: Error };
-  async list() { return (await SerialPort.list()).map((port) => ({ path: port.path, label: port.manufacturer || "Serial port" })); }
+  async list() {
+    return (await SerialPort.list()).map((port) => ({
+      path: port.path,
+      label: port.manufacturer || "Serial port",
+      // OS-reported descriptors only; these do not identify a board model or firmware.
+      detail: [port.vendorId && port.productId ? `VID:PID ${port.vendorId}:${port.productId}` : "", port.serialNumber ? `SN ${port.serialNumber}` : ""].filter(Boolean).join(" · ") || undefined,
+    }));
+  }
   async open(path: string, baudRate: number) {
     if (this.session) throw new Error("已有打开的串口");
     if (!path || !Number.isInteger(baudRate) || baudRate <= 0) throw new Error("无效的串口参数");
