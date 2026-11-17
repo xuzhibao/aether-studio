@@ -12,7 +12,7 @@ export interface LanguageStartOptions {
 }
 export interface LanguageSnapshot {
   id: number; provider: string; root: string; executable: string; environment: string; status: "starting" | "ready" | "stopped" | "error";
-  compileDatabase: CompileDatabaseState; compileDatabaseMessage: string; queryDrivers: string[]; args: string[];
+  compileDatabase: CompileDatabaseState; compileDatabaseMessage: string; queryDrivers: string[]; args: string[]; diagnosticsReceived: number;
   error: string; log: string; documents: LanguageDocument[];
 }
 export interface LanguageAPI {

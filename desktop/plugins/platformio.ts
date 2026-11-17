@@ -47,6 +47,18 @@ export async function platformioEnvironments(root: string, executable: string): 
   return names.map((name) => ({ name, default: declared.length ? declared.includes(name) : true }));
 }
 
+// PlatformIO's own metadata command resolves cc_path/cxx_path for exactly one environment.
+// It runs only from the explicit compiledb task: `project metadata` re-runs integration scripts.
+async function toolchainMetadata(root: string, executable: string, environment: string) {
+  const output = await promisify(execFile)(executable, ["project", "metadata", "--json-output", "-e", environment], { cwd: root, timeout: 30000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+  let parsed: unknown;
+  try { parsed = JSON.parse(output.stdout); } catch (error) { throw new Error("无法解析 PlatformIO 环境元数据：" + String(error)); }
+  const entry = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, { cc_path?: unknown; cxx_path?: unknown }>)[environment] : undefined;
+  if (!entry || typeof entry !== "object") throw new Error("PlatformIO 未返回环境 " + environment + " 的元数据");
+  const drivers = [entry.cc_path, entry.cxx_path].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return { environment, drivers, resolvedAt: new Date().toISOString(), source: "platformio project metadata -e " + environment };
+}
+
 function requireEnvironment(options: Record<string, string>) {
   const environment = options.environment?.trim();
   if (!environment) throw new Error("未选择 PlatformIO 构建环境");
@@ -74,9 +86,10 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
     args: (options) => { if (!options.port?.trim()) throw new Error("请明确选择烧录端口"); return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim()]; },
   };
   const compiledb: TaskProvider = {
-    ...build, id: "platformio.compiledb", args: (options) => ["run", "-e", requireEnvironment(options), "--target", "compiledb"],
+    ...build, id: "platformio.compiledb", kind: "compile-database", args: (options) => ["run", "-e", requireEnvironment(options), "--target", "compiledb"],
     inputExcludes: ["compile_commands.json"], recordName: "compiledb.json",
     artifacts: async () => ["compile_commands.json"],
+    afterSuccess: (root, executable, options) => toolchainMetadata(root, executable, requireEnvironment(options)),
   };
   return { platformioBuild: build, platformioUpload: upload, platformioCompileDatabase: compiledb };
 }

@@ -28,8 +28,8 @@ const emit = (channel: string, value: unknown) => { if (window && !window.isDest
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
 const tasks = new TaskService(workspace, (task) => {
   emit("tasks:changed", task);
-  // A successful compilation database rewrites the flags clangd uses; restart it without closing unsaved buffers.
-  if (task.status === "succeeded" && task.provider === "platformio.compiledb") {
+  // Providers declare what a successful task produced; the host only reacts to the generic kind.
+  if (task.status === "succeeded" && task.kind === "compile-database") {
     void enqueue(() => language.refreshCompileDatabase(task.root, task.environment ?? "")).catch((error) => console.error("clangd compile database refresh failed", error));
   }
 });

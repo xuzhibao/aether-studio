@@ -400,5 +400,15 @@ await duringRun;
 assert.deepEqual(useDisk.getState().environments.map((item) => item.name), ["first", "second"]);
 assert.equal(useDisk.getState().environment, "", "a refresh during a running task keeps the current selection");
 useDisk.setState({ tasks: [] });
-console.log("PASS environments: project switch, out-of-order refreshes and running-task freeze use the latest response only (deferred host fixture)");
+useDisk.setState({ root: "C:/env-e", environments: [], environment: "", tasks: [] });
+const adopt = useDisk.getState().adoptTaskEnvironment("second");
+environmentCalls.at(-1)!.resolve([{ name: "first", default: true }, { name: "second", default: false }]);
+await adopt;
+assert.equal(useDisk.getState().environment, "second", "a toolbar build must show the environment the task actually used");
+useDisk.setState({ environment: "first" });
+const requests = environmentCalls.length;
+await useDisk.getState().adoptTaskEnvironment("second");
+assert.equal(environmentCalls.length, requests, "an existing selection is never overwritten by a finished task");
+assert.equal(useDisk.getState().environment, "first");
+console.log("PASS environments: project switch, out-of-order refreshes, running-task freeze and toolbar task adoption (deferred host fixture)");
 

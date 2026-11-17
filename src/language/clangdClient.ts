@@ -115,8 +115,12 @@ export function createLanguageClient() {
   };
   // Switching environments must not keep the previous environment's flags or diagnostics alive.
   const offEnvironment = useDisk.subscribe((state, previous) => {
-    if (state.environment === previous.environment || !latest || latest.status !== "ready") return;
-    void start(latest.root).catch(report);
+    if (state.environment === previous.environment) return;
+    const snapshot = latest;
+    if (!snapshot || snapshot.status === "stopped" || snapshot.status === "error") return;
+    // A process that is still starting must not finish with the previous environment's flags.
+    if (snapshot.environment === state.environment) return;
+    void start(snapshot.root).catch(report);
   });
   return {
     start: async (root: string) => { await start(root); },

@@ -14,7 +14,7 @@ export interface WorkspaceFileOptions {
 export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskEnvironment { name: string; default: boolean }
 export interface TaskSnapshot {
-  id: string; provider: string; root: string; environment?: string; status: "running" | "succeeded" | "failed" | "cancelled";
+  id: string; provider: string; root: string; environment?: string; kind?: string; status: "running" | "succeeded" | "failed" | "cancelled";
   startedAt: string; endedAt?: string; exitCode: number | null; log: string; error?: string;
   inputHash: string; toolVersion?: string; artifacts: BuildArtifact[];
 }

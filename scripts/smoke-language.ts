@@ -80,6 +80,25 @@ try {
   assert.ok(!nativeQuery.args.some((arg) => arg.startsWith("--query-driver=")));
   await service.open(nativeQuery.id, file, code, 1);
 
+  // A plain C/C++ or CMake checkout may ship compile_commands.json without any PlatformIO task record.
+  const recordBackup = recordPath + ".bak";
+  await fs.rename(recordPath, recordBackup);
+  const ordinary = await service.restart(nativeQuery.id, { environment: "" });
+  assert.equal(ordinary.compileDatabase, "ready", "an existing database without a record is still usable");
+  assert.equal(ordinary.environment, "");
+  assert.match(ordinary.compileDatabaseMessage, /任务记录/);
+  const ordinaryQuery = await service.restart(ordinary.id, { environment: "", queryDriver: true });
+  assert.equal(ordinaryQuery.compileDatabase, "ready");
+  assert.deepEqual(ordinaryQuery.queryDrivers, [], "query-driver needs a PlatformIO-generated compiler cache");
+  assert.match(ordinaryQuery.compileDatabaseMessage, /query-driver/);
+  const unverified = await service.restart(ordinaryQuery.id, { environment: "native" });
+  assert.equal(unverified.compileDatabase, "stale", "an environment without a build record cannot claim the database");
+  assert.match(unverified.compileDatabaseMessage, /无法确认数据库所属环境|没有环境/);
+  await fs.rename(recordBackup, recordPath);
+  const verified = await service.restart(unverified.id, { environment: "native" });
+  assert.equal(verified.compileDatabase, "ready");
+  await service.open(verified.id, file, code, 1);
+
   // A successful regeneration refreshes clangd without closing buffers: no stopped/error snapshot is emitted.
   const latest = service.get()!; const unsaved = '#include "math.hpp"\nint main() { return sensor_value(9); }\n';
   await service.change(latest.id, file, unsaved, 7);

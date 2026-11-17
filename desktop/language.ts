@@ -14,7 +14,7 @@ export interface LanguageProvider {
   context?: (root: string, options: LanguageStartOptions) => Promise<LanguageLaunchContext>;
   args: (root: string, context: LanguageLaunchContext) => string[];
 }
-interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void>; toolId?: string; options: { environment: string; queryDriver: boolean } }
+interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void>; toolId?: string; quiet: boolean; options: { environment: string; queryDriver: boolean } }
 const methods = { completion: "textDocument/completion", hover: "textDocument/hover", definition: "textDocument/definition" } as const;
 export class LanguageService {
   private providers = new Map<string, LanguageProvider>();
@@ -57,24 +57,26 @@ export class LanguageService {
     const args = provider.args(root, context);
     const snapshot: LanguageSnapshot = {
       id: ++this.sequence, provider: providerId, root, executable, environment: context.environment, status: "starting",
-      compileDatabase: context.compileDatabase, compileDatabaseMessage: context.compileDatabaseMessage, queryDrivers: context.queryDrivers, args,
+      compileDatabase: context.compileDatabase, compileDatabaseMessage: context.compileDatabaseMessage, queryDrivers: context.queryDrivers, args, diagnosticsReceived: 0,
       error: "", log: "", documents: [],
     };
     const child = spawn(executable, args, { cwd: root, shell: false, windowsHide: true });
     const spawned = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     const rpc = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
     let resolve!: () => void; const done = new Promise<void>((finish) => { resolve = finish; });
-    const session: Session = { snapshot, child, rpc, done, toolId: provider.tool, options: { ...launchOptions } }; this.session = session;
+    const session: Session = { snapshot, child, rpc, done, toolId: provider.tool, quiet: false, options: { ...launchOptions } }; this.session = session;
     child.stderr.on("data", (chunk: Buffer) => { snapshot.log = (snapshot.log + chunk.toString()).slice(-30000); this.emit(session); });
     child.on("error", (error) => { snapshot.error = error.message; snapshot.status = "error"; this.emit(session); rpc.dispose(); });
     child.on("close", (code, signal) => {
+      // A quiet restart keeps the UI on the old snapshot until the replacement is ready.
+      if (session.quiet) { snapshot.documents = []; rpc.dispose(); resolve(); return; }
       if (snapshot.status !== "stopped" && snapshot.status !== "error") { snapshot.status = "error"; snapshot.error = `语言服务退出：${signal ?? code}`; }
       snapshot.documents = []; this.emit(session); rpc.dispose(); resolve();
     });
     rpc.onNotification("textDocument/publishDiagnostics", (params: PublishDiagnosticsParams) => {
       const file = this.relative(root, params.uri); const document = snapshot.documents.find((item) => item.file === file);
       if (!document || (params.version !== undefined && params.version !== document.version)) return;
-      document.diagnostics = params.diagnostics; this.emit(session);
+      document.diagnostics = params.diagnostics; snapshot.diagnosticsReceived++; this.emit(session);
     });
     rpc.onRequest("workspace/configuration", (params: { items: unknown[] }) => params.items.map(() => null));
     rpc.listen(); this.emit(session);
@@ -139,7 +141,8 @@ export class LanguageService {
   }
   async stop(id?: number, options: { quiet?: boolean } = {}) {
     const session = this.session; if (!session || (id !== undefined && id !== session.snapshot.id)) return;
-    if (!options.quiet) { session.snapshot.status = "stopped"; session.snapshot.documents = []; this.emit(session); }
+    if (options.quiet) session.quiet = true;
+    else { session.snapshot.status = "stopped"; session.snapshot.documents = []; this.emit(session); }
     session.rpc.dispose(); session.child.kill();
     const timer = setTimeout(() => session.child.kill("SIGKILL"), 1500);
     try { await session.done; } finally { clearTimeout(timer); if (this.session === session) this.session = undefined; }

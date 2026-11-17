@@ -142,13 +142,19 @@ npm run desktop
 
 安装本机 clangd，并确保它在应用进程的 PATH 中，或通过 `AETHER_CLANGD_CLI` 指定完整可执行文件路径。Ubuntu / Debian：
 
+ESP32-S3 的 Xtensa 目标需要 clangd 20+（LLVM 20 起包含 Xtensa 支持）；Ubuntu 24.04 自带的 clangd 18 不够。Ubuntu 24.04 需要先加入 LLVM 官方源：
+
 ```bash
-# ESP32-S3 的 Xtensa 目标需要 clangd 20+（LLVM 20 起包含 Xtensa 支持）；Ubuntu 24.04 自带的 clangd 18 不够。
 sudo apt-get update
-sudo apt-get install clangd-20
+sudo apt-get install -y lsb-release wget software-properties-common gnupg
+wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/llvm-snapshot.asc > /dev/null
+sudo add-apt-repository -y "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main"
+sudo apt-get update
+sudo apt-get install -y clangd-20
+# 然后在插件设置中把 clangd 可执行文件设为 /usr/bin/clangd-20，或设置 AETHER_CLANGD_CLI=/usr/bin/clangd-20。
 ```
 
-其他系统可从 [clangd 官方安装说明](https://clangd.llvm.org/installation) 获取 clangd 20 或更新版本。原生 C/C++ 工程可用较旧版本，但 ESP32 交叉目标会在分析时报告不支持的目标架构。clangd 采用 Apache-2.0 WITH LLVM-exception；Aether 不捆绑该程序。
+也可以用 [clangd 官方独立包](https://github.com/clangd/clangd/releases)（比完整 LLVM 小），解压后在插件设置中填写 `clangd` 可执行文件的完整路径。原生 C/C++ 工程可用较旧版本，但 ESP32 交叉目标会在分析时报告不支持的目标架构。clangd 采用 Apache-2.0 WITH LLVM-exception；Aether 不捆绑该程序。
 
 安装版可在 **Plugins** → **C/C++ · clangd** → **插件设置** 中保存 clangd 可执行文件路径，查找顺序同样为：应用内保存的路径 → `AETHER_CLANGD_CLI` → `PATH`。保存新路径后，正在运行的 clangd 会重启并重新载入已打开的 C/C++ 文档；启动失败时在 **C/C++ Language** 面板显示实际错误和当前使用的可执行文件。
 
@@ -163,11 +169,16 @@ sudo apt-get install clangd-20
 
 语言服务使用**当前选定环境**的数据库。生成成功后，正在运行的 clangd 会自动重启并重新载入已打开的缓冲区（包括未保存内容），不需要重开目录或重新打开文件。面板会区分三种状态：
 
-- **未生成**：没有任务记录，clangd 使用默认参数。
+- **未生成**：没有任务记录也没有数据库，clangd 使用默认参数。
+- **无记录但可用**：工程根目录有 `compile_commands.json`（例如 CMake 或其他工具生成），但没有 PlatformIO 任务记录，且当前未选择 PlatformIO 环境时，直接使用该数据库并提示无法确认所属环境；一旦选择了环境，则视为需要重新生成。
 - **已就绪**：任务记录的环境与当前选择一致，且 `compile_commands.json` 的 SHA-256 与记录一致。
 - **已过期**：记录属于其他环境、数据库被改动或记录无法解析。此时 clangd 只读取一个空数据库，不会回退到根目录或上级目录的旧参数；请为当前环境重新生成。
 
-PlatformIO 默认不把工具链 include 路径写入数据库（`COMPILATIONDB_INCLUDE_TOOLCHAIN` 默认为 false），但会写入框架依赖路径。需要在 **C/C++ Language** 面板显式勾选 **允许 clangd 运行当前环境解析出的编译器（--query-driver）**，clangd 才会运行所选环境的编译器来获取系统头文件路径。允许列表由 `platformio project metadata --json-output -e ENV` 解析出该环境实际的 `cc_path`/`cxx_path`，再要求它们位于 PlatformIO 核心目录（或 `PLATFORMIO_CORE_DIR`）内并确实被当前编译数据库使用；不会使用通配符，也不会执行数据库里的任意编译器。勾选后带有未保存缓冲区的运行中会话会自动重启。
+PlatformIO 默认不把工具链 include 路径写入数据库（`COMPILATIONDB_INCLUDE_TOOLCHAIN` 默认为 false），但会写入框架依赖路径。需要在 **C/C++ Language** 面板显式勾选 **允许 clangd 运行当前环境解析出的编译器（--query-driver）**，clangd 才会运行所选环境的编译器来获取系统头文件路径。
+
+允许列表在用户显式点击 **Generate compilation database** 时解析：该任务成功后执行 `platformio project metadata --json-output -e ENV`，把该环境的 `cc_path`/`cxx_path` 连同环境和时间写入 `.aether/compiledb.json` 的 `metadata`。启动或重启语言服务只读取这份缓存，不会运行 PlatformIO，也不会执行工程脚本；只有生成编译数据库这一显式任务会重跑 PlatformIO 的 integration（`extra_scripts`）。
+
+缓存中的编译器还必须同时满足：路径是字面绝对路径（不含 `*`、`?`、`[]` 等 glob 字符）、真实路径位于 PlatformIO 核心的 `packages` 目录（`PLATFORMIO_CORE_DIR`、默认 `~/.platformio`，或配置的 pio 可执行文件所属 `<core>/penv`）、并且正是当前编译数据库调用的编译器。否则不启用 query-driver。勾选后带有未保存缓冲区的运行中会话会自动重启。
 
 ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s3-elf-g++` 与 `-mlongcalls` 等真实交叉编译参数，不替换为宿主编译器。clangd 的解析结果仍可能与真实工具链不同，实际构建结果以 PlatformIO 任务为准。
 

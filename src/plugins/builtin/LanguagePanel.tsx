@@ -24,7 +24,7 @@ export default function LanguagePanel() {
     {snapshot && <><p className="mt-2 break-all">{snapshot.root}</p><p className="mt-2 break-all">clangd 可执行文件：{snapshot.executable}</p><p className="mt-2" data-language-environment={snapshot.environment}>环境：{snapshot.environment || "未选择（未使用 PlatformIO 环境）"}</p><p className="mt-2" data-language-database={snapshot.compileDatabase}>编译数据库：{databaseLabel[snapshot.compileDatabase]}</p>{snapshot.compileDatabaseMessage && <p className="mt-2 whitespace-pre-wrap text-[#A8741F]">{snapshot.compileDatabaseMessage}</p>}</>}
     <div className="mt-3 rounded border border-[#E5E8EC] p-3">
       <label className="flex items-center gap-2"><input type="checkbox" checked={queryDriver} onChange={(event) => toggleQueryDriver(event.target.checked)} />允许 clangd 运行当前环境解析出的编译器（--query-driver）</label>
-      <p className="mt-2 leading-5 text-[#90969E]">默认关闭。启用后只把编译数据库中位于 PlatformIO 核心目录（或 PLATFORMIO_CORE_DIR）内的实际编译器路径传给 clangd，不会使用通配符，也不会执行工程外的任意编译器。当前会话允许的路径：</p>
+      <p className="mt-2 leading-5 text-[#90969E]">默认关闭。编译器路径只在 Generate compilation database 任务成功时由 PlatformIO 解析并缓存到 `.aether/compiledb.json`；启动语言服务只读缓存，不运行 PlatformIO 或工程脚本。启用后只把 PlatformIO 核心 packages 目录内的字面路径传给 clangd，不使用通配符，也不会执行工程外的任意编译器。没有缓存时请重新生成编译数据库。当前会话允许的路径：</p>
       <ul className="mt-1 font-mono text-[10px]">{snapshot?.queryDrivers.length ? snapshot.queryDrivers.map((item) => <li key={item} className="break-all">{item}</li>) : <li>{queryDriver ? "启动后显示解析结果；没有符合条件的编译器时保持为空。" : "未启用。"}</li>}</ul>
     </div>
     {snapshot && <details className="mt-3"><summary>clangd 启动参数</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{snapshot.args.join("\n")}</pre></details>}

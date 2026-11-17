@@ -35,6 +35,7 @@ int main(int argc, char **argv) {
     puts(VERSION); return 0;
   }
   // Host artifact discovery parses stdout as JSON; keep this branch pure JSON.
+  if (argc > 2 && strcmp(argv[1], "project") == 0 && strcmp(argv[2], "metadata") == 0) { puts("{\"fixture\":{}}"); return 0; }
   if (argc > 1 && strcmp(argv[1], "project") == 0) { puts("[[\"platformio\",[[\"default_envs\",[\"fixture\"]]]],[\"env:fixture\",[]]]"); return 0; }
   printf("ARGV");
   for (int i = 1; i < argc; i++) printf(" [%s]", argv[i]);

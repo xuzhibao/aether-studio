@@ -9,7 +9,7 @@ export interface DiskChange { file: string; kind: DiskChangeKind; disk: string |
 interface DiskState {
   root: string | null; changed: boolean; busy: boolean; tasks: TaskSnapshot[]; error: string;
   environments: TaskEnvironment[]; environment: string;
-  loadEnvironments: (provider?: string) => Promise<void>; setEnvironment: (name: string) => void;
+  loadEnvironments: (provider?: string) => Promise<void>; setEnvironment: (name: string) => void; adoptTaskEnvironment: (name: string) => Promise<void>;
   directories: string[]; synced: Record<string, string>; diskFiles: Record<string, string>;
   adopt: (disk: DiskWorkspace) => void; open: () => Promise<void>; saveAs: () => Promise<void>; reload: () => Promise<void>;
   save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<void>; cancel: (id: string) => Promise<void>;
@@ -127,6 +127,13 @@ export const useDisk = create<DiskState>((set, get) => {
     if (!state.environments.some((item) => item.name === name)) throw new Error("未知的构建环境：" + name);
     set({ environment: name });
   },
+  // A task started from the toolbar fixes its environment before the Build Tasks panel ever loads the list.
+  adoptTaskEnvironment: async (name) => {
+    const root = get().root;
+    if (!name || !root || get().environment) return;
+    await get().loadEnvironments();
+    if (get().root === root && get().environments.some((item) => item.name === name)) set({ environment: name });
+  },
   build: async (provider, options) => {
     if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
     await get().save();
@@ -146,7 +153,10 @@ export function connectDesktop() {
   void api.workspace.setDirty(dirty);
   const offDirty = useStudio.subscribe((state) => { if (state.dirty !== dirty) { dirty = state.dirty; void api.workspace.setDirty(dirty); } });
   const offWorkspace = api.workspace.onChanged((root) => { if (useDisk.getState().root === root) { useDisk.setState({ changed: true }); void useDisk.getState().refresh().catch(() => {}); } });
-  const offTasks = api.tasks.onChanged((task) => useDisk.setState((s) => ({ tasks: [...s.tasks.filter((old) => old.id !== task.id), task] })));
+  const offTasks = api.tasks.onChanged((task) => {
+    useDisk.setState((s) => ({ tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
+    if (task.environment) void useDisk.getState().adoptTaskEnvironment(task.environment).catch((error) => useDisk.setState({ error: String(error) }));
+  });
   void api.workspace.restore().then((result) => { if (current && result) useDisk.getState().adopt(result); }).catch((error) => { if (current) useDisk.setState({ error: "重新打开工程失败：" + String(error) }); });
   void api.tasks.list().then((tasks) => { if (current) useDisk.setState((s) => ({ tasks: [...tasks.filter((task) => !s.tasks.some((old) => old.id === task.id)), ...s.tasks] })); });
   return () => { current = false; offDirty(); offWorkspace(); offTasks(); };

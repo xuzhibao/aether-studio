@@ -68,7 +68,11 @@ try {
   const database = await wait((await tasks.start("platformio.compiledb", { environment: "env-b" })).id);
   assert.equal(database.status, "succeeded", database.error + "\n" + database.log);
   assert.equal(database.environment, "env-b");
-  assert.equal(JSON.parse(await fs.readFile(path.join(root, ".aether/compiledb.json"), "utf8")).environment, "env-b");
+  const databaseRecord = JSON.parse(await fs.readFile(path.join(root, ".aether/compiledb.json"), "utf8"));
+  assert.equal(databaseRecord.environment, "env-b");
+  // The compiler metadata is resolved inside the explicit task and cached; language start only reads it.
+  assert.equal(databaseRecord.metadata.environment, "env-b");
+  assert.ok(Array.isArray(databaseRecord.metadata.drivers) && databaseRecord.metadata.drivers.length >= 1, JSON.stringify(databaseRecord.metadata));
   const commands = JSON.parse(await fs.readFile(path.join(root, "compile_commands.json"), "utf8")) as { command: string }[];
   assert.ok(commands.every((entry) => entry.command.includes("AETHER_ENV_B")) && commands.every((entry) => !entry.command.includes("AETHER_ENV_A")), "compiledb must carry env-b flags");
 

@@ -8,6 +8,10 @@ import type { WorkspaceService } from "./workspace";
 export interface TaskProvider {
   id: string; executable: string | (() => string); args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
   inputExcludes?: string[]; recordName?: string;
+  // Host-side behavior is declared by the provider: main only reacts to this generic kind.
+  kind?: string;
+  // Runs after a successful task (still inside the explicit user action); the result is stored in .aether/<record>.
+  afterSuccess?: (root: string, executable: string, options: Record<string, string>) => Promise<unknown>;
   // Providers that build one selected environment at a time expose what the project currently declares.
   environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
   artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
@@ -41,7 +45,7 @@ export class TaskService {
     const args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, artifacts: [] };
     const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
     let cancelled = false;
     let processClosed = false;
@@ -75,8 +79,18 @@ export class TaskService {
           }
           if (!artifacts.length) throw new Error("进程已退出，但未找到构建产物");
           task.artifacts = artifacts;
+          let metadata: unknown;
+          let metadataError = "";
+          if (provider.afterSuccess) {
+            try { metadata = await provider.afterSuccess(root, executable, resolved); }
+            catch (error) {
+              // Auxiliary metadata must not turn a successful build into a failure, but the reason stays visible.
+              metadataError = String(error);
+              task.log = (task.log + "\n[aether] 任务成功，但附加步骤失败：" + metadataError).slice(-250000);
+            }
+          }
           await fs.mkdir(path.join(root, ".aether"), { recursive: true });
-          await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result }, null, 2));
+          await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadata !== undefined ? { metadata } : {}), ...(metadataError ? { metadataError } : {}) }, null, 2));
         }
       } catch (error) { result = "failed"; task.error = String(error); }
       task.status = result;
