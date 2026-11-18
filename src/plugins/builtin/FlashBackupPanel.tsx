@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { StudioPlugin } from "../api";
 import { usePlugins } from "../usePlugins";
 import { useStudio } from "../../store/studio";
 import { useFlash } from "../../store/flash";
@@ -27,7 +28,7 @@ function Verification({ label, ok, blocked }: { label: string; ok: boolean; bloc
   return <div className="flex items-center gap-2 text-[10px]"><span className={ok ? "text-[#2B9661]" : "text-[#D34A3D]"}>{ok ? "✓" : "✗"}</span><span>{label}</span>{!ok && blocked && <span className="text-[#90969E]">（阻止写入）</span>}</div>;
 }
 
-export function FlashBackupPanel() {
+export default function FlashBackupPanel() {
   const flash = useFlash();
   const registry = usePlugins();
   const transports = registry.all("transports");
