@@ -51,7 +51,8 @@ export class TaskService {
     const resolved = environment ? { ...options, environment } : options;
     // The port belongs to this task from the verification step through the actual write.
     const leased = provider.portOption ? options[provider.portOption]?.trim() ?? "" : "";
-    if (leased) acquirePort(leased, provider.id);
+    // "task" is the same owner the IPC entry claims, so the lease is shared, not re-entered.
+    if (leased) acquirePort(leased, "task");
     const abort = new AbortController();
     const preparedLog: string[] = [];
     let executable = baseExecutable;

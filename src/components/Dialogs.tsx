@@ -32,6 +32,7 @@ import {
 import { useStudio } from "../store/studio";
 import { useDisk } from "../store/disk";
 import { useTransport } from "../store/transport";
+import { useFlash } from "../store/flash";
 import type { TransportPort } from "../plugins/api";
 import type { EspPreflightResult, EspUploadCheck } from "../../shared/esp";
 import { cn } from "../lib/utils";
@@ -239,7 +240,8 @@ export function DeployDialog() {
   const task = taskId ? disk.tasks.find((item) => item.id === taskId) : undefined;
   const taskPort = task?.options?.port ?? "";
   const uploadRunning = task?.status === "running";
-  const busy = submitting || !!uploadRunning || disk.starting || ["connecting", "disconnecting"].includes(io.status);
+  const flashPortBusy = useFlash((state) => state.starting || (state.snapshot?.status ?? "idle") !== "idle");
+  const busy = submitting || !!uploadRunning || disk.starting || flashPortBusy || ["connecting", "disconnecting"].includes(io.status);
   const preflight = disk.espPreflight;
   const metadata = task?.metadata as { writeCheck?: EspUploadCheck; journal?: { directory: string; totalBytes: number; ranges: unknown[] } } | undefined;
   const writeCheck = metadata?.writeCheck;

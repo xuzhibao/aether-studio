@@ -39,7 +39,7 @@ try {
   const nav = page.locator("nav");
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByText("本地内置插件 · 15 / 15 已启用", { exact: true }).waitFor();
+  await dialog.getByText("本地内置插件 · 16 / 16 已启用", { exact: true }).waitFor();
   // The ESP device plugin exposes its read-only panel and the esptool setting in the browser too.
   await dialog.getByRole("button", { name: /^ESP 设备检测/ }).click();
   await dialog.getByText("devices/esp32", { exact: true }).waitFor();

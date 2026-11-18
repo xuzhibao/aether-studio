@@ -16,6 +16,9 @@ import { ESPTOOL_TOOL } from "./esp/esptool";
 import { inspectEspDevice } from "./esp/inspect";
 import { preflightEspUpload } from "./esp/preflight";
 import { createEspUploadProvider } from "./esp/upload";
+import { FlashService } from "./flash";
+import { createEsptoolRunner } from "./plugins/esptool";
+import { DeviceLease } from "./deviceLock";
 import type { ProjectContext } from "../src/plugins/api";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -32,16 +35,22 @@ const confirmClose = (detail = "选择放弃修改将关闭窗口。") => {
 let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
+// Shared ownership of the single COM port: monitor, upload/build task, flash operation.
+const lease = new DeviceLease();
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
 const recovery = new RecoveryService(() => path.join(app.getPath("userData"), "recovery"));
 const tasks = new TaskService(workspace, (task) => {
   emit("tasks:changed", task);
+  // A finished task no longer owns the port.
+  if (task.status !== "running") lease.release("task");
   // Providers declare what a successful task produced; the host only reacts to the generic kind.
   if (task.status === "succeeded" && task.kind === "compile-database") {
     void enqueue(() => language.refreshCompileDatabase(task.root, task.environment ?? "")).catch((error) => console.error("clangd compile database refresh failed", error));
   }
 });
 const serial = new SerialService();
+// An unexpected unplug/close must release the port for flash, not leave it reserved forever.
+serial.setOnSessionEnd(() => lease.release("monitor"));
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
 terminal.register(shellProvider);
 const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
@@ -49,6 +58,8 @@ const language = new LanguageService(workspace, (snapshot) => emit("language:cha
 const tools = new ToolService(() => path.join(app.getPath("userData"), "tools.json"), (id) => {
   void tools.list().then((list) => emit("tools:changed", list)).catch((error) => console.error("Tool settings update failed", error));
   if (id === "clangd") void language.restartForTool("clangd").catch((error) => console.error("clangd restart failed", error));
+  // A new esptool path invalidates a prepared restore plan: its capabilities were measured on the old binary.
+  if (id === "esptool") flash.invalidatePlan();
 });
 // esptool is a shared tool identity: the ESP plugin, the preflight and the backup all use it.
 tools.define(ESPTOOL_TOOL);
@@ -57,10 +68,28 @@ tasks.register(platformio.platformioBuild); tasks.register(platformio.platformio
 // ESP uploads are verified and journaled inside the task, while the port lease is held.
 tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => path.join(app.getPath("userData"), "esp-journal") }));
 language.register(createClangdProvider(tools));
+// Flash backup/restore shares the single COM port with the monitor and upload tasks.
+const esptool = createEsptoolRunner(tools);
+const flash = new FlashService(esptool, {
+  emit: (snapshot) => emit("flash:changed", snapshot),
+  chooseSave: async (suggestedName) => {
+    const result = await dialog.showSaveDialog(window, { title: "保存 Flash 备份", defaultPath: path.join(app.getPath("documents"), suggestedName), filters: [{ name: "Flash 镜像", extensions: ["bin"] }] });
+    return result.canceled || !result.filePath ? null : result.filePath;
+  },
+  chooseOpen: async () => {
+    const result = await dialog.showOpenDialog(window, { title: "选择 Flash 备份", properties: ["openFile"], filters: [{ name: "Flash 镜像", extensions: ["bin"] }] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  },
+  workspaceRoot: () => workspace.root,
+  appRoot: () => app.getAppPath(),
+  serialBusy: () => serial.isOpen(),
+  claim: () => lease.claim("flash"),
+  release: () => lease.release("flash"),
+});
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { await tasks.stopAll(); await serial.dispose(); await language.stop(); await terminal.stop(); };
+const beforeSwitch = async () => { await tasks.stopAll(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -124,7 +153,7 @@ function routes() {
     const result = await dialog.showOpenDialog(window, { title: "选择 " + tool.name + " 可执行文件", properties: ["openFile"], ...(process.platform === "win32" ? { filters: [{ name: "可执行文件", extensions: ["exe"] }] } : {}) });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  // ESP operations run only on an explicit user action; both are read-only and take the port lease.
+  // ESP operations run only on an explicit user action; both are read-only and take the same port lease.
   handle("esp:inspect", (port: string) => inspectEspDevice(port, tools));
   // UI preview only. The authoritative check runs inside the esp.upload task; there is no option to relax it.
   handle("esp:preflight", (options: { environment?: string; port: string }) => {
@@ -132,12 +161,39 @@ function routes() {
     if (!root) throw new Error("请先打开工程目录");
     return preflightEspUpload({ root, environment: options.environment, port: options.port, workspace, tools, platformio: tools.executable("platformio") });
   });
-  handle("tasks:start", (provider: string, options: Record<string, string> = {}) => enqueue(() => tasks.start(provider, options)));
+  handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
+    lease.claim("task");
+    flash.invalidatePlan();
+    try { return await enqueue(() => tasks.start(provider, options)); }
+    catch (error) { lease.release("task"); throw error; }
+  });
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   handle("tasks:environments", (provider: string) => tasks.environments(provider));
   handle("tasks:list", () => tasks.list());
-  handle("serial:list", () => serial.list()); handle("serial:open", (port: string, baud: number) => serial.open(port, baud));
-  handle("serial:read", (id: number) => serial.read(id)); handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes)); handle("serial:close", (id: number) => serial.close(id));
+  handle("serial:list", () => serial.list());
+  handle("serial:open", async (port: string, baud: number) => {
+    lease.claim("monitor");
+    flash.invalidatePlan();
+    try { return await serial.open(port, baud); }
+    catch (error) { lease.release("monitor"); throw error; }
+  });
+  handle("serial:read", (id: number) => serial.read(id));
+  handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes));
+  handle("serial:close", async (id: number) => { try { return await serial.close(id); } finally { lease.release("monitor"); } });
+  // Flash operations acquire the same lease synchronously inside the service.
+  handle("flash:snapshot", () => flash.snapshot());
+  handle("flash:toolStatus", () => tools.status("esptool"));
+  handle("flash:capabilities", () => flash.capabilities());
+  handle("flash:describe", (port: string) => flash.describeExclusive(port));
+  handle("flash:chooseBackupPath", (suggestedName: string) => flash.chooseBackupPath(suggestedName));
+  handle("flash:chooseBackupFile", () => flash.chooseBackupFile());
+  handle("flash:readMetadata", (backupPath: string) => flash.readMetadata(backupPath));
+  handle("flash:startBackup", (options) => flash.startBackup(options));
+  handle("flash:prepareRestore", (options) => flash.prepareRestore(options));
+  handle("flash:executeRestore", (planId: string, confirmation: string) => {
+    return flash.executeRestore(planId, confirmation);
+  });
+  handle("flash:cancel", () => flash.cancel());
 }
 let quitting = false;
 app.on("before-quit", (event) => {
@@ -146,7 +202,7 @@ app.on("before-quit", (event) => {
   void enqueue(async () => {
     // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
     if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
-    await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+    await Promise.all([tasks.stopAll(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
   }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());

@@ -160,7 +160,6 @@ npm run desktop
 
 ESP32-S3 实机检查步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)。上方部署前核对、只读检测与限制见本文的 [ESP 设备检测与部署前核对](#esp-设备检测与部署前核对)。
 
-不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 与 `examples/platformio-esp32c3` 分别提供固定平台版本的 ESP32-S3 与 ESP32-C3（原生 USB CDC）Arduino 示例。
 
 ## ESP 设备检测与部署前核对
 
@@ -191,13 +190,16 @@ ESP 相关能力由 **ESP 设备检测** 插件（`aether.esp.device`）提供�
 
 **会明确阻止而不是假装通过的场景**：`upload_protocol` 不是 esptool（例如 espota）、工程声明了 `extra_scripts`、找不到板卡清单、构建记录缺失。非 ESP 工程（例如 `platform = native`）完全不经过上述检查，上传行为与之前一致。
 
-**flash 备份/恢复**：beta.4 不提供设备 flash 备份或恢复，界面与服务都不会盲写整片镜像。需要时请使用 esptool 官方命令并自行校验。
-
 **已验证范围**：
 
 - ESP32-C3（COM4，原生 USB-Serial/JTAG，16MB）：真实只读检测成功（芯片、flash、6 个厂商分区、USB 分类）；真实部署前核对在“4MB 默认构建 vs 16MB 厂商分区”下正确阻止写入，全程只执行 `flash_id` / `read_flash` / `summary`，没有任何写入命令。
 - ESP32-S3：beta.3 已完成真机上传与串口验证；本轮未重新刷写任何设备。
 - 安全状态通过 `esptool get_security_info` 读取，不需要 PyYAML；只有工具输出无法解析时才标记为未读取，部署前核对会给出警告并要求自行确认。
+
+**Flash 备份/恢复**：Plugins → Flash 备份/恢复 面板通过本机 esptool 按块备份整片 Flash，并在恢复前只读比较、列出将写范围、要求显式确认，写入后逐段读回核对；不修改 eFuse，无法安全写入时明确拒绝。部署前核对生成的写前快照位于应用数据目录 `esp-journal/`。操作说明见 [docs/esp-flash-backup-restore.md](docs/esp-flash-backup-restore.md)，自动化用例为 `npm run smoke:flash`（文件型假设备，不接硬件）。
+
+不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 与 `examples/platformio-esp32c3` 分别提供固定平台版本的 ESP32-S3 与 ESP32-C3（原生 USB CDC）Arduino 示例。
+
 
 ## C/C++ 编辑
 
