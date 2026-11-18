@@ -20,6 +20,12 @@ const api: DesktopAPI = {
     cancel: () => ipcRenderer.invoke("flash:cancel"),
     onChanged: (callback) => event("flash:changed", callback),
   },
+  micropython: {
+    list: (port, path) => ipcRenderer.invoke("micropython:files:list", port, path),
+    chooseDownloadPath: (suggestedName) => ipcRenderer.invoke("micropython:files:chooseDownloadPath", suggestedName),
+    download: (port, path, target) => ipcRenderer.invoke("micropython:files:download", port, path, target),
+    cancel: () => ipcRenderer.invoke("micropython:files:cancel"),
+  },
   runtime: "electron", window: (action) => ipcRenderer.invoke("window:action", action),
   files: { export: (name, content) => ipcRenderer.invoke("files:export", name, content), import: () => ipcRenderer.invoke("files:import") },
   recovery: { save: (draft) => ipcRenderer.invoke("recovery:save", draft), list: () => ipcRenderer.invoke("recovery:list"), read: (root) => ipcRenderer.invoke("recovery:read", root), clear: (root, revision) => ipcRenderer.invoke("recovery:clear", root, revision), discard: (root) => ipcRenderer.invoke("recovery:discard", root) },

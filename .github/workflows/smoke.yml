@@ -29,6 +29,7 @@ jobs:
       - run: npm run smoke:network
       # MicroPython run: exact argv, shared port lease, cancellation and abnormal exit with a fake CLI.
       - run: npm run smoke:micropython
+      - run: npm run smoke:micropython:files
       # Build input cache invalidation, pre-build diff review and the AI connection test.
       - run: npm run smoke:build-inputs
       - run: npm run smoke:build-review
@@ -89,6 +90,7 @@ jobs:
       - run: npm run smoke:flash
       # Real mpremote --version plus the fake-CLI run regression (no serial port is opened).
       - run: npm run smoke:micropython
+      - run: npm run smoke:micropython:files
       # The ESP32-C3 template must compile with the native USB CDC flags.
       - run: platformio run -d examples/platformio-esp32c3
       - run: npm run desktop:package
@@ -99,6 +101,9 @@ jobs:
           # Only clangd-20 is installed; the Electron smoke resolves clangd from this variable.
           AETHER_CLANGD_CLI: /usr/bin/clangd-20
       - run: xvfb-run -a npm run smoke:micropython:desktop
+        env:
+          AETHER_PACKAGED_EXECUTABLE: release/linux-unpacked/aether-studio
+      - run: xvfb-run -a npm run smoke:micropython:files:desktop
         env:
           AETHER_PACKAGED_EXECUTABLE: release/linux-unpacked/aether-studio
       - uses: actions/upload-artifact@v4

@@ -1,10 +1,12 @@
-// Shared contract for running one saved project script on an already-installed MicroPython board.
-// The host never assembles a shell command: the port and file are validated here, then handed to
-// mpremote as separate argv entries with `connect port:<port> run <file>`.
+// Shared contract for read-only MicroPython device file browsing and single-file download.
+// The host never assembles a shell command: the port and the remote POSIX path are validated here, then
+// handed to mpremote as separate argv entries (`connect port:<port> resume fs ls|cp ...`).
 
 import { validProjectPath } from "./projectFormat";
 
 export const MICROPYTHON_RUN_PROVIDER = "micropython.run";
+/** Port-lease owner used by the read-only file browser; it shares the lease with runs and ESP checks. */
+export const MICROPYTHON_FILES_OWNER = "MicroPython 板载文件";
 
 // An explicit serial path only. `auto` and `list` are mpremote device selectors, not ports, and are
 // refused so a renderer cannot ask mpremote to choose or enumerate devices on its own.
@@ -28,4 +30,76 @@ export function explicitMicropythonFile(value: unknown): string {
 /** The exact mpremote argv; the caller passes each entry to spawn without a shell. */
 export function micropythonRunArgs(port: string, localFile: string): string[] {
   return ["connect", "port:" + explicitMicropythonPort(port), "run", localFile];
+}
+
+/**
+ * An absolute POSIX path on the device. Values are never trimmed: leading or trailing spaces can be
+ * part of a real device name. Consecutive, `.` and `..` segments are refused rather than normalized,
+ * so the host and the device cannot disagree about which directory was listed.
+ */
+export function micropythonRemotePath(value: unknown): string {
+  if (typeof value !== "string" || !value) throw new Error("请先选择设备上的目录");
+  if (value.length > 512) throw new Error("设备路径过长（上限 512 个字符）");
+  if (!value.startsWith("/")) throw new Error("设备路径必须是绝对 POSIX 路径，以 / 开头");
+  if (/[\x00-\x1f\x7f\\]/.test(value)) throw new Error("设备路径不能包含反斜杠或控制字符");
+  if (value === "/") return "/";
+  const segments = value.slice(1).split("/");
+  for (const segment of segments) {
+    if (!segment) throw new Error("设备路径不能包含空片段（不要连续使用 /）");
+    if (segment === "." || segment === "..") throw new Error("设备路径不能包含 . 或 .. 片段");
+  }
+  return "/" + segments.join("/");
+}
+
+/** One name as mpremote printed it; it must be a single path segment. */
+export function micropythonEntryName(value: unknown): string {
+  if (typeof value !== "string" || !value) throw new Error("设备条目名称无效");
+  if (value.length > 128) throw new Error("设备条目名称过长（上限 128 个字符）");
+  if (/[/\\\x00-\x1f\x7f]/.test(value)) throw new Error("设备条目名称不能包含 /、反斜杠或控制字符");
+  if (value === "." || value === "..") throw new Error("设备条目名称不能是 . 或 ..");
+  return value;
+}
+
+export function micropythonChildPath(parent: string, name: string): string {
+  const base = micropythonRemotePath(parent);
+  const entry = micropythonEntryName(name);
+  return (base === "/" ? "/" : base + "/") + entry;
+}
+
+/** `mpremote connect port:<port> resume fs ls <path>`: resume avoids the automatic soft reset. */
+export function micropythonListArgs(port: string, remotePath: string): string[] {
+  return ["connect", "port:" + explicitMicropythonPort(port), "resume", "fs", "ls", micropythonRemotePath(remotePath)];
+}
+
+/** `mpremote connect port:<port> resume fs cp :<remote> <local>`: the local side is a private temp file. */
+export function micropythonDownloadArgs(port: string, remotePath: string, localTarget: string): string[] {
+  if (typeof localTarget !== "string" || !localTarget.trim()) throw new Error("缺少本机的下载临时文件");
+  return ["connect", "port:" + explicitMicropythonPort(port), "resume", "fs", "cp", ":" + micropythonRemotePath(remotePath), localTarget];
+}
+
+export interface MicropythonFileEntry {
+  name: string;
+  /** Absolute POSIX path for the next `fs ls` or `fs cp`; built from the validated parent and name. */
+  path: string;
+  type: "file" | "directory";
+  size: number;
+}
+
+export interface MicropythonListing {
+  /** The port this listing was read from; a download uses it instead of the live input field. */
+  port: string;
+  path: string;
+  entries: MicropythonFileEntry[];
+}
+
+export interface MicropythonDownloadResult { target: string; size: number }
+
+/** Read-only device file browsing and single-file download. No write, delete, rename or install call exists. */
+export interface MicropythonFilesAPI {
+  list: (port: string, path: string) => Promise<MicropythonListing>;
+  /** Opens the host save dialog; only the path it returns can later be written. */
+  chooseDownloadPath: (suggestedName: string) => Promise<string | null>;
+  download: (port: string, path: string, target: string) => Promise<MicropythonDownloadResult>;
+  /** Aborts the one in-flight list/download (no effect when idle). */
+  cancel: () => Promise<boolean>;
 }
