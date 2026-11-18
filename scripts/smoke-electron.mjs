@@ -236,7 +236,9 @@ try {
   await page.locator('[data-deploy-status="failed"]').waitFor({ timeout: 240000 });
   assert.match(await deployCard.innerText(), /exit 1/);
   await page.screenshot({ path: 'smoke-results/electron-deploy-failure.png', fullPage: true });
-  await deployDialog.getByRole('button', { name: 'Close dialog' }).click();
+  // Deploy cards and preflight findings can make the dialog taller than a 1280x720 CI viewport; Escape is the real close path.
+  await page.keyboard.press('Escape');
+  await until(async () => (await page.getByRole('dialog').count()) === 0);
   // Deploy preflight UI: a real ESP32-S3 build plus a read-only esptool check on a port that does not exist.
   // The dialog must show the block, offer no write, and stay retryable after the user corrects the port.
   await app.evaluate(({ dialog }, { folder, portable }) => {
@@ -266,7 +268,9 @@ try {
   await page.getByRole('button', { name: 'Deploy to Device', exact: true }).click();
   deployDialog = page.getByRole('dialog');
   assert.equal(await deployDialog.locator('[data-deploy-task]').count(), 0, 'another project upload result is not shown');
-  await deployDialog.getByRole('button', { name: 'Close dialog' }).click();
+  // The ESP preflight card from the previous project can still be tall; Escape closes the dialog regardless of viewport.
+  await page.keyboard.press('Escape');
+  await until(async () => (await page.getByRole('dialog').count()) === 0);
   // Actual OS PTY, through the migrated Electron serial backend and monitor UI.
   await fs.rm('smoke-results/serial-port.txt', { force: true });
   serialPeer = spawn('python3', ['scripts/serial-peer.py'], { stdio: 'pipe' });
