@@ -4,7 +4,7 @@ import { useStudio } from "../../store/studio";
 import { isDesktop } from "../../lib/desktop";
 export default function BuildPanel() {
   const disk = useDisk(); const setDialog = useStudio((s) => s.setDialog); const openFile = useStudio((s) => s.openFile);
-  const run = (action: () => Promise<void>) => { void action().catch((error) => useDisk.setState({ error: String(error) })); };
+  const run = (action: () => Promise<unknown>) => { void action().catch((error) => useDisk.setState({ error: String(error) })); };
   useEffect(() => { if (disk.root) run(() => disk.loadEnvironments()); }, [disk.root]);
   return <div className="flex min-w-0 flex-1 flex-col overflow-auto bg-white p-5 text-[11px] text-[#59616A]">
     <h1 className="text-base font-semibold">Build Tasks</h1><p className="mt-2 break-all">{disk.root || "尚未打开磁盘工程目录"}</p>

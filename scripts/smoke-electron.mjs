@@ -11,6 +11,10 @@ await fs.mkdir(root); await fs.mkdir(profile);
 await fs.cp('examples/platformio-native', root, { recursive: true, filter: (source) => !source.split(path.sep).includes('.pio') });
 await fs.mkdir('smoke-results', { recursive: true });
 await fs.writeFile(path.join(root, 'src/helper.hpp'), '#pragma once\ninline int sensor_value(int input) { return input + 1; }\n');
+// A native PlatformIO upload runs the built program, so a nonzero program exit gives a real failed upload without hardware.
+const deployRoot = path.join(temp, 'deploy-project');
+await fs.cp('examples/platformio-native', deployRoot, { recursive: true, filter: (source) => !source.split(path.sep).includes('.pio') });
+await fs.writeFile(path.join(deployRoot, 'src/main.cpp'), '#include <cstdio>\nint main() { std::puts("fixture upload exit 7"); return 7; }\n');
 const portable = path.join(temp, 'export.aether');
 let app, page, peer, serialPeer;
 const errors = [];
@@ -176,8 +180,47 @@ try {
   await page.getByRole('button', { name: '重新读取（放弃未保存修改）', exact: true }).click();
   await page.getByRole('button', { name: 'Build Tasks', exact: true }).click(); await page.getByRole('button', { name: 'Build with PlatformIO', exact: true }).click();
   await page.getByText(/fixture slow build/).first().waitFor({ timeout: 60000 });
+  // A running task owns the native port: the Devices dialog must not open a competing serial session.
+  await page.locator('nav').getByRole('button', { name: 'Devices', exact: true }).click();
+  const guardDialog = page.getByRole('dialog');
+  await guardDialog.getByRole('combobox', { name: '通信插件', exact: true }).selectOption('native-serial');
+  await guardDialog.getByText('构建或上传任务正在运行，暂时不能连接原生串口。', { exact: true }).waitFor();
+  assert.equal(await guardDialog.getByRole('button', { name: '建立连接', exact: true }).isDisabled(), true);
+  await guardDialog.getByRole('button', { name: 'Close dialog' }).click();
+  await page.locator('nav').getByRole('button', { name: 'Build Tasks', exact: true }).click();
   await page.getByRole('button', { name: 'Cancel task', exact: true }).click(); await page.locator('[data-task-status="cancelled"]').waitFor();
   await page.screenshot({ path: 'smoke-results/electron-task-results.png', fullPage: true });
+  // Real PlatformIO upload failure (program exits 7), then retry after correcting the port must start a new task with COM_B.
+  await app.evaluate(({ dialog }, { folder, portable }) => {
+    dialog.showOpenDialog = async (_window, options) => ({ canceled: false, filePaths: [options.properties.includes('openDirectory') ? folder : portable] });
+  }, { folder: deployRoot, portable });
+  await command('Open project folder'); await page.getByText(deployRoot, { exact: true }).first().waitFor();
+  await page.getByRole('button', { name: 'Deploy to Device', exact: true }).click();
+  let deployDialog = page.getByRole('dialog'); const deployCard = page.locator('[data-deploy-task]');
+  await deployDialog.getByLabel('Upload port', { exact: true }).fill('COM_A');
+  await deployDialog.getByRole('button', { name: '开始构建并烧录', exact: true }).click();
+  await page.locator('[data-deploy-status="failed"]').waitFor({ timeout: 240000 });
+  const firstDeploy = await deployCard.getAttribute('data-deploy-task');
+  assert.equal(await deployCard.getAttribute('data-deploy-port'), 'COM_A');
+  assert.match(await deployCard.innerText(), /exit 1/);
+  assert.match(await deployCard.innerText(), /fixture upload exit 7/);
+  await deployDialog.getByLabel('Upload port', { exact: true }).fill('COM_B');
+  await deployDialog.getByRole('button', { name: '重试上传', exact: true }).click();
+  await until(async () => (await deployCard.getAttribute('data-deploy-task')) !== firstDeploy);
+  assert.equal(await deployCard.getAttribute('data-deploy-port'), 'COM_B');
+  await page.locator('[data-deploy-status="failed"]').waitFor({ timeout: 240000 });
+  assert.match(await deployCard.innerText(), /exit 1/);
+  await page.screenshot({ path: 'smoke-results/electron-deploy-failure.png', fullPage: true });
+  await deployDialog.getByRole('button', { name: 'Close dialog' }).click();
+  // The previous project's upload result must not appear in this project's deploy dialog.
+  await app.evaluate(({ dialog }, { folder, portable }) => {
+    dialog.showOpenDialog = async (_window, options) => ({ canceled: false, filePaths: [options.properties.includes('openDirectory') ? folder : portable] });
+  }, { folder: root, portable });
+  await command('Open project folder'); await page.getByText(root, { exact: true }).first().waitFor();
+  await page.getByRole('button', { name: 'Deploy to Device', exact: true }).click();
+  deployDialog = page.getByRole('dialog');
+  assert.equal(await deployDialog.locator('[data-deploy-task]').count(), 0, 'another project upload result is not shown');
+  await deployDialog.getByRole('button', { name: 'Close dialog' }).click();
   // Actual OS PTY, through the migrated Electron serial backend and monitor UI.
   await fs.rm('smoke-results/serial-port.txt', { force: true });
   serialPeer = spawn('python3', ['scripts/serial-peer.py'], { stdio: 'pipe' });

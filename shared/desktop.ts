@@ -43,7 +43,7 @@ export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskEnvironment { name: string; default: boolean }
 export interface TaskSnapshot {
   id: string; provider: string; root: string; environment?: string; kind?: string; status: "running" | "succeeded" | "failed" | "cancelled";
-  startedAt: string; endedAt?: string; exitCode: number | null; log: string; error?: string;
+  startedAt: string; endedAt?: string; exitCode: number | null; log: string; error?: string; options?: Record<string, string>;
   inputHash: string; toolVersion?: string; artifacts: BuildArtifact[];
 }
 export interface DesktopAPI {
@@ -67,7 +67,7 @@ export interface DesktopAPI {
     list: () => Promise<TaskSnapshot[]>; onChanged: (listener: (task: TaskSnapshot) => void) => () => void;
   };
   serial: {
-    list: () => Promise<{ path: string; label: string }[]>; open: (path: string, baudRate: number) => Promise<number>;
+    list: () => Promise<{ path: string; label: string; detail?: string }[]>; open: (path: string, baudRate: number) => Promise<number>;
     read: (id: number) => Promise<number[]>; write: (id: number, bytes: number[]) => Promise<void>; close: (id: number) => Promise<void>;
   };
 }
