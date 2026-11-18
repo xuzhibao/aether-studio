@@ -50,6 +50,7 @@ export interface DesktopAPI {
   terminal: import("./terminal").TerminalAPI;
   tools: ToolsAPI;
   language: import("./language").LanguageAPI;
+  flash: import("./flash").FlashAPI;
   runtime: "electron";
   window: (action: "close" | "minimize" | "maximize") => Promise<void>;
   files: { export: (name: string, content: string) => Promise<string | null>; import: () => Promise<string | null> };

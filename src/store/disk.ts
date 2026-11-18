@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { isDesktop } from "../lib/desktop";
 import { useStudio } from "./studio";
 import { useTransport } from "./transport";
+import { flashBusy } from "./flash";
 import type { DiskWorkspace, TaskSnapshot, TaskEnvironment } from "../../shared/desktop";
 import { plugins } from "../plugins/runtime";
 import { decodeProject, encodeProject } from "../../shared/projectFormat";
@@ -213,6 +214,7 @@ export const useDisk = create<DiskState>((set, get) => {
   },
   build: async (provider, options) => {
     if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
+    if (flashBusy()) throw new Error("Flash 备份/恢复正在进行，请完成或取消后再构建/上传");
     // Reserve the port for the whole release/start window so the monitor cannot reopen it before the task is registered.
     set({ starting: true });
     try {

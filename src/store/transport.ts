@@ -3,6 +3,7 @@ import { plugins } from "../plugins/runtime";
 import type { TransportConnection, TransportOptions } from "../plugins/api";
 import type { SerialLine } from "../types";
 import { uid } from "../lib/utils";
+import { flashBusy } from "./flash";
 
 type Status = "disconnected" | "connecting" | "connected" | "disconnecting" | "error";
 interface TransportState {
@@ -37,6 +38,8 @@ export const useTransport = create<TransportState>((set, get) => ({
   connect: async (id, options) => {
     if (get().status === "disconnecting") await closeInFlight;
     if (["connecting", "connected"].includes(get().status)) return;
+    // A running flash operation owns the port; reopening it would corrupt the transfer.
+    if (flashBusy()) throw new Error("Flash 备份/恢复正在进行，端口暂不可用；请等待完成或取消。");
     const attempt = ++generation;
     const controller = new AbortController();
     pendingController = controller;

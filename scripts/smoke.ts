@@ -42,8 +42,8 @@ console.log("PASS registry: lifecycle, cleanup, duplicate IDs, dependency cycle,
 const { useStudio } = await import("../src/store/studio");
 const { plugins } = await import("../src/plugins/runtime");
 const state = () => useStudio.getState();
-assert.equal(plugins.list().length, 14);
-assert.equal(plugins.list().filter((p) => p.enabled).length, 14);
+assert.equal(plugins.list().length, 15);
+assert.equal(plugins.list().filter((p) => p.enabled).length, 15);
 assert.throws(() => plugins.disable("aether.esp32-s3"), /请先停用/);
 state().createProject({ name: "Smoke hardware project", board: "esp32-s3", template: "Blank workspace" });
 const projectId = state().activeProjectId;

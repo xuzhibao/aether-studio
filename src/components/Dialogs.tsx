@@ -32,6 +32,7 @@ import {
 import { useStudio } from "../store/studio";
 import { useDisk } from "../store/disk";
 import { useTransport } from "../store/transport";
+import { useFlash } from "../store/flash";
 import type { TransportPort } from "../plugins/api";
 import { cn } from "../lib/utils";
 import { Spinner } from "./ui";
@@ -238,7 +239,8 @@ export function DeployDialog() {
   const task = taskId ? disk.tasks.find((item) => item.id === taskId) : undefined;
   const taskPort = task?.options?.port ?? "";
   const uploadRunning = task?.status === "running";
-  const busy = submitting || !!uploadRunning || disk.starting || ["connecting", "disconnecting"].includes(io.status);
+  const flashStatus = useFlash((state) => state.snapshot?.status ?? "idle");
+  const busy = submitting || !!uploadRunning || disk.starting || flashStatus !== "idle" || ["connecting", "disconnecting"].includes(io.status);
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);

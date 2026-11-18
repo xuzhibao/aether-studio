@@ -12,6 +12,8 @@ import { TerminalService } from "./terminal";
 import { shellProvider } from "./plugins/shell";
 import { SerialService } from "./plugins/serial";
 import { ToolService } from "./tools";
+import { FlashService } from "./flash";
+import { createEsptoolRunner } from "./plugins/esptool";
 import type { ProjectContext } from "../src/plugins/api";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -49,10 +51,25 @@ const tools = new ToolService(() => path.join(app.getPath("userData"), "tools.js
 const platformio = createPlatformioPlugins(tools);
 tasks.register(platformio.platformioBuild); tasks.register(platformio.platformioUpload); tasks.register(platformio.platformioCompileDatabase);
 language.register(createClangdProvider(tools));
+// Flash backup/restore shares the single COM port with the monitor and upload tasks.
+const esptool = createEsptoolRunner(tools);
+const flash = new FlashService(esptool, {
+  emit: (snapshot) => emit("flash:changed", snapshot),
+  chooseSave: async (suggestedName) => {
+    const result = await dialog.showSaveDialog(window, { title: "保存 Flash 备份", defaultPath: path.join(app.getPath("documents"), suggestedName), filters: [{ name: "Flash 镜像", extensions: ["bin"] }] });
+    return result.canceled || !result.filePath ? null : result.filePath;
+  },
+  chooseOpen: async () => {
+    const result = await dialog.showOpenDialog(window, { title: "选择 Flash 备份", properties: ["openFile"], filters: [{ name: "Flash 镜像", extensions: ["bin"] }] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  },
+  workspaceRoot: () => workspace.root,
+  serialBusy: () => serial.isOpen(),
+});
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { await tasks.stopAll(); await serial.dispose(); await language.stop(); await terminal.stop(); };
+const beforeSwitch = async () => { await tasks.stopAll(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -116,12 +133,46 @@ function routes() {
     const result = await dialog.showOpenDialog(window, { title: "选择 " + tool.name + " 可执行文件", properties: ["openFile"], ...(process.platform === "win32" ? { filters: [{ name: "可执行文件", extensions: ["exe"] }] } : {}) });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  handle("tasks:start", (provider: string, options: Record<string, string> = {}) => enqueue(() => tasks.start(provider, options)));
+  handle("tasks:start", (provider: string, options: Record<string, string> = {}) => {
+    if (flash.busy()) throw new Error("Flash 备份/恢复正在进行，请完成或取消后再启动构建/上传任务");
+    flash.invalidatePlan();
+    return enqueue(() => tasks.start(provider, options));
+  });
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   handle("tasks:environments", (provider: string) => tasks.environments(provider));
   handle("tasks:list", () => tasks.list());
-  handle("serial:list", () => serial.list()); handle("serial:open", (port: string, baud: number) => serial.open(port, baud));
+  handle("serial:list", () => serial.list());
+  handle("serial:open", (port: string, baud: number) => {
+    if (flash.busy()) throw new Error("Flash 备份/恢复正在进行，端口暂不可用");
+    flash.invalidatePlan();
+    return serial.open(port, baud);
+  });
   handle("serial:read", (id: number) => serial.read(id)); handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes)); handle("serial:close", (id: number) => serial.close(id));
+  // Flash operations own the port while running; the monitor and upload tasks are refused above.
+  handle("flash:snapshot", () => flash.snapshot());
+  handle("flash:toolStatus", () => tools.status("esptool"));
+  handle("flash:capabilities", () => flash.capabilities());
+  handle("flash:describe", (port: string) => {
+    if (flash.busy()) throw new Error("已有 Flash 操作正在进行");
+    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，暂时不能读取设备");
+    return flash.describeDevice(port);
+  });
+  handle("flash:chooseBackupPath", (suggestedName: string) => flash.chooseBackupPath(suggestedName));
+  handle("flash:chooseBackupFile", () => flash.chooseBackupFile());
+  handle("flash:readMetadata", (backupPath: string) => flash.readMetadata(backupPath));
+  handle("flash:startBackup", (options) => {
+    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，请先等待或取消");
+    return flash.startBackup(options);
+  });
+  handle("flash:prepareRestore", (options) => {
+    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，请先等待或取消");
+    return flash.prepareRestore(options);
+  });
+  handle("flash:executeRestore", (planId: string, confirmation: string) => {
+    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，请先等待或取消");
+    return flash.executeRestore(planId, confirmation);
+  });
+  handle("flash:cancel", () => flash.cancel());
 }
 let quitting = false;
 app.on("before-quit", (event) => {
@@ -130,7 +181,7 @@ app.on("before-quit", (event) => {
   void enqueue(async () => {
     // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
     if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
-    await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+    await Promise.all([tasks.stopAll(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
   }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());

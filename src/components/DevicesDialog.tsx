@@ -3,6 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useStudio } from "../store/studio";
 import { useTransport } from "../store/transport";
 import { useDisk } from "../store/disk";
+import { useFlash } from "../store/flash";
 import { usePlugins } from "../plugins/usePlugins";
 import type { TransportPort } from "../plugins/api";
 import { cn } from "../lib/utils";
@@ -15,6 +16,7 @@ export function DevicesDialog() {
   const io = useTransport();
   const taskRunning = useDisk((state) => state.tasks.some((task) => task.status === "running"));
   const taskStarting = useDisk((state) => state.starting);
+  const flashStatus = useFlash((state) => state.snapshot?.status ?? "idle");
   const [selected, setSelected] = useState(() => transports[0]?.id ?? "");
   const [addresses, setAddresses] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<Record<string, Record<string, string>>>({});
@@ -24,10 +26,11 @@ export function DevicesDialog() {
   const addressRef = useRef<HTMLInputElement>(null);
   const revision = registry.getRevision();
   const transport = registry.get("transports", selected);
-  // Upload/build tasks own the native port; do not let the monitor reopen it and break the running command.
+  // Upload/build tasks and flash operations own the native port; do not let the monitor reopen it.
   const ioBusy = ["connecting", "connected", "disconnecting"].includes(io.status);
   const portBusy = (taskRunning || taskStarting) && !!transport?.list;
-  const busy = ioBusy || portBusy;
+  const flashBusy = flashStatus !== "idle";
+  const busy = ioBusy || portBusy || flashBusy;
   const address = addresses[selected] ?? "";
   const parameters = Object.fromEntries(transport?.parameters.map((field) => [field.key, settings[selected]?.[field.key] ?? field.initial]) ?? []);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -60,6 +63,7 @@ export function DevicesDialog() {
         <div className="flex items-end gap-2">{transport?.parameters.map((field) => <label key={field.key} className="block flex-1">{field.label}<input aria-label={field.label} type={field.type} min={field.min} step={field.type === "number" ? "1" : undefined} disabled={busy} value={parameters[field.key]} onChange={(event) => setSettings({ ...settings, [selected]: { ...settings[selected], [field.key]: event.target.value } })} className="input mt-1 w-full" /></label>)}<div className="flex flex-1 justify-end gap-2">{transport?.list && <button type="button" className="btn px-3 py-1.5" disabled={loading || busy || !!transport.unavailable} onClick={() => setRefreshToken((token) => token + 1)}>{loading ? "正在枚举…" : "刷新端口"}</button>}<button type="submit" className="btn btn-primary px-3 py-1.5" disabled={busy || !address.trim() || !transport || !!transport.unavailable}>建立连接</button></div></div>
         <p className="text-[10px] leading-5 text-[#90969E]">{transport?.description}</p>
         {portBusy && <p role="status" className="text-[10px] leading-5 text-[#A8741F]">构建或上传任务正在运行，暂时不能连接原生串口。</p>}
+        {flashBusy && <p role="status" className="text-[10px] leading-5 text-[#A8741F]">Flash 备份/恢复正在进行，暂时不能连接原生串口。</p>}
         {!loading && transport?.list && !transport.unavailable && ports.length === 0 && <p className="text-[10px] text-[#90969E]">未枚举到端口，可手动输入路径。</p>}
       </form>}
       <div className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]" role="status">{io.status === "connected" ? `已连接 ${io.label}` : io.status === "connecting" ? "正在建立连接…" : io.status === "disconnecting" ? "正在断开…" : "未建立连接"}</div>

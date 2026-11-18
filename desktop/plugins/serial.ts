@@ -2,6 +2,8 @@ import { SerialPort } from "serialport";
 export class SerialService {
   private next = 0;
   private session?: { id: number; port: SerialPort; bytes: number[]; error?: Error };
+  /** True while the monitor owns a port; flash operations must not open the same device. */
+  isOpen() { return !!this.session; }
   async list() {
     return (await SerialPort.list()).map((port) => ({
       path: port.path,

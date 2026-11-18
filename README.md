@@ -159,6 +159,8 @@ npm run desktop
 
 ESP32-S3 实机检查步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)。
 
+**Flash 备份/恢复**：Plugins → Flash 备份/恢复 面板通过本机 esptool 按块备份整片 Flash，并在恢复前只读比较、列出将写范围、要求显式确认，写入后逐段读回核对；不修改 eFuse，无法安全写入时明确拒绝。操作说明见 [docs/esp-flash-backup-restore.md](docs/esp-flash-backup-restore.md)，自动化用例为 `npm run smoke:flash`（文件型假设备，不接硬件）。
+
 不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 提供固定平台版本的 ESP32-S3 Arduino 示例。
 
 ## C/C++ 编辑
