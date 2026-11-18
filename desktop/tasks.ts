@@ -82,7 +82,7 @@ export class TaskService {
       inputHash = await this.workspace.fingerprint(provider.inputExcludes);
     } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
     const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + [executable, ...args].map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
     let child: ChildProcess;
     try {
       child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
