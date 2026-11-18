@@ -74,6 +74,12 @@ jobs:
       - run: AETHER_CLANGD_CLI=/usr/bin/clangd-20 npm run smoke:language
       - run: AETHER_CLANGD_CLI=/usr/bin/clangd-20 npm run smoke:esp32
       - run: platformio run -d examples/platformio-esp32s3
+      # ESP device contract + deploy preflight: pure parsers, the blocking rules (C3/S3 mismatch,
+      # 0x10000 model overlap, 0xe000 crossing, partition rewrite) and a real preflight against real
+      # PlatformIO metadata with a recording esptool; zero write commands are allowed.
+      - run: npm run smoke:esp
+      # The ESP32-C3 template must compile with the native USB CDC flags.
+      - run: platformio run -d examples/platformio-esp32c3
       - run: npm run desktop:package
       - run: xvfb-run -a npm run smoke:crash
       - run: xvfb-run -a npm run smoke:desktop
@@ -90,3 +96,6 @@ jobs:
             examples/platformio-esp32s3/.pio/build/esp32-s3/firmware.*
             examples/platformio-esp32s3/.pio/build/esp32-s3/bootloader.bin
             examples/platformio-esp32s3/.pio/build/esp32-s3/partitions.bin
+            examples/platformio-esp32c3/.pio/build/esp32-c3/firmware.*
+            examples/platformio-esp32c3/.pio/build/esp32-c3/bootloader.bin
+            examples/platformio-esp32c3/.pio/build/esp32-c3/partitions.bin

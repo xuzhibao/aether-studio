@@ -77,3 +77,44 @@
 | 本说明 | 真实开发板、真实 USB 串口、真实 boot 日志 | 其他型号/固件的兼容性 |
 
 只有在真实开发板上完成第 1–5 步，才可将实机验收记为 PASS；否则应记录为“未验证（无目标硬件）”。
+## 7. beta.4：只读检测与部署前核对（ESP32-C3 实测）
+
+beta.4 在新工程上增加了 ESP 设备只读检测和部署前核对。本节记录本机（COM4，ESP32-C3 QFN32 rev v0.4，16MB，VID 303A/PID 1001 原生 USB-Serial/JTAG）的实测边界。
+
+### 7.1 只读检测
+
+1. 打开 **ESP 设备** 面板，选择 `COM4`，点 **只读检测**。
+2. 期望结果：芯片 `ESP32-C3`、`rev v0.4`、`WiFi, BLE`、`USB-Serial/JTAG`、flash `16MB`（`ef/4018`）、板上分区表 6 项（nvs 0x9000、otadata 0xd000、phy_init 0xf000、model 0x10000、ota_0 0x100000、ota_1 0x700000）。
+3. 板型显示为 **未知**，这是预期行为：芯片和 USB 描述符都不能确定开发板型号。
+4. 安全状态若显示“未读取”，说明 `espefuse.py` 缺少 PyYAML；不影响只读检测的其余部分，但部署前核对会给出警告。
+
+命令行等价验证（不会写入 flash，但会复位芯片）：
+
+```
+AETHER_ESP_PORT=COM4 npm run smoke:esp:device
+```
+
+### 7.2 部署前核对
+
+用 `examples/platformio-esp32c3` 的真实构建产物对 COM4 执行核对：
+
+```
+AETHER_ESP_PORT=COM4 \
+AETHER_PLATFORMIO_CLI="C:/Users/<you>/.platformio/penv/Scripts/platformio.exe" \
+AETHER_ESP_PROJECT=examples/platformio-esp32c3 \
+npm run smoke:esp:preflight
+```
+
+本机结果：`ok=false`，阻止项为 `partition-rewrite`（默认 4MB 分区表与设备 16MB 厂商布局不同）和 `bootapp0-overlap`（boot_app0 0xE000–0x10000 跨过 otadata/phy_init），并给出 `security-unknown` 警告。整个过程只执行 `flash_id`、`read_flash` 和 `summary`，日志中没有任何 `write_flash`/`erase_flash` 命令。这就是“危险布局拒绝时零写入”的证据。
+
+真实设备上出现过一次需要修正的问题：分区表 magic 在 flash 上是字节 `AA 50`，按小端读成整数是 `0x50AA`，最初按 `0xAA50` 比较导致真实分区表被误判为无效。修正后由本节的真实读取验证。
+
+### 7.3 自动化覆盖与新增命令
+
+| 命令 | 覆盖内容 | 不能证明 |
+| --- | --- | --- |
+| `npm run smoke:esp` | 镜像头/分区表/flash_id/efuse 解析；9 条阻止规则（C3/S3 错配、0x10000 model 覆盖、0xe000 跨区、分区表改写、对齐、容量、安全启动、无法预检的上传方式、设备不可读）；上传后写入段比对；真实 PlatformIO 元数据 + 记录型假 esptool 的完整预检，断言零写入命令、非 ESP 工程完全不碰端口 | 真实芯片、真实烧录 |
+| `npm run smoke:esp:device` | 真实端口的只读检测（芯片/flash/分区表/eFuse），断言不返回 MAC | 写入与启动日志 |
+| `npm run smoke:esp:preflight` | 真实端口 + 真实构建产物的部署前核对，断言布局不同必须阻止 | 写入与启动日志 |
+
+本节所有结果都来自只读路径。beta.4 没有再刷写任何设备；ESP32-S3 的上传结论仍以 beta.3 的实机验收为准。

@@ -1,4 +1,5 @@
 import { SerialPort } from "serialport";
+import { acquirePort, releasePort } from "../portLease";
 export class SerialService {
   private next = 0;
   private session?: { id: number; port: SerialPort; bytes: number[]; error?: Error };
@@ -13,6 +14,8 @@ export class SerialService {
   async open(path: string, baudRate: number) {
     if (this.session) throw new Error("已有打开的串口");
     if (!path || !Number.isInteger(baudRate) || baudRate <= 0) throw new Error("无效的串口参数");
+    // The same lease protects a running upload/task from the monitor taking the port back.
+    acquirePort(path, "串口监视器");
     const port = new SerialPort({ path, baudRate, autoOpen: false });
     const session = { id: ++this.next, port, bytes: [] as number[], error: undefined as Error | undefined };
     this.session = session;
@@ -20,7 +23,7 @@ export class SerialService {
     port.on("error", (error: Error) => { session.error = error; });
     port.on("close", () => { session.error ??= new Error("串口已关闭"); });
     try { await new Promise<void>((resolve, reject) => port.open((error) => error ? reject(error) : resolve())); return session.id; }
-    catch (error) { if (this.session === session) this.session = undefined; throw error; }
+    catch (error) { if (this.session === session) this.session = undefined; releasePort(path); throw error; }
   }
   private require(id: number) { if (this.session?.id !== id) throw new Error("串口连接已关闭"); if (this.session.error) throw this.session.error; return this.session; }
   async read(id: number) { return this.require(id).bytes.splice(0, 4096); }
@@ -35,6 +38,7 @@ export class SerialService {
     if (session.port.opening) await new Promise<void>((resolve) => { session.port.once("open", () => resolve()); session.port.once("error", () => resolve()); });
     if (session.port.isOpen) await new Promise<void>((resolve, reject) => session.port.close((error) => error ? reject(error) : resolve()));
     if (this.session === session) this.session = undefined;
+    releasePort(session.port.path);
   }
   async dispose() { if (this.session) await this.close(this.session.id); }
 }

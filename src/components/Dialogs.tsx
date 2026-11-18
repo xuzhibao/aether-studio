@@ -33,6 +33,7 @@ import { useStudio } from "../store/studio";
 import { useDisk } from "../store/disk";
 import { useTransport } from "../store/transport";
 import type { TransportPort } from "../plugins/api";
+import type { EspPreflightResult, EspUploadCheck } from "../../shared/esp";
 import { cn } from "../lib/utils";
 import { Spinner } from "./ui";
 
@@ -232,6 +233,10 @@ export function DeployDialog() {
   const [submitting, setSubmitting] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [monitorBaud, setMonitorBaud] = useState("115200");
+  // Two explicit, per-deploy acknowledgements. They never cover a chip mismatch; they only allow
+  // writing regions the device already uses (boot_app0 across otadata/phy_init) or a new partition table.
+  const [allowBootApp0, setAllowBootApp0] = useState(false);
+  const [allowPartitionRewrite, setAllowPartitionRewrite] = useState(false);
   const provider = providers.find((item) => item.id === selected);
   const monitor = provider?.monitor;
   const portSource = provider?.ports;
@@ -239,12 +244,16 @@ export function DeployDialog() {
   const taskPort = task?.options?.port ?? "";
   const uploadRunning = task?.status === "running";
   const busy = submitting || !!uploadRunning || disk.starting || ["connecting", "disconnecting"].includes(io.status);
+  const preflight = disk.espPreflight;
+  const writeCheck = (task?.metadata as { writeCheck?: EspUploadCheck } | undefined)?.writeCheck;
+  // A block that names an acknowledgement is resolved by the matching checkbox, not by hiding it.
+  const accepted = preflight ? preflight.findings.filter((finding) => finding.severity === "block" && !(finding.id === "bootapp0-overlap" && allowBootApp0) && !(finding.id === "partition-rewrite" && allowPartitionRewrite)) : [];
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);
     const first = available[0];
     setSelected(first?.id ?? "");
-    setError(""); setSubmitting(false);
+    setError(""); setSubmitting(false); setAllowBootApp0(false); setAllowPartitionRewrite(false);
     setMonitorBaud(first?.monitor?.defaultBaudRate ?? "115200");
     // Results belong to the current disk project only; another project's upload must not look like this one.
     const latest = first ? disk.tasks.filter((item) => item.provider === first.id && item.root === disk.root).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1) : undefined;
@@ -258,18 +267,18 @@ export function DeployDialog() {
     void portSource.list().then((items) => { if (current) setPorts(items); }, (reason) => { if (current) setPortsError(String(reason)); }).finally(() => { if (current) setPortsLoading(false); });
     return () => { current = false; };
   }, [dialog, provider?.id, revision, refreshToken]);
-  const deploy = (event: React.FormEvent) => {
-    event.preventDefault();
+  const runDeploy = async () => {
     if (!provider || !address.trim() || busy || !isDesktop()) return;
     const port = address.trim();
-    setSubmitting(true); setError(""); setTaskId("");
-    void provider.deploy(getProjectContext(), port).then((result) => {
+    setSubmitting(true); setError(""); setTaskId(""); useDisk.setState({ espPreflight: null });
+    try {
+      const result = await provider.deploy(getProjectContext(), port, { allowBootApp0: allowBootApp0 ? "1" : "", allowPartitionRewrite: allowPartitionRewrite ? "1" : "" });
       if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); }
       else { setDialog(null); setTab("panel:build.tasks"); }
-    }).catch((reason) => {
-      // A rejected hand-off (no disk project, serial still busy, invalid arguments) did not start an upload.
-      setError(String(reason));
-    }).finally(() => setSubmitting(false));
+    } catch (reason) {
+      // A rejected hand-off (blocked preflight, failed build, busy port) never started a write.
+      setError(String(reason instanceof Error ? reason.message : reason));
+    } finally { setSubmitting(false); }
   };
   const connectMonitor = async () => {
     const port = address.trim() || taskPort;
@@ -283,42 +292,68 @@ export function DeployDialog() {
   const statusText = !task ? "" : task.status === "running" ? "正在上传…" : task.status === "succeeded" ? "上传命令成功（退出码 0）" : task.status === "cancelled" ? "上传已取消" : "上传失败";
   const monitorPort = address.trim() || taskPort;
   const canConnect = !!monitor && !["connecting", "disconnecting"].includes(io.status) && (io.status !== "connected" || io.address === monitorPort);
-  return <Modal open={dialog === "deploy"} onOpenChange={(open) => !open && setDialog(null)} width={560}><form className="p-5" onSubmit={deploy}>
+  const monitorActive = io.status === "connected" && io.address === monitorPort;
+  const lastLine = io.lines.filter((line) => line.level === "data").at(-1)?.text ?? "";
+  return <Modal open={dialog === "deploy"} onOpenChange={(open) => !open && setDialog(null)} width={620}><form className="p-5" onSubmit={(event) => { event.preventDefault(); void runDeploy(); }}>
     <div className="flex justify-between"><Dialog.Title className="text-sm font-semibold">Deploy to device</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div>
-    <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">明确选择端口后调用已注册的部署插件。插件会先构建，再通过该端口写入固件；上传前断开现有设备连接。命令退出码为 0 仅代表命令成功，不代表固件已启动或设备已识别。</Dialog.Description>
+    <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">明确选择端口后调用已注册的部署插件。ESP 工程会先构建，再用只读的 esptool 读取芯片与板上分区，核对构建产物、写入地址与擦除对齐后才允许写入；核对未通过时不会启动上传。命令退出码为 0 仅代表命令成功。</Dialog.Description>
     {!providers.length ? <p className="mt-4 text-xs text-[#A8741F]">当前工具链没有已启用的部署插件。</p> : <>
       <div className="mt-3 rounded-md border border-[#E9EBEE] p-3">
         <div className="flex items-center justify-between text-[11px]"><span className="font-medium">已枚举端口（操作系统报告）</span><button type="button" className="btn px-2 py-1 text-[10px]" disabled={!portSource || portsLoading || busy} onClick={() => setRefreshToken((token) => token + 1)}>{portsLoading ? "正在枚举…" : "刷新端口"}</button></div>
         {!portSource ? <p className="mt-2 text-[10px] text-[#90969E]">该部署插件不提供端口枚举；可手动输入端口路径。</p> : portsError ? <p role="alert" className="mt-2 text-[10px] text-[#A8741F]">{portsError}</p> : portsLoading ? <p className="mt-2 text-[10px] text-[#90969E]">正在读取系统串口列表…</p> : ports.length ? <ul className="mt-2 space-y-1">{ports.map((item) => <li key={item.path}><button type="button" aria-pressed={address === item.path} className={cn("w-full rounded border px-2 py-1 text-left text-[10px]", address === item.path ? "border-[#007AFF] bg-[#F2F8FF]" : "border-[#E9EBEE] hover:bg-[#F8F9FB]")} onClick={() => setAddress(item.path)}><span className="font-mono">{item.path}</span><span className="ml-2 text-[#59616A]">{item.label}</span>{item.detail && <span className="ml-2 text-[#90969E]">{item.detail}</span>}</button></li>)}</ul> : <p className="mt-2 text-[10px] text-[#90969E]">未枚举到端口。可手动输入路径。</p>}
-        <p className="mt-2 text-[10px] leading-5 text-[#90969E]">列表只表示系统报告了端口和厂商描述，不能据此判断开发板型号或固件；不自动识别、不自动刷写未知设备。</p>
+        <p className="mt-2 text-[10px] leading-5 text-[#90969E]">列表只表示系统报告了端口和厂商描述，不能据此判断开发板型号或固件；不自动识别、不自动刷写未知设备。VID 303A 是 Espressif 原生 USB，其他 VID 通常是 USB-UART 桥。</p>
       </div>
       {providers.length > 1 && <label className="mt-3 block text-xs">Deployment plugin<select aria-label="Deployment plugin" className="input mt-1 w-full" disabled={busy} value={selected} onChange={(event) => { const next = providers.find((item) => item.id === event.target.value); setSelected(event.target.value); setTaskId(""); setError(""); setMonitorBaud(next?.monitor?.defaultBaudRate ?? "115200"); setAddress(next?.monitor ? io.preferredAddress(next.monitor.transportId) : ""); }}>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
       <label className="mt-3 block text-xs">{provider?.endpointLabel}<input aria-label={provider?.endpointLabel} data-deploy-port className="input mt-1 w-full" list="deploy-ports" placeholder="COM3 / /dev/ttyUSB0 / /dev/cu.usbserial…" value={address} disabled={busy} onChange={(event) => setAddress(event.target.value)} /><datalist id="deploy-ports">{ports.map((item) => <option key={item.path} value={item.path}>{item.label}</option>)}</datalist></label>
       <p className="mt-1 text-[10px] leading-5 text-[#90969E]">必须明确填写或选择端口；留空不会开始上传。也可以手动输入未枚举到的端口路径。</p>
+      <div className="mt-3 space-y-1 rounded-md border border-[#E9EBEE] p-2 text-[10px]">
+        <p className="font-medium text-[#59616A]">仅在核对提示需要时勾选；不会绕过芯片不匹配</p>
+        <label className="flex items-start gap-1.5"><input type="checkbox" className="mt-[2px]" checked={allowBootApp0} disabled={busy} onChange={(event) => setAllowBootApp0(event.target.checked)} /><span>允许写入 boot_app0（0xE000–0x10000）。PlatformIO 固定把 boot_app0.bin 写在该区域；某些厂商布局会覆盖 otadata 与 phy_init。</span></label>
+        <label className="flex items-start gap-1.5"><input type="checkbox" className="mt-[2px]" checked={allowPartitionRewrite} disabled={busy} onChange={(event) => setAllowPartitionRewrite(event.target.checked)} /><span>允许改写分区表。设备现有分区定义将被构建出的 partitions.bin 替换。</span></label>
+      </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px]">
-        <button type="submit" className="btn btn-primary px-3 py-1.5 text-xs" disabled={busy || !address.trim() || !isDesktop()}>{submitting ? "正在启动…" : uploadRunning ? "正在上传…" : "开始构建并烧录"}</button>
+        <button type="submit" className="btn btn-primary px-3 py-1.5 text-xs" disabled={busy || !address.trim() || !isDesktop()}>{submitting ? "正在核对…" : uploadRunning ? "正在上传…" : "开始构建并烧录"}</button>
         {uploadRunning && <button type="button" className="btn px-3 py-1.5" onClick={() => { if (task) void disk.cancel(task.id).catch((reason) => setError(String(reason))); }}>取消上传</button>}
         <button type="button" className="btn px-3 py-1.5" onClick={openLogs} disabled={!task}>查看完整日志</button>
       </div>
       {!isDesktop() && <p className="mt-2 text-[10px] leading-5 text-[#A8741F]">真实上传需要 Electron 桌面端和部署插件所需的工具；浏览器预览不会执行命令。</p>}
+      {error && <p role="alert" className="mt-3 whitespace-pre-wrap text-xs text-[#A8741F]">{error}</p>}
+      {preflight && preflight.supported && <section data-esp-preflight={preflight.ok ? "ok" : "blocked"} data-esp-preflight-port={preflight.port} className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]">
+        <div className="flex flex-wrap items-center gap-2"><strong>部署前核对</strong><span role="status" className={preflight.ok || !accepted.length ? "text-[#3B9A68]" : "text-[#A8741F]"}>{preflight.ok ? "通过" : accepted.length ? "已阻止写入" : "等待确认"}</span><span className="text-[10px] text-[#90969E]">{preflight.port} · env {preflight.environment} · {new Date(preflight.checkedAt).toLocaleTimeString("en-GB", { hour12: false })}</span></div>
+        <p className="mt-1 text-[10px] text-[#90969E]">设备 {preflight.chip.detectedName || "未识别"}（rev {preflight.chip.detectedRevision || "?"}）· 构建目标 {preflight.chip.expectedMcu || "未知"} · flash {preflight.flash.detected ? (preflight.flash.detected / 1048576) + " MB" : "?"} / 声明 {preflight.flash.declared ? (preflight.flash.declared / 1048576) + " MB" : "?"}</p>
+        {preflight.segments.length > 0 && <div className="mt-2 overflow-x-auto"><table className="w-full border-collapse text-[10px]"><thead><tr className="text-left text-[#90969E]"><th className="border-b border-[#EEF0F3] py-1">段</th><th className="border-b border-[#EEF0F3]">地址</th><th className="border-b border-[#EEF0F3]">大小</th><th className="border-b border-[#EEF0F3]">SHA-256</th></tr></thead><tbody>{preflight.segments.map((segment) => <tr key={segment.name} className="font-mono"><td className="py-0.5">{segment.name}</td><td>0x{segment.offset.toString(16).toUpperCase()}</td><td>{segment.size}</td><td className="text-[9px]">{segment.sha256 ? segment.sha256.slice(0, 12) : "—"}</td></tr>)}</tbody></table></div>}
+        {preflight.findings.length > 0 && <ul className="mt-2 space-y-1.5">{preflight.findings.map((finding) => <li key={finding.id} data-severity={finding.severity} className="leading-5"><span className={finding.severity === "block" ? "font-medium text-[#A8741F]" : finding.severity === "warn" ? "font-medium text-[#9A702C]" : "text-[#59616A]"}>{finding.severity === "block" ? "阻止" : finding.severity === "warn" ? "注意" : "信息"}：{finding.title}</span><span className="block text-[10px] text-[#7D848C]">{finding.detail}</span><span className="block text-[10px] text-[#59616A]">下一步：{finding.next}</span></li>)}</ul>}
+      </section>}
       {task && <section data-deploy-task={task.id} data-deploy-status={task.status} data-deploy-port={taskPort} className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]">
         <div className="flex flex-wrap items-center gap-2"><strong>上传任务</strong><span role="status">{statusText}</span><span className="text-[10px] text-[#90969E]">exit {task.exitCode ?? "—"}</span></div>
         <p className="mt-1 text-[10px] text-[#90969E]">端口 {taskPort || "—"} · {task.status === "running" ? "命令仍在运行" : "命令已结束"} · 任务 {task.id.slice(0, 8)}</p>
         {task.error && <p role="alert" className="mt-2 text-[#A8741F]">{task.error}</p>}
+        {writeCheck && <div data-write-check={writeCheck.ok ? "ok" : "mismatch"} className="mt-2 rounded border border-[#E9EBEE] p-2 text-[10px]">
+          <span className={writeCheck.ok ? "font-medium text-[#3B9A68]" : "font-medium text-[#A8741F]"}>{writeCheck.ok ? "实际写入段与预检计划一致" : "实际写入段与预检计划不一致"}</span>
+          {!writeCheck.ok && <ul className="mt-1 list-disc pl-4 text-[#A8741F]">{writeCheck.problems.map((problem, index) => <li key={index}>{problem}</li>)}</ul>}
+          <span className="mt-1 block text-[#90969E]">{writeCheck.evidence.writes.length} 段写入 · esptool 校验 {writeCheck.evidence.verifiedHashes} 段</span>
+        </div>}
         <pre className="mt-2 max-h-[160px] overflow-auto whitespace-pre-wrap rounded bg-[#F8F9FB] p-2 font-mono text-[10px] leading-5">{task.log.slice(-4000)}</pre>
         {task.status !== "running" && <div className="mt-2 flex flex-wrap items-center gap-2">
-          <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={!canConnect} onClick={() => void connectMonitor()}>{io.status === "connected" && io.address === monitorPort ? `打开${monitor?.label ?? "设备监视器"}` : task.status === "succeeded" ? `连接${monitor?.label ?? "设备监视器"}` : `连接${monitor?.label ?? "设备监视器"}查看日志`}</button>
+          <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={!canConnect} onClick={() => void connectMonitor()}>{monitorActive ? "打开" + (monitor?.label ?? "设备监视器") : task.status === "succeeded" ? "连接" + (monitor?.label ?? "设备监视器") : "连接" + (monitor?.label ?? "设备监视器") + "查看日志"}</button>
           {monitor && <label className="text-[10px] text-[#59616A]">波特率<input aria-label="监视波特率" type="number" min="1" step="1" className="input ml-1 w-[72px] px-1 py-0.5 text-[10px]" value={monitorBaud} onChange={(event) => setMonitorBaud(event.target.value)} /></label>}
           {["connected", "error"].includes(io.status) && io.address !== monitorPort && <button type="button" className="btn px-3 py-1.5 text-[10px]" onClick={() => void io.disconnect()}>断开当前连接</button>}
-          {task.status !== "succeeded" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={busy || !isDesktop() || !address.trim()} onClick={() => void (async () => { if (!provider) return; const port = address.trim(); setSubmitting(true); setError(""); try { const result = await provider.deploy(getProjectContext(), port); if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); } } catch (reason) { setError(String(reason)); } finally { setSubmitting(false); } })()}>重试上传</button>}
+          {io.status === "error" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={!canConnect} onClick={() => void connectMonitor()}>重新连接（设备可能已重新枚举）</button>}
+          {task.status !== "succeeded" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={busy || !isDesktop() || !address.trim()} onClick={() => void runDeploy()}>重试上传</button>}
         </div>}
-        {task.status === "succeeded" && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">上传命令已完成；设备可能已复位。连接同一端口可查看串口输出，若没有日志可手动复位设备。</p>}
+        <div data-monitor-state={monitorActive ? "connected" : "idle"} className="mt-2 rounded bg-[#F8F9FB] p-2 text-[10px] leading-5">
+          {monitorActive
+            ? <>已接收真实串口字节 <strong>{io.receivedBytes}</strong> 个{io.receivedBytes === 0 ? "：尚未收到任何字节。上传退出码 0 不代表固件输出正常；原生 USB-CDC 设备可能需要复位或换用另一个 USB 口。" : "，最后一行：" + lastLine.slice(0, 120)}</>
+            : "未连接监视器。上传退出码与串口输出是两件事：退出码只说明 esptool 命令结束，串口字节才说明固件真的在运行。"}
+        </div>
+        {task.status === "succeeded" && writeCheck && !writeCheck.ok && <p className="mt-2 text-[10px] leading-5 text-[#A8741F]">命令退出码为 0，但无法证明实际写入段与预检一致。请检查上方差异与完整日志，再决定是否复位设备。</p>}
+        {task.status === "succeeded" && (!writeCheck || writeCheck.ok) && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">上传命令已完成；设备可能已复位。连接同一端口可查看串口输出，若没有日志可手动复位设备。</p>}
         {task.status === "cancelled" && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">任务已取消，端口交由操作系统回收；可重试上传或连接监视器。</p>}
       </section>}
     </>}
-    {error && <p role="alert" className="mt-3 whitespace-pre-wrap text-xs text-[#A8741F]">{error}</p>}
   </form></Modal>;
 }
+
 
 export function NewFileDialog() {
   const { dialog, setDialog, files, updateFile, openFile } = useStudio();

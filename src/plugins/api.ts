@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import type { HwComponent, ProjectMeta, Wire, EditProposal, ToolRun } from "../types";
+import type { EspInspectResult, EspPreflightAllow, EspPreflightResult } from "../../shared/esp";
 
 export interface ProjectWorkspace {
   components: HwComponent[];
@@ -8,7 +9,7 @@ export interface ProjectWorkspace {
   capabilities: { board: string; toolchain: string; simulator: string; editor: string };
 }
 export interface ProjectContext extends ProjectWorkspace { project: ProjectMeta }
-export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language" | "terminal";
+export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language" | "terminal" | "device";
 export interface PluginSettingField {
   key: string;
   label: string;
@@ -78,7 +79,9 @@ export interface EditorAttachment {
 export interface CapabilityMap {
   terminals: { id: string; name: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; interrupt: () => Promise<void>; clear: () => Promise<void>; mount: (element: HTMLElement) => () => void };
   languages: { id: string; name: string; languageIds: string[]; diagnosticsPanel: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; restart?: () => Promise<void>; attach: (attachment: EditorAttachment) => () => void };
-  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; ports?: DeploymentPortSource; monitor?: DeploymentMonitor; deploy: (project: ProjectContext, address: string) => Promise<DeploymentResult | void> };
+  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; ports?: DeploymentPortSource; monitor?: DeploymentMonitor; deploy: (project: ProjectContext, address: string, options?: Record<string, string>) => Promise<DeploymentResult | void> };
+  /** Read-only device identification and deploy preflight. Registered by a device plugin, never hardcoded in the host. */
+  devices: { id: string; name: string; inspect: (port: string) => Promise<EspInspectResult>; preflight: (options: { environment: string; port: string; allow?: EspPreflightAllow }) => Promise<EspPreflightResult> };
   transports: { id: string; name: string; unavailable?: string; endpoint: { label: string; placeholder: string }; parameters: TransportParameter[]; description: string; sendHint: string; list?: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers, signal?: AbortSignal) => Promise<TransportConnection> };
   boards: { id: string; name: string; component: string; description: string };
   components: PartDefinition;

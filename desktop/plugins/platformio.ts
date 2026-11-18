@@ -3,6 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { TaskEnvironment } from "../../shared/desktop";
+import { checkUploadAgainstPlan } from "../../shared/esp";
 import type { TaskProvider } from "../tasks";
 import type { ToolDefinition, ToolService } from "../tools";
 
@@ -17,7 +18,7 @@ type ProjectConfig = [string, [string, unknown][]][];
 const invalidEnvironment = (name: string) => !name || name.includes("/") || name.includes("\\") || name === "..";
 
 // PlatformIO Core本身负责解析 platformio.ini；这里只读取 `project config --json-output` 的结果，不执行自定义发现脚本。
-async function projectConfig(root: string, executable: string): Promise<ProjectConfig> {
+export async function projectConfig(root: string, executable: string): Promise<ProjectConfig> {
   const output = await promisify(execFile)(executable, ["project", "config", "--json-output"], { cwd: root, timeout: 15000, windowsHide: true, maxBuffer: 1024 * 1024 });
   let parsed: unknown;
   try { parsed = JSON.parse(output.stdout); } catch (error) { throw new Error("无法解析 PlatformIO 工程配置：" + String(error)); }
@@ -108,8 +109,17 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
     },
   };
   const upload: TaskProvider = {
-    ...build, id: "platformio.upload",
-    args: (options) => { if (!options.port?.trim()) throw new Error("请明确选择烧录端口"); return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim()]; },
+    ...build, id: "platformio.upload", portOption: "port",
+    // Verbose output prints the exact esptool write_flash command, which is then compared with the preflight plan.
+    args: (options) => { if (!options.port?.trim()) throw new Error("请明确选择烧录端口"); return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim(), "-v"]; },
+    async verify(task) {
+      const raw = task.options?.espPlan;
+      if (!raw) return { writeCheck: { ok: false, problems: ["没有预检写入计划，无法核对实际写入段"], evidence: null } };
+      let plan: { offset: number; file: string }[];
+      try { plan = JSON.parse(raw); } catch { return { writeCheck: { ok: false, problems: ["预检写入计划格式错误"], evidence: null } }; }
+      const check = checkUploadAgainstPlan(task.log, plan);
+      return { writeCheck: check, plan };
+    },
   };
   const compiledb: TaskProvider = {
     ...build, id: "platformio.compiledb", kind: "compile-database", args: (options) => ["run", "-e", requireEnvironment(options), "--target", "compiledb"],

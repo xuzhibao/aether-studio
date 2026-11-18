@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { TaskSnapshot, BuildArtifact, TaskEnvironment } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
+import { acquirePort, releasePort } from "./portLease";
 export interface TaskProvider {
   id: string; executable: string | (() => string); args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
   inputExcludes?: string[]; recordName?: string;
@@ -12,6 +13,10 @@ export interface TaskProvider {
   kind?: string;
   // Runs after a successful task (still inside the explicit user action); the result is stored in .aether/<record>.
   afterSuccess?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal) => Promise<unknown>;
+  // Inspects the finished task (log, artifacts, options) and stores the result as task metadata.
+  verify?: (task: TaskSnapshot, root: string, options: Record<string, string>) => Promise<unknown>;
+  // Option key that names the serial port this task owns for its whole run.
+  portOption?: string;
   // Providers that build one selected environment at a time expose what the project currently declares.
   environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
   artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
@@ -46,7 +51,13 @@ export class TaskService {
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
     const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [] };
-    const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
+    // The port belongs to this task until it settles; a monitor or an inspection cannot steal it mid-upload.
+    const leased = provider.portOption ? options[provider.portOption]?.trim() ?? "" : "";
+    if (leased) acquirePort(leased, provider.id);
+    let child: ChildProcess;
+    try {
+      child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
+    } catch (error) { if (leased) releasePort(leased); throw error; }
     let cancelled = false;
     let processClosed = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -66,6 +77,7 @@ export class TaskService {
     child.on("error", (error) => { task.error = error.message; });
     child.on("close", async (code) => {
       processClosed = true;
+      if (leased) releasePort(leased);
       clearTimeout(killTimer);
       task.exitCode = code;
       task.endedAt = new Date().toISOString();
@@ -75,6 +87,12 @@ export class TaskService {
           if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
           let metadata: unknown;
           let metadataError = "";
+          if (provider.verify) {
+            try {
+              const verified = await provider.verify(task, root, resolved);
+              metadata = verified;
+            } catch (error) { metadataError = String(error); task.log = (task.log + "\n[aether] 结果核对失败：" + metadataError).slice(-250000); }
+          }
           if (provider.afterSuccess) {
             try { metadata = await provider.afterSuccess(root, executable, resolved, abort.signal); }
             catch (error) {
@@ -98,6 +116,7 @@ export class TaskService {
             if (cancelled) result = "cancelled";
             else {
               task.artifacts = artifacts;
+              if (metadata !== undefined) task.metadata = metadata;
               await fs.mkdir(path.join(root, ".aether"), { recursive: true });
               await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadata !== undefined ? { metadata } : {}), ...(metadataError ? { metadataError } : {}) }, null, 2));
             }

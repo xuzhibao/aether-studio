@@ -173,7 +173,8 @@ try {
   assert.throws(() => uploadArgs({}), /明确选择烧录端口/);
   // The provider requires the explicit environment as well; the task service resolves a default, direct args do not.
   assert.throws(() => uploadArgs({ port: "COM_SMOKE" }), /未选择 PlatformIO 构建环境/);
-  assert.deepEqual(uploadArgs({ port: "COM_SMOKE", environment: "native" }), ["run", "-e", "native", "--target", "upload", "--upload-port", "COM_SMOKE"]);
+  // -v prints the exact esptool write_flash command; the finished task compares it with the preflight plan.
+  assert.deepEqual(uploadArgs({ port: "COM_SMOKE", environment: "native" }), ["run", "-e", "native", "--target", "upload", "--upload-port", "COM_SMOKE", "-v"]);
   await assert.rejects(() => tasks.start("platformio.upload", {}), /明确选择烧录端口/);
   // A failed upload keeps its real exit code and log; retry is a new task, never the finished one.
   tasks.register({ id: "fixture.upload-fail", executable: process.execPath, args: ["-e", "console.error('fixture upload: could not open port');process.exit(7)"], artifacts: async () => [] });

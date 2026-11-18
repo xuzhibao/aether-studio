@@ -14,7 +14,8 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 - PlatformIO C++ 工程构建：实际进程、实时日志、退出码、取消任务和子进程清理。
 - 构建成功后记录已加载工程文本快照 SHA-256、PlatformIO 版本、产物路径、大小和校验和。
 - PlatformIO 部署插件：明确填写端口后，运行实际构建及上传命令。不会因为打开串口而显示烧录成功。
-- ESP32-S3 C++ 模板，以及 MicroPython 电路演示模板。
+- ESP32-S3 与 ESP32-C3（原生 USB CDC）C++ 模板，以及 MicroPython 电路演示模板。
+- ESP 设备插件：按端口显式触发的只读检测（芯片、flash、板上分区表、eFuse 安全状态）和部署前核对（构建产物、写入地址、擦除对齐、分区变更）。
 - 交互式 PTY 终端：在磁盘工程目录启动本机 shell，支持输入、中断、尺寸调整和会话清理。
 - 原生串口与 WebSocket 字节通信；设备输出与 Demo Simulation 分开显示。
 - `.aether` 工程导入导出、面板布局和编辑设置保存。
@@ -153,13 +154,48 @@ npm run desktop
 
 上传时点击 **Deploy to Device**，选择 **PlatformIO Upload**。对话框列出操作系统报告的串口路径、厂商和 VID/PID，点击一项填入，也可以手动输入未枚举到的路径；留空不会开始上传。这个列表不能判断开发板型号或固件，应用不会自动识别型号，也不会自动刷写未知设备。如果枚举与实际不符，拔插一次 USB 后点 **刷新端口**。
 
-上传前应用先断开当前串口监视器，并确认端口已释放；若关闭失败会取消任务并显示错误，而不是继续上传。插件执行 `platformio run -e ENV --target upload --upload-port PORT`，由 `platformio.ini` 决定芯片、构建和烧录方式。对话框显示真实任务状态、退出码和 PlatformIO 日志，区分运行中、成功、失败和已取消；成功仅表示命令退出码为 0，不代表固件已启动、设备已识别或启动日志正常。
+上传前应用先断开当前串口监视器，并确认端口已释放；若关闭失败会取消任务并显示错误，而不是继续上传。ESP 工程会先构建、再核对设备与写入计划（见下一节），然后执行 `platformio run -e ENV --target upload --upload-port PORT -v`；`-v` 让日志包含真实的 esptool 写入命令，任务结束后会与预检计划逐段比对。非 ESP 工程直接执行上传，不做 ESP 检查。对话框显示真实任务状态、退出码和 PlatformIO 日志，区分运行中、成功、失败和已取消；成功仅表示命令退出码为 0，不代表固件已启动、设备已识别或启动日志正常。
 
 任务结束后，可以直接在任务卡片点击 **连接串口监视器** 打开同一端口，连接波特率取 `platformio.ini` 的 `monitor_speed`（未声明时 115200）；也可以打开 **Devices**（会预填最近使用的串口）。端口被其他程序占用、上传中拔线或命令失败时，日志和退出码保留；修正后点 **重试上传** 会启动新任务，不复用已结束的任务或旧串口句柄。上传会修改设备固件，并可能使开发板复位。MicroPython 文件部署尚未接入。
 
-ESP32-S3 实机检查步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)。
+ESP32-S3 实机检查步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)。上方部署前核对、只读检测与限制见本文的 [ESP 设备检测与部署前核对](#esp-设备检测与部署前核对)。
 
-不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 提供固定平台版本的 ESP32-S3 Arduino 示例。
+不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 与 `examples/platformio-esp32c3` 分别提供固定平台版本的 ESP32-S3 与 ESP32-C3（原生 USB CDC）Arduino 示例。
+
+## ESP 设备检测与部署前核对
+
+ESP 相关能力由 **ESP 设备检测** 插件（`aether.esp.device`）提供，宿主不内置任何板型表。芯片与分区信息全部通过 esptool 只读获取。
+
+**只读检测**：打开 **ESP 设备** 面板，选择端口后点 **只读检测**。它运行 `esptool flash_id`、读取 0x8000 处的分区表，并在工具包提供 `espefuse.py` 时读取 eFuse 摘要；不会写 flash，但结束时会复位芯片。结果包括芯片型号/版本/特性、flash 容量与厂商、板上分区表、安全状态，以及 USB VID/PID 分类（303A 为 Espressif 原生 USB-Serial/JTAG，10C4/1A86/0403 等为 USB-UART 桥）。**板型始终标记为未知**：芯片型号和 USB 描述符都不能确定开发板型号，Aether 不会按板卡名推断烧录参数。MAC 只判断是否读到，不会出现在界面、日志或返回值中。
+
+**esptool 来源**：插件设置里的路径 → 环境变量 `AETHER_ESPTOOL` → PlatformIO 自带的 `tool-esptoolpy`（使用 PlatformIO 的 Python 解释器，本机实测 4.9.0）→ PATH 中的 `esptool`。已安装 PlatformIO 时无需额外配置。
+
+**部署前核对**：点 **开始构建并烧录** 后依次执行：
+
+1. 构建当前环境（`platformio run -e ENV`）。
+2. 只读读取设备芯片、flash 容量和板上分区表。
+3. 读取 `.pio/build/ENV/` 中真实的 `bootloader.bin`、`partitions.bin`、`firmware.bin` 与框架自带的 `boot_app0.bin`，解析镜像头中的芯片 ID 和分区表二进制，逐项核对：
+   - 构建产物芯片 ID、板卡清单 `build.mcu`、设备实际芯片三者一致；
+   - 每个写入段 4KB 擦除对齐、段之间不重叠、app 不超出 app 分区；
+   - app 写入地址（`board_upload.offset_address`，未声明时为 0x10000）必须落在构建分区表的 app 分区内。落在数据分区时直接阻止，例如厂商布局里 0x10000 的 `model` 分区；
+   - 构建分区表必须与设备现有分区表一致，不一致需要勾选“允许改写分区表”；
+   - `boot_app0` 固定在 0xe000、长度为 0x2000；若跨过 otadata / phy_init，需要勾选“允许写入 boot_app0”；
+   - 声明的 flash 容量不能大于设备实际容量；
+   - 设备启用安全启动、flash 加密或禁用下载模式时阻止；
+   - `.aether/build.json` 记录的产物 SHA-256 必须与磁盘一致，构建后产物被替换就拒绝。
+
+   任一阻止项都不会启动上传进程，因此不会产生任何写入。两个勾选项只解除各自区域，不能绕过芯片不匹配。
+4. 上传。任务结束后应用解析日志中的真实 `write_flash` 命令，把写入地址/文件与预检计划逐段比对；不一致时界面显示“实际写入段与预检计划不一致”，不会把退出码 0 当成成功。
+
+**会明确阻止而不是假装通过的场景**：`upload_protocol` 不是 esptool（例如 espota）、工程声明了 `extra_scripts`、找不到板卡清单、构建记录缺失。非 ESP 工程（例如 `platform = native`）完全不经过上述检查，上传行为与之前一致。
+
+**flash 备份/恢复**：beta.4 不提供设备 flash 备份或恢复，界面与服务都不会盲写整片镜像。需要时请使用 esptool 官方命令并自行校验。
+
+**已验证范围**：
+
+- ESP32-C3（COM4，原生 USB-Serial/JTAG，16MB）：真实只读检测成功（芯片、flash、6 个厂商分区、USB 分类）；真实部署前核对在“4MB 默认构建 vs 16MB 厂商分区”下正确阻止写入，全程只执行 `flash_id` / `read_flash` / `summary`，没有任何写入命令。
+- ESP32-S3：beta.3 已完成真机上传与串口验证；本轮未重新刷写任何设备。
+- eFuse 安全状态读取依赖 `espefuse.py` 的 PyYAML。缺少 PyYAML 时界面标注“未读取 eFuse 安全状态”，部署前核对给出警告，需要用户自行确认设备未启用安全启动/flash 加密。
 
 ## C/C++ 编辑
 
@@ -317,4 +353,4 @@ Aether 原创代码采用 Apache-2.0，见 `LICENSE` 和 `NOTICE`。第三方组
 
 PlatformIO Core 使用 Apache-2.0；其下载的开发平台、编译器和 SDK 按各自许可提供。IDE 不要求商业模拟器、账号或付费模型。支持 ESP32 不代表其无线固件依赖全部提供源码。
 
-当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 的完整硬件工作流仍需在对应环境验证，发行检查仅覆盖打包启动和基础操作。
+当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、ESP 设备 flash 备份/恢复、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 的完整硬件工作流仍需在对应环境验证，发行检查仅覆盖打包启动和基础操作。

@@ -4,6 +4,7 @@ import { useStudio } from "./studio";
 import { useTransport } from "./transport";
 import type { DiskWorkspace, TaskSnapshot, TaskEnvironment } from "../../shared/desktop";
 import { plugins } from "../plugins/runtime";
+import type { EspPreflightResult } from "../../shared/esp";
 import { decodeProject, encodeProject } from "../../shared/projectFormat";
 import { recoveryRevision, recoveryRestoredRoot, flushRecoveryDraft, noteRecoverySaved, noteRecoverySavedRevision, noteRecoveryDiscarded, recoveryOnRootOpened, startRecovery } from "./recovery";
 export type DiskChangeKind = "modified" | "deleted" | "added";
@@ -19,8 +20,12 @@ interface DiskState {
   recoveryHostConflicts: string[];
   /** Disk text of the host-managed files at the last adopt/save, used to detect downtime changes on restore. */
   diskCircuit: string; diskManifest: string;
+  /** Last ESP deploy preflight; the Deploy dialog renders its findings and next steps. */
+  espPreflight: EspPreflightResult | null;
   adopt: (disk: DiskWorkspace) => void; open: () => Promise<void>; saveAs: () => Promise<void>; reload: () => Promise<void>;
   save: () => Promise<void>; detach: () => void; build: (provider: string, options?: Record<string, string>) => Promise<TaskSnapshot>; cancel: (id: string) => Promise<void>;
+  /** Build, verify the plan against the device, then start the upload; a blocked plan never starts a write. */
+  deploy: (provider: string, port: string, options?: Record<string, string>) => Promise<TaskSnapshot>;
   refresh: () => Promise<void>; acceptDisk: (file: string) => Promise<void>; keepLocal: (file: string) => Promise<void>; saveFile: (file: string) => Promise<void>;
 }
 const desktop = () => { if (!isDesktop()) throw new Error("此功能需要 Electron 桌面端"); return window.aether!; };
@@ -70,7 +75,7 @@ export const useDisk = create<DiskState>((set, get) => {
   // Responses are tied to the project and refresh that requested them; a slower answer must not win.
   let environmentRequest = 0;
   return {
-  root: null, changed: false, busy: false, starting: false, tasks: [], error: "", environments: [], environment: "", directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [], recoveryHostConflicts: [], diskCircuit: "", diskManifest: "",
+  root: null, changed: false, busy: false, starting: false, tasks: [], error: "", environments: [], environment: "", directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [], recoveryHostConflicts: [], diskCircuit: "", diskManifest: "", espPreflight: null,
   adopt: ({ root, context, directories }) => {
     const { project, ...workspace } = context;
     useStudio.getState().cancelAgent(); void useTransport.getState().disconnect();
@@ -228,8 +233,43 @@ export const useDisk = create<DiskState>((set, get) => {
     } finally { set({ starting: false }); }
   },
   cancel: async (id) => { await desktop().tasks.cancel(id); },
+  deploy: async (provider, port, options = {}) => {
+    if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
+    if (!port.trim()) throw new Error("请明确选择烧录端口");
+    const environment = get().environment;
+    // 1. Build first: the preflight inspects this exact build, never a stale build directory.
+    const started = await get().build("platformio.build", { environment });
+    const built = await waitForTask(started.id);
+    if (built.status !== "succeeded") throw new Error("构建未通过（" + built.status + "）：" + (built.error || "见 Build Tasks 日志"));
+    // 2. Ask every registered device plugin. Only a supported, fully verified plan may write.
+    let plan = "";
+    let checked = false;
+    for (const device of plugins.all("devices")) {
+      const result = await device.preflight({ environment, port: port.trim(), allow: { bootApp0Overwrite: options.allowBootApp0 === "1", partitionRewrite: options.allowPartitionRewrite === "1" } });
+      set({ espPreflight: result });
+      if (!result.supported) continue;
+      checked = true;
+      if (!result.ok) throw new Error("部署前核对未通过：" + result.findings.filter((finding) => finding.severity === "block").map((finding) => finding.title).join("；"));
+      plan = JSON.stringify(result.segments.map((segment) => ({ name: segment.name, file: segment.file, offset: segment.offset, size: segment.size })));
+      break;
+    }
+    if (!checked) set({ espPreflight: null });
+    // 3. Upload. The plan travels with the task so the finished log can be compared with it.
+    return get().build(provider, { ...options, port: port.trim(), ...(plan ? { espPlan: plan } : {}) });
+  },
   };
 });
+/** Resolves when a task started by this session stops running; polls the host list so a restart is visible. */
+export async function waitForTask(id: string, timeoutMs = 30 * 60 * 1000): Promise<TaskSnapshot> {
+  const api = desktop();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const task = useDisk.getState().tasks.find((item) => item.id === id) ?? (await api.tasks.list().catch(() => [])).find((item) => item.id === id);
+    if (task && task.status !== "running") return task;
+    if (Date.now() > deadline) throw new Error("等待任务结束超时：" + id);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
 export function connectDesktop() {
   if (!isDesktop()) return () => {};
   const api = desktop(); let current = true;
