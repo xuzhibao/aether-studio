@@ -37,7 +37,7 @@ export interface WorkspaceFileOptions {
   rename: (from: string, to: string) => Promise<void>;
   trash: (path: string) => Promise<void>;
   write: (path: string, text: string, expected: string | null) => Promise<void>;
-  accept: (path: string) => Promise<void>;
+  accept: (path: string, expected?: string | null) => Promise<void>;
 }
 export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskEnvironment { name: string; default: boolean }

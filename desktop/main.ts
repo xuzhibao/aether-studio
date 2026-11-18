@@ -87,7 +87,7 @@ function routes() {
   handle("workspace:files:rename", (from: string, to: string) => fileOperation(() => workspace.rename(from, to)));
   handle("workspace:files:trash", (name: string) => fileOperation(() => workspace.trash(name)));
   handle("workspace:files:write", (name: string, text: string, expected: string | null) => fileOperation(() => workspace.write(name, text, expected)));
-  handle("workspace:files:accept", (name: string) => enqueue(() => workspace.accept(name)));
+  handle("workspace:files:accept", (name: string, expected?: string | null) => enqueue(() => workspace.accept(name, expected)));
   handle("workspace:close", () => enqueue(async () => { await beforeSwitch(); await workspace.close(); await remember(); }));
   handle("workspace:restore", () => enqueue(async () => {
     const content = await fs.readFile(stateFile(), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });

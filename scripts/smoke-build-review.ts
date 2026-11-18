@@ -17,6 +17,7 @@ const diskFiles: Record<string, string> = {};
 let saved = 0;
 let written = 0;
 let accepted = 0;
+let lastAcceptedExpected: string | null | undefined;
 const starts: { provider: string; options: Record<string, string> }[] = [];
 let sequence = 0;
 const recovery = { save: async () => {}, list: async () => [], read: async () => { throw new Error("no draft"); }, clear: async () => true, discard: async () => true };
@@ -33,7 +34,7 @@ const bridge = {
     files: {
       listing: async () => ({ files: { ...diskFiles }, directories: [] }),
       createFile: async () => {}, createDirectory: async () => {}, rename: async () => {}, trash: async () => {},
-      accept: async () => { accepted++; },
+      accept: async (_name: string, expected?: string | null) => { accepted++; lastAcceptedExpected = expected; },
       write: async (name: string, text: string, expected: string | null) => {
         const current = Object.hasOwn(diskFiles, name) ? diskFiles[name] : null;
         if (current !== expected) throw new Error("文件内容在预览后已再次改变：" + name);
@@ -84,7 +85,7 @@ function reset() {
   useDisk.getState().adopt({ root, context: { project, components: [], wires: [], files: { ...initial }, capabilities }, directories: [] });
   useDisk.setState({ environments: [{ name: "env-a", default: true }, { name: "env-b", default: false }], environment: "env-a", tasks: [], starting: false, error: "" });
   useProjectFiles.getState().close();
-  starts.length = 0; saved = 0; written = 0; accepted = 0;
+  starts.length = 0; saved = 0; written = 0; accepted = 0; lastAcceptedExpected = undefined;
 }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitForReview() {
@@ -210,9 +211,40 @@ try {
   assert.equal(identical.provider, "platformio.build");
   assert.equal(starts.length, 1);
   assert.ok(accepted > 0, "the host baseline was advanced for the matching external write");
+  assert.equal(lastAcceptedExpected, "identical external write\n", "the baseline accept carries the listing as a precondition");
   check("a matching external write advances the host baseline without a review");
 
-  console.log("PASS build review: " + passed + " checks; external edits are re-read per file, conflicts need explicit choices, cancel creates no task, and the captured environment/port are never swapped");
+  // --- Switching projects while the review is open cancels it and releases the build slot.
+  reset();
+  diskFiles["platformio.ini"] += "; external\n";
+  const detaching = useDisk.getState().build("platformio.build");
+  void detaching.catch(() => {});
+  await waitForReview();
+  useDisk.getState().detach();
+  const detached = await settleError(detaching);
+  assert.ok(isActionCancelled(detached), String(detached));
+  for (let n = 0; n < 100 && useProjectFiles.getState().dialog; n++) await sleep(10);
+  assert.equal(useProjectFiles.getState().dialog, null, "the review dialog is closed by detach");
+  assert.equal(useDisk.getState().starting, false);
+  assert.equal(starts.length, 0);
+  check("switching projects cancels the review and never starts a task");
+
+  // --- With the project-files plugin disabled there is no dialog host: fail clearly, do not hang.
+  reset();
+  diskFiles["platformio.ini"] += "; external\n";
+  const { plugins } = await import("../src/plugins/runtime");
+  plugins.disable("aether.project-files");
+  try {
+    await assert.rejects(() => useDisk.getState().build("platformio.build"), /工程文件插件未启用/);
+    assert.equal(useDisk.getState().starting, false, "the build slot is released");
+    assert.equal(starts.length, 0);
+    assert.equal(saved, 0);
+  } finally {
+    plugins.enable("aether.project-files");
+  }
+  check("a disabled project-files plugin fails the review instead of hanging");
+
+  console.log("PASS build review: " + passed + " checks; external edits are re-read per file, conflicts need explicit choices, cancel creates no task, detach/disabled-host do not hang, and the captured environment/port are never swapped");
 } finally {
   useProjectFiles.getState().close();
 }

@@ -28,20 +28,9 @@ async function projectConfig(root: string, executable: string): Promise<ProjectC
   return config;
 }
 
-// A task start resolves the environment and then prepares the build cache; both need the same config.
-// The ini timestamp and size key the cache so an external edit is still read again.
-const configCache = new Map<string, { key: string; value: Promise<ProjectConfig> }>();
-async function cachedProjectConfig(root: string, executable: string): Promise<ProjectConfig> {
-  const stat = await fs.stat(path.join(root, "platformio.ini"));
-  const key = stat.mtimeMs + ":" + stat.size;
-  const hit = configCache.get(root);
-  if (hit?.key === key) return hit.value;
-  const value = projectConfig(root, executable);
-  configCache.set(root, { key, value });
-  value.catch(() => { if (configCache.get(root)?.value === value) configCache.delete(root); });
-  return value;
-}
-
+// A task start resolves the environment and then prepares the build cache. Each step asks PlatformIO
+// again: `extra_configs` files can change without touching platformio.ini's timestamp, so caching the
+// parsed config by that single file could hide a new environment or a new partition table.
 function defaults(config: ProjectConfig) {
   const settings = config.find(([name]) => name === "platformio")?.[1];
   const value = settings?.find(([name]) => name === "default_envs")?.[1];
@@ -51,7 +40,7 @@ function defaults(config: ProjectConfig) {
 }
 
 export async function platformioEnvironments(root: string, executable: string): Promise<TaskEnvironment[]> {
-  const config = await cachedProjectConfig(root, executable);
+  const config = await projectConfig(root, executable);
   const declared = defaults(config);
   const names = config.filter(([name]) => name.startsWith("env:")).map(([name]) => name.slice(4));
   for (const name of names) if (invalidEnvironment(name)) throw new Error("无效的构建环境名：" + name);
@@ -110,7 +99,7 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
     id: "platformio.build", executable: () => tool.executable("platformio"), args: (options) => ["run", "-e", requireEnvironment(options)], versionArgs: ["--version"],
     environments: (root, executable) => platformioEnvironments(root, executable),
     // A build and an upload share the environment's cache; both must see the current ini and partition table.
-    beforeStart: async (root, executable, options) => prepareBuildCache(root, requireEnvironment(options), await cachedProjectConfig(root, executable)),
+    beforeStart: async (root, executable, options) => prepareBuildCache(root, requireEnvironment(options), await projectConfig(root, executable)),
     async artifacts(root, _executable, options) {
       const environment = requireEnvironment(options);
       const directory = path.join(root, ".pio", "build", environment);

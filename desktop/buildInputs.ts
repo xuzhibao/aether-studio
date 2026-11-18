@@ -34,7 +34,11 @@ export interface BuildInputSignature {
   format: 1;
   root: string;
   environment: string;
+  /** Effective build directory, project-relative in POSIX form (honors build_dir/workspace_dir). */
+  buildDir: string;
   iniSha256: string;
+  /** Hash of the merged `pio project config` output; also covers `extra_configs` files. */
+  configSha256: string;
   partitions: PartitionInput[];
 }
 
@@ -49,7 +53,6 @@ interface BuildInputRecords { format: 1; environments: Record<string, BuildInput
 export interface InvalidationPlan { directory: string; targets: string[] }
 
 const recordFile = path.join(".aether", "build-config.json");
-const staleRoot = path.join(".pio", "build", ".aether-stale");
 // Only outputs whose content depends on the partition layout are moved. The ELF and map stay in
 // place: removing firmware.bin already forces a relink, and keeping them avoids large copies.
 const partitionArtifacts = ["partitions.bin", "partitions.csv", "bootloader.bin", "firmware.bin"];
@@ -72,6 +75,8 @@ function sectionMap(config: ProjectConfig) {
   return sections;
 }
 
+const expandProjectDir = (root: string, value: string) => value.replace(/\$\{PROJECT_DIR\}/gi, () => root).replace(/^"|"$/g, "").trim();
+
 /** Refuses a path when any component below the project root is a link. */
 async function assertNoLinks(root: string, parts: string[], label: string) {
   let current = root;
@@ -90,13 +95,37 @@ async function assertPlainFile(root: string, relative: string) {
 
 /** PlatformIO resolves relative paths against the project directory. */
 function projectRelative(root: string, value: string) {
-  const expanded = value.replace(/\$\{PROJECT_DIR\}/gi, () => root).replace(/^"|"$/g, "").trim();
+  const expanded = expandProjectDir(root, value);
   if (!expanded) throw new Error("board_build.partitions 为空");
   if (/\$\{[^}]+\}/.test(expanded)) throw new Error("无法解析分区表路径中的插值：" + value + "。请在 platformio.ini 中使用字面路径。");
   const absolute = path.isAbsolute(expanded) ? path.normalize(expanded) : path.resolve(root, expanded);
   const relative = path.relative(root, absolute);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return { relative: null, literal: expanded };
   return { relative: relative.split(path.sep).join("/"), literal: expanded };
+}
+
+/**
+ * The build directory PlatformIO actually uses for this project. `pio project config` expands
+ * `build_dir`/`workspace_dir` to absolute paths; PLATFORMIO_BUILD_DIR / PLATFORMIO_WORKSPACE_DIR
+ * are applied at build time and are honored here as well. A directory outside the project is
+ * refused instead of being silently ignored.
+ */
+export async function resolveBuildDirectory(root: string, config: ProjectConfig): Promise<string> {
+  const options = sectionMap(config).get("platformio") ?? {};
+  const environmentBuild = process.env.PLATFORMIO_BUILD_DIR?.trim();
+  const environmentWorkspace = process.env.PLATFORMIO_WORKSPACE_DIR?.trim();
+  const build = environmentBuild || (typeof options.build_dir === "string" ? options.build_dir : "");
+  const workspace = environmentWorkspace || (typeof options.workspace_dir === "string" ? options.workspace_dir : "");
+  const absolute = build
+    ? path.resolve(root, expandProjectDir(root, build))
+    : workspace ? path.join(path.resolve(root, expandProjectDir(root, workspace)), "build") : path.join(root, ".pio", "build");
+  const relative = path.relative(root, absolute);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("PlatformIO 构建目录在工程目录之外，无法安全地失效旧分区产物：" + absolute + "。请把 build_dir/workspace_dir 保持在工程内，或手动清理该环境。");
+  }
+  const normalized = relative.split(path.sep).join("/");
+  await assertNoLinks(root, normalized.split("/"), "PlatformIO 构建目录");
+  return normalized;
 }
 
 /**
@@ -128,8 +157,8 @@ export async function resolvePartitionInputs(root: string, config: ProjectConfig
   return [{ source, kind: "builtin", path: null, name: literal, sha256: null }];
 }
 
-export function signatureFor(root: string, environment: string, iniText: string, partitions: PartitionInput[]): BuildInputSignature {
-  return { format: 1, root, environment, iniSha256: sha256(iniText), partitions };
+export function signatureFor(root: string, environment: string, iniText: string, config: ProjectConfig, buildDir: string, partitions: PartitionInput[]): BuildInputSignature {
+  return { format: 1, root, environment, buildDir, iniSha256: sha256(iniText), configSha256: sha256(JSON.stringify(config)), partitions };
 }
 
 /** Stable fingerprint: fields are created in a fixed order, so the JSON text is deterministic. */
@@ -165,14 +194,17 @@ async function writeRecords(root: string, records: BuildInputRecords) {
   await assertNoLinks(root, [".aether", path.join(".aether", "build-config.json")], "构建配置记录");
   const temporary = target + ".writing";
   const existing = await fs.lstat(temporary).catch(absent);
-  if (existing) throw new Error("临时构建配置记录已存在，请检查后移走：" + temporary);
-  await fs.writeFile(temporary, JSON.stringify(records, null, 2), { flag: "wx" });
+  // A leftover temp from a previous interrupted write is our own file and can be replaced; links
+  // and directories are never written through.
+  if (existing?.isSymbolicLink()) throw new Error("临时构建配置记录是符号链接，拒绝写入：" + temporary);
+  if (existing && !existing.isFile()) throw new Error("临时构建配置记录不是普通文件，拒绝写入：" + temporary);
+  await fs.writeFile(temporary, JSON.stringify(records, null, 2), existing ? undefined : { flag: "wx" });
   await fs.rename(temporary, target);
 }
 
 /** True when the environment has a build directory with any content (an unrecorded cache may be stale). */
-async function cacheExists(root: string, environment: string) {
-  const directory = path.join(root, ".pio", "build", environment);
+async function cacheExists(root: string, buildDir: string, environment: string) {
+  const directory = path.join(root, buildDir, environment);
   const stat = await fs.lstat(directory).catch(absent);
   if (!stat) return false;
   if (!stat.isDirectory()) return true;
@@ -180,16 +212,16 @@ async function cacheExists(root: string, environment: string) {
 }
 
 /**
- * Lists the partition-dependent outputs of one environment. `.pio`, `.pio/build` and the environment
- * directory itself must be plain directories inside the project; links and nested links are refused.
+ * Lists the partition-dependent outputs of one environment. The build directory and the environment
+ * directory inside it must be plain directories; links are refused rather than followed.
  */
-export async function invalidationPlan(root: string, environment: string): Promise<InvalidationPlan> {
+export async function invalidationPlan(root: string, buildDir: string, environment: string): Promise<InvalidationPlan> {
   assertEnvironmentName(environment);
-  await assertNoLinks(root, [".pio", path.join(".pio", "build")], "PlatformIO 构建缓存目录");
-  const directory = path.join(root, ".pio", "build", environment);
+  await assertNoLinks(root, buildDir.split("/"), "PlatformIO 构建目录");
+  const directory = path.join(root, buildDir, environment);
+  await assertNoLinks(root, [...buildDir.split("/"), environment], "环境构建目录");
   const stat = await fs.lstat(directory).catch(absent);
   if (!stat) return { directory, targets: [] };
-  if (stat.isSymbolicLink()) throw new Error("环境构建目录是符号链接，拒绝移动其中的产物：" + directory);
   if (!stat.isDirectory()) return { directory, targets: [] };
   const targets: string[] = [];
   for (const name of partitionArtifacts) {
@@ -201,52 +233,54 @@ export async function invalidationPlan(root: string, environment: string): Promi
 }
 
 /**
- * Moves (never deletes) the listed outputs into `.pio/build/.aether-stale/<environment>/`. Replacing a
- * previous copy of the same generated file keeps one recent quarantine per environment instead of
- * accumulating files on every table change.
+ * Moves (never deletes) the listed outputs into `<build dir>/.aether-stale/<environment>/`. Replacing
+ * a previous copy of the same generated file keeps one recent quarantine instead of accumulating
+ * files on every table change.
  */
-export async function invalidateEnvironment(root: string, environment: string): Promise<string[]> {
-  const { directory, targets } = await invalidationPlan(root, environment);
+export async function invalidateEnvironment(root: string, buildDir: string, environment: string): Promise<string[]> {
+  const { directory, targets } = await invalidationPlan(root, buildDir, environment);
   if (!targets.length) return [];
-  const stale = path.join(root, staleRoot);
-  await assertNoLinks(root, [".pio", path.join(".pio", "build"), path.join(".pio", "build", ".aether-stale"), path.join(".pio", "build", ".aether-stale", environment)], "旧构建产物目录");
+  const stale = path.join(root, buildDir, ".aether-stale");
   const destination = path.join(stale, environment);
+  await assertNoLinks(root, [...buildDir.split("/"), ".aether-stale"], "旧构建产物目录");
   const destinationStat = await fs.lstat(destination).catch(absent);
   if (destinationStat?.isSymbolicLink()) throw new Error("旧构建产物目录是符号链接，拒绝写入：" + destination);
   await fs.mkdir(destination, { recursive: true });
   const moved: string[] = [];
   for (const name of targets) {
     await fs.rename(path.join(directory, name), path.join(destination, name));
-    moved.push(".pio/build/" + environment + "/" + name);
+    moved.push(buildDir + "/" + environment + "/" + name);
   }
   return moved;
 }
 
 /**
- * Called before a PlatformIO build or upload starts. When platformio.ini, the active partition
- * table or the selected environment differ from the last recorded build inputs, the environment's
- * partition outputs are moved aside so PlatformIO cannot flash a table generated from older inputs.
+ * Called before a PlatformIO build or upload starts. When platformio.ini, another config file
+ * (`extra_configs`), the active partition table, the build directory or the selected environment
+ * differ from the last recorded build inputs, the environment's partition outputs are moved aside
+ * so PlatformIO cannot flash a table generated from older inputs.
  */
 export async function prepareBuildCache(root: string, environment: string, config: ProjectConfig): Promise<string> {
   const iniText = await fs.readFile(path.join(root, "platformio.ini"), "utf8");
-  const signature = signatureFor(root, environment, iniText, await resolvePartitionInputs(root, config, environment));
+  const buildDir = await resolveBuildDirectory(root, config);
+  const signature = signatureFor(root, environment, iniText, config, buildDir, await resolvePartitionInputs(root, config, environment));
   const fingerprint = fingerprintOf(signature);
   const records = await readRecords(root);
   const previous = records.environments[environment];
   let moved: string[] = [];
   let reason: "unchanged" | "no-cache" | "config-changed" | "unknown-cache";
   if (previous && previous.fingerprint === fingerprint) reason = "unchanged";
-  else if (!previous && !(await cacheExists(root, environment))) reason = "no-cache";
+  else if (!previous && !(await cacheExists(root, buildDir, environment))) reason = "no-cache";
   else {
     reason = previous ? "config-changed" : "unknown-cache";
-    moved = await invalidateEnvironment(root, environment);
+    moved = await invalidateEnvironment(root, buildDir, environment);
   }
   if (reason !== "unchanged") {
     records.environments[environment] = { fingerprint, signature, recordedAt: new Date().toISOString() };
     await writeRecords(root, records);
   }
   if (!moved.length) return "";
-  const cause = reason === "config-changed" ? "platformio.ini 或分区表已变化" : "发现没有配置记录的旧构建缓存";
-  return "构建前检查：" + cause + "，已将环境 " + environment + " 的旧产物移出 .pio/build/" + environment +
-    "（" + moved.join("、") + "），避免沿用旧分区表。移动后的文件在 " + staleRoot.replace(/\\/g, "/") + "/" + environment + "（同名只保留最近一份），未删除其他文件。";
+  const cause = reason === "config-changed" ? "platformio.ini/其他配置文件或分区表已变化" : "发现没有配置记录的旧构建缓存";
+  return "构建前检查：" + cause + "，已将环境 " + environment + " 的旧产物移出 " + buildDir + "/" + environment +
+    "（" + moved.join("、") + "），避免沿用旧分区表。移动后的文件在 " + buildDir + "/.aether-stale/" + environment + "（同名只保留最近一份），未删除其他文件。";
 }

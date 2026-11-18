@@ -22,7 +22,8 @@ function ProviderConnectionTest({ provider, active, endpoint, model, apiKey }: {
   const [state, setState] = useState<TestState>({ status: "idle" });
   const controller = useRef<AbortController | null>(null);
   const live = useRef(true);
-  useEffect(() => () => { live.current = false; controller.current?.abort(); }, []);
+  // StrictMode runs setup → cleanup → setup; the ref must be restored on the second setup.
+  useEffect(() => { live.current = true; return () => { live.current = false; controller.current?.abort(); }; }, []);
   useEffect(() => { if (active) setState({ status: "idle" }); else controller.current?.abort(); }, [active]);
   useEffect(() => {
     // A result belongs to the values that produced it: editing the form cancels the in-flight probe

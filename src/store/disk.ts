@@ -98,11 +98,22 @@ export async function acceptReviewedDiskChanges() {
  * resolved every conflict and chose to continue, or cancelled. No task exists while it is open.
  */
 function requestBuildReview(intent: BuildReviewIntent) {
+  // The dialog is rendered by the project-files plugin. If it is disabled, the promise would never
+  // be resolved; refuse with a clear error so the task slot is released.
+  if (!plugins.all("dialogs").some((dialog) => dialog.id === "project.files.dialogs")) {
+    return Promise.reject(new Error("工程文件插件未启用，无法显示构建前差异检查。请在 Plugins 中启用“工程文件”，或重新读取目录后再构建。"));
+  }
   return new Promise<"continue" | "cancel">((resolve) => {
     pendingReview = { intent, resolve };
     // Loaded on demand: the dialog module imports this store, so a static import would be a cycle.
     void import("../plugins/builtin/projectFilesState").then(({ useProjectFiles }) => {
       useProjectFiles.getState().open({ kind: "changes", build: { provider: intent.provider, environment: intent.environment } });
+      const dialog = useProjectFiles.getState().dialog;
+      if (!dialog || dialog.kind !== "changes" || !dialog.build) {
+        pendingReview = null;
+        useDisk.setState({ error: "无法打开构建前差异检查：工程文件对话框未注册。" });
+        resolve("cancel");
+      }
     }).catch((error) => {
       pendingReview = null;
       useDisk.setState({ error: "无法打开构建前差异检查：" + String(error) });
@@ -184,7 +195,18 @@ export const useDisk = create<DiskState>((set, get) => {
     if (root) void noteRecoverySaved(root, revision).catch(() => {});
     await get().refresh();
   },
-  detach: () => { if (!get().root) return; set({ root: null, changed: false, environments: [], environment: "", directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [], recoveryHostConflicts: [], diskCircuit: "", diskManifest: "" }); void desktop().workspace.close().catch((error) => set({ error: String(error) })); },
+  detach: () => {
+    if (!get().root) return;
+    // Switching projects must never leave a build review pending: cancel it and close its dialog,
+    // otherwise the new project inherits the review and the "starting" guard forever.
+    finishBuildReview("cancel");
+    void import("../plugins/builtin/projectFilesState").then(({ useProjectFiles }) => {
+      const dialog = useProjectFiles.getState().dialog;
+      if (dialog?.kind === "changes" && dialog.build) useProjectFiles.getState().close();
+    }).catch(() => {});
+    set({ root: null, changed: false, environments: [], environment: "", directories: [], synced: {}, diskFiles: {}, recoveryConflicts: [], recoveryHostConflicts: [], diskCircuit: "", diskManifest: "" });
+    void desktop().workspace.close().catch((error) => set({ error: String(error) }));
+  },
   refresh: async () => {
     if (!get().root || !isDesktop()) return;
     const listing = await desktop().workspace.files.listing();
@@ -199,14 +221,16 @@ export const useDisk = create<DiskState>((set, get) => {
     set({ directories: listing.directories, diskFiles: listing.files, synced, error: "" });
     recompute();
     // Advance the host baseline for the same files: the buffer already equals the disk, and without
-    // this a whole-project save would still refuse the external write as an unaccepted change.
-    for (const name of matched) await desktop().workspace.files.accept(name).catch(() => {});
+    // this a whole-project save would still refuse the external write as an unaccepted change. The
+    // expected text is a precondition: if the file changed again after the listing, the baseline is
+    // not advanced and the next refresh reports the conflict instead of overwriting it silently.
+    for (const name of matched) await desktop().workspace.files.accept(name, listing.files[name]).catch(() => {});
   },
   acceptDisk: async (file) => {
     const change = diskChanges().find((item) => item.file === file);
     if (!change) return;
     // The host baseline must accept the disk content too, otherwise the next whole-project save would refuse.
-    await desktop().workspace.files.accept(file);
+    await desktop().workspace.files.accept(file, change.disk);
     if (change.kind === "deleted") {
       useStudio.getState().removePaths([file]);
       set((s) => { const synced = { ...s.synced }; delete synced[file]; const diskFiles = { ...s.diskFiles }; delete diskFiles[file]; return { synced, diskFiles, recoveryConflicts: s.recoveryConflicts.filter((name) => name !== file) }; });

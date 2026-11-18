@@ -30,7 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { useStudio } from "../store/studio";
-import { useDisk } from "../store/disk";
+import { useDisk, isActionCancelled } from "../store/disk";
 import { useTransport } from "../store/transport";
 import type { TransportPort } from "../plugins/api";
 import { cn } from "../lib/utils";
@@ -229,6 +229,7 @@ export function DeployDialog() {
   const [portsError, setPortsError] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [monitorBaud, setMonitorBaud] = useState("115200");
@@ -239,12 +240,18 @@ export function DeployDialog() {
   const taskPort = task?.options?.port ?? "";
   const uploadRunning = task?.status === "running";
   const busy = submitting || !!uploadRunning || disk.starting || ["connecting", "disconnecting"].includes(io.status);
+  // A user-cancelled pre-build review is not a deploy failure; show it as a neutral note.
+  const reportDeployFailure = (reason: unknown) => {
+    if (isActionCancelled(reason)) { setError(""); setNote(reason instanceof Error ? reason.message : String(reason)); return; }
+    setNote("");
+    setError(String(reason));
+  };
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);
     const first = available[0];
     setSelected(first?.id ?? "");
-    setError(""); setSubmitting(false);
+    setError(""); setNote(""); setSubmitting(false);
     setMonitorBaud(first?.monitor?.defaultBaudRate ?? "115200");
     // Results belong to the current disk project only; another project's upload must not look like this one.
     const latest = first ? disk.tasks.filter((item) => item.provider === first.id && item.root === disk.root).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1) : undefined;
@@ -262,13 +269,14 @@ export function DeployDialog() {
     event.preventDefault();
     if (!provider || !address.trim() || busy || !isDesktop()) return;
     const port = address.trim();
-    setSubmitting(true); setError(""); setTaskId("");
+    setSubmitting(true); setError(""); setNote(""); setTaskId("");
     void provider.deploy(getProjectContext(), port).then((result) => {
       if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); }
       else { setDialog(null); setTab("panel:build.tasks"); }
     }).catch((reason) => {
-      // A rejected hand-off (no disk project, serial still busy, invalid arguments) did not start an upload.
-      setError(String(reason));
+      // A rejected hand-off (no disk project, serial still busy, invalid arguments, cancelled review)
+      // did not start an upload.
+      reportDeployFailure(reason);
     }).finally(() => setSubmitting(false));
   };
   const connectMonitor = async () => {
@@ -310,12 +318,13 @@ export function DeployDialog() {
           <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={!canConnect} onClick={() => void connectMonitor()}>{io.status === "connected" && io.address === monitorPort ? `打开${monitor?.label ?? "设备监视器"}` : task.status === "succeeded" ? `连接${monitor?.label ?? "设备监视器"}` : `连接${monitor?.label ?? "设备监视器"}查看日志`}</button>
           {monitor && <label className="text-[10px] text-[#59616A]">波特率<input aria-label="监视波特率" type="number" min="1" step="1" className="input ml-1 w-[72px] px-1 py-0.5 text-[10px]" value={monitorBaud} onChange={(event) => setMonitorBaud(event.target.value)} /></label>}
           {["connected", "error"].includes(io.status) && io.address !== monitorPort && <button type="button" className="btn px-3 py-1.5 text-[10px]" onClick={() => void io.disconnect()}>断开当前连接</button>}
-          {task.status !== "succeeded" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={busy || !isDesktop() || !address.trim()} onClick={() => void (async () => { if (!provider) return; const port = address.trim(); setSubmitting(true); setError(""); try { const result = await provider.deploy(getProjectContext(), port); if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); } } catch (reason) { setError(String(reason)); } finally { setSubmitting(false); } })()}>重试上传</button>}
+          {task.status !== "succeeded" && <button type="button" className="btn px-3 py-1.5 text-[10px]" disabled={busy || !isDesktop() || !address.trim()} onClick={() => void (async () => { if (!provider) return; const port = address.trim(); setSubmitting(true); setError(""); setNote(""); try { const result = await provider.deploy(getProjectContext(), port); if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); } } catch (reason) { reportDeployFailure(reason); } finally { setSubmitting(false); } })()}>重试上传</button>}
         </div>}
         {task.status === "succeeded" && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">上传命令已完成；设备可能已复位。连接同一端口可查看串口输出，若没有日志可手动复位设备。</p>}
         {task.status === "cancelled" && <p className="mt-2 text-[10px] leading-5 text-[#90969E]">任务已取消，端口交由操作系统回收；可重试上传或连接监视器。</p>}
       </section>}
     </>}
+    {note && <p role="status" className="mt-3 whitespace-pre-wrap text-xs text-[#7D848C]">{note}</p>}
     {error && <p role="alert" className="mt-3 whitespace-pre-wrap text-xs text-[#A8741F]">{error}</p>}
   </form></Modal>;
 }

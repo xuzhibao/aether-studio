@@ -18,7 +18,7 @@ const api: DesktopAPI = {
       rename: (from, to) => ipcRenderer.invoke("workspace:files:rename", from, to),
       trash: (path) => ipcRenderer.invoke("workspace:files:trash", path),
       write: (path, text, expected) => ipcRenderer.invoke("workspace:files:write", path, text, expected),
-      accept: (path) => ipcRenderer.invoke("workspace:files:accept", path),
+      accept: (path, expected) => ipcRenderer.invoke("workspace:files:accept", path, expected),
     },
   },
   tasks: { start: (provider, options) => ipcRenderer.invoke("tasks:start", provider, options), cancel: (id) => ipcRenderer.invoke("tasks:cancel", id), environments: (provider) => ipcRenderer.invoke("tasks:environments", provider), list: () => ipcRenderer.invoke("tasks:list"), onChanged: (callback) => event("tasks:changed", callback) },
