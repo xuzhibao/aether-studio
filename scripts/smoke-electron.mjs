@@ -200,9 +200,31 @@ try {
   await guardDialog.getByRole('combobox', { name: '通信插件', exact: true }).selectOption('native-serial');
   await guardDialog.getByText('构建或上传任务正在运行，暂时不能连接原生串口。', { exact: true }).waitFor();
   assert.equal(await guardDialog.getByRole('button', { name: '建立连接', exact: true }).isDisabled(), true);
-  // Close with Escape: the dialog can be taller than a 1280x720 CI viewport, so its header button is off-screen.
-  await page.keyboard.press('Escape');
+  // Public Modal at 1280x720: the title/close row must stay pinned in the viewport while the body scrolls.
+  const baseViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const closeVisible = async (width, height) => {
+    const box = await guardDialog.getByRole('button', { name: 'Close dialog', exact: true }).boundingBox();
+    assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= height, `Close must stay inside the ${width}x${height} viewport: ` + JSON.stringify(box));
+    return box;
+  };
+  await closeVisible(1280, 720);
+  const scrolled = await guardDialog.evaluate((element) => {
+    const nodes = [element, ...element.querySelectorAll('*')];
+    const scroller = nodes.find((node) => node.scrollHeight > node.clientHeight + 4 && getComputedStyle(node).overflowY === 'auto');
+    if (!scroller) return null;
+    scroller.scrollTop = scroller.scrollHeight;
+    return { scrollHeight: scroller.scrollHeight, clientHeight: scroller.clientHeight, scrollTop: scroller.scrollTop };
+  });
+  if (scrolled) {
+    assert.ok(scrolled.scrollTop > 0, 'the dialog body must scroll when its content is taller than the window: ' + JSON.stringify(scrolled));
+    await closeVisible(1280, 720);
+  }
+  await page.setViewportSize({ width: 860, height: 620 });
+  await closeVisible(860, 620);
+  await guardDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await until(async () => (await page.getByRole('dialog').count()) === 0);
+  await page.setViewportSize(baseViewport);
   await page.locator('nav').getByRole('button', { name: 'Build Tasks', exact: true }).click();
   await page.getByRole('button', { name: 'Cancel task', exact: true }).click(); await page.locator('[data-task-status="cancelled"]').waitFor();
   await page.screenshot({ path: 'smoke-results/electron-task-results.png', fullPage: true });
@@ -236,7 +258,9 @@ try {
   await page.locator('[data-deploy-status="failed"]').waitFor({ timeout: 240000 });
   assert.match(await deployCard.innerText(), /exit 1/);
   await page.screenshot({ path: 'smoke-results/electron-deploy-failure.png', fullPage: true });
-  await deployDialog.getByRole('button', { name: 'Close dialog' }).click();
+  // Deploy cards and preflight findings make this dialog tall; the pinned close button must still be clickable.
+  await deployDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await until(async () => (await page.getByRole('dialog').count()) === 0);
   // Deploy preflight UI: a real ESP32-S3 build plus a read-only esptool check on a port that does not exist.
   // The dialog must show the block, offer no write, and stay retryable after the user corrects the port.
   await app.evaluate(({ dialog }, { folder, portable }) => {
@@ -256,7 +280,7 @@ try {
   await espDeployDialog.getByRole('alert').filter({ hasText: '部署前核对未通过' }).waitFor();
   assert.equal(await espDeployDialog.getByRole('button', { name: '开始构建并烧录', exact: true }).isDisabled(), false, 'a blocked preflight stays retryable after the port is corrected');
   await page.screenshot({ path: 'smoke-results/electron-deploy-preflight-blocked.png', fullPage: true });
-  await page.keyboard.press('Escape');
+  await espDeployDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await until(async () => (await page.getByRole('dialog').count()) === 0);
   // The previous project's upload result must not appear in this project's deploy dialog.
   await app.evaluate(({ dialog }, { folder, portable }) => {
@@ -266,7 +290,9 @@ try {
   await page.getByRole('button', { name: 'Deploy to Device', exact: true }).click();
   deployDialog = page.getByRole('dialog');
   assert.equal(await deployDialog.locator('[data-deploy-task]').count(), 0, 'another project upload result is not shown');
-  await deployDialog.getByRole('button', { name: 'Close dialog' }).click();
+  // The ESP preflight card from the previous project can still be tall; the pinned header keeps Close reachable.
+  await deployDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await until(async () => (await page.getByRole('dialog').count()) === 0);
   // Actual OS PTY, through the migrated Electron serial backend and monitor UI.
   await fs.rm('smoke-results/serial-port.txt', { force: true });
   serialPeer = spawn('python3', ['scripts/serial-peer.py'], { stdio: 'pipe' });
@@ -295,7 +321,7 @@ try {
     const flashToolInput = flashPluginDialog.getByRole('textbox', { name: 'esptool 可执行文件', exact: true });
     await flashToolInput.fill(flashTool); await flashToolInput.press('Enter');
     await until(async () => JSON.parse(await fs.readFile(path.join(profile, 'tools.json'), 'utf8').catch(() => '{}')).paths?.esptool === flashTool);
-    await page.keyboard.press('Escape');
+    await flashPluginDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await until(async () => (await page.getByRole('dialog').count()) === 0);
     await app.evaluate(({ ipcMain }) => {
       // Only the OS port list is stubbed; the Flash service and esptool fixture still run for real.
@@ -318,7 +344,7 @@ try {
     const flashGuardDialog = page.getByRole('dialog');
     await flashGuardDialog.getByText('Flash 备份/恢复正在进行，暂时不能连接原生串口。', { exact: true }).waitFor();
     assert.equal(await flashGuardDialog.getByRole('button', { name: '建立连接', exact: true }).isDisabled(), true, 'a running flash operation owns the port');
-    await page.keyboard.press('Escape');
+    await flashGuardDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
     await until(async () => (await page.getByRole('dialog').count()) === 0);
     await page.getByRole('button', { name: '取消', exact: true }).click();
     await page.getByText(/备份已取消/).waitFor({ timeout: 30000 });
