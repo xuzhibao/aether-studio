@@ -12,6 +12,8 @@ export interface ToolDefinition {
   defaultExecutable: string;
   versionArgs: string[];
   description?: string;
+  /** Script tools (for example esptool.py) are launched through an interpreter, including the version probe. */
+  launch?: (path: string) => { executable: string; args: string[] } | null;
 }
 
 interface StoredTools { version: 1; paths: Record<string, string> }
@@ -154,7 +156,8 @@ export class ToolService {
       const cached = this.versions.get(id);
       if (!measure && cached?.executable === located.executable) { version = cached.version; error = cached.error; }
       if (measure) {
-        const measured = await this.probe(located.executable, definition.versionArgs);
+        const launch = definition.launch?.(located.executable);
+        const measured = await this.probe(launch?.executable ?? located.executable, [...(launch?.args ?? []), ...definition.versionArgs]);
         this.versions.set(id, { executable: located.executable, version: measured.version, error: measured.error });
         version = measured.version;
         error = measured.error;

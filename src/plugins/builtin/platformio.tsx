@@ -4,9 +4,13 @@ import { lazy, Suspense } from "react";
 const LazyPanel = lazy(() => import("./BuildPanel"));
 function BuildPanel() { return <Suspense fallback={<div>Loading tasks…</div>}><LazyPanel /></Suspense>; }
 const ini = '[env:esp32-s3]\nplatform = espressif32@6.12.0\nboard = esp32-s3-devkitc-1\nframework = arduino\nmonitor_speed = 115200\n';
+// ESP32-C3 原生 USB-Serial/JTAG：默认 `Serial` 走 UART0，而 UART0 没有接到 USB 口。
+// ARDUINO_USB_MODE=1 选择硬件 CDC/JTAG，ARDUINO_USB_CDC_ON_BOOT=1 把 `Serial` 指到 USB；
+// 缺少这两个标志时串口监视器在 USB 口上收不到任何输出。
+const iniC3 = '[env:esp32-c3]\nplatform = espressif32@6.12.0\nboard = esp32-c3-devkitm-1\nframework = arduino\nmonitor_speed = 115200\n; ESP32-C3 原生 USB：Serial 走 USB CDC（USB-Serial/JTAG）\nbuild_flags =\n    -DARDUINO_USB_MODE=1\n    -DARDUINO_USB_CDC_ON_BOOT=1\n';
 const source = '#include <Arduino.h>\n\nvoid setup() {\n    Serial.begin(115200);\n}\n\nvoid loop() {\n    Serial.println("Aether ESP32-S3 firmware");\n    delay(1000);\n}\n';
 export const platformioPlugin: StudioPlugin = {
-  manifest: { id: "aether.toolchain.platformio", name: "PlatformIO", version: "0.1.0", type: "toolchain", entry: "builtin/platformio.tsx", enabled: true, dependencies: ["aether.esp32-s3", "aether.editor.monaco"], description: "调用本机 PlatformIO Core 构建实际磁盘工程，记录日志、退出码、输入指纹、所选环境和产物校验和。提供 ESP32-S3 C++ 模板和任务面板。",
+  manifest: { id: "aether.toolchain.platformio", name: "PlatformIO", version: "0.1.0", type: "toolchain", entry: "builtin/platformio.tsx", enabled: true, dependencies: ["aether.esp32-s3", "aether.editor.monaco"], description: "调用本机 PlatformIO Core 构建实际磁盘工程，记录日志、退出码、输入指纹、所选环境和产物校验和。提供 ESP32-S3 与 ESP32-C3（原生 USB CDC）C++ 模板和任务面板；ESP 部署前会先核对构建产物、写入地址与设备芯片。",
     settings: [{ key: "platformio.cli", label: "PlatformIO CLI 可执行文件", type: "tool-path", tool: "platformio", placeholder: "例如 C:/Users/you/.platformio/penv/Scripts/platformio.exe" }],
     settingsHelp: "构建、上传和生成编译数据库都使用这里保存的单个可执行文件路径和任务面板中选定的 platformio.ini 环境；已经运行的任务不会中途切换工具。留空时使用环境变量 AETHER_PLATFORMIO_CLI，其次查找 PATH 中的 platformio。该值始终作为一个参数传给进程（不经过 shell），路径中的空格、中文、分号或 && 都按字面处理；不支持 .bat、.cmd 或 .ps1。" },
   activate(api) {
@@ -34,9 +38,12 @@ export const platformioPlugin: StudioPlugin = {
           if (state.status !== "connected") throw new Error(state.error || "串口连接未建立");
         },
       },
-      deploy: async (_project, port) => { const { useDisk } = await import("../../store/disk"); const task = await useDisk.getState().build("platformio.upload", { port }); return { taskId: task.id }; },
+      // Build -> preflight against the detected chip/partitions -> upload. A blocked plan never starts a write.
+      deploy: async (_project, port, options) => { const { useDisk } = await import("../../store/disk"); const task = await useDisk.getState().deploy("platformio.upload", port, options); return { taskId: task.id }; },
     });
     api.register("templates", { id: "ESP32-S3 C++", name: "ESP32-S3 C++", description: "PlatformIO · Arduino · 实际构建", board: "esp32-s3", create: () => ({ components: [structuredClone(board)], wires: [], files: { "platformio.ini": ini, "src/main.cpp": source }, capabilities: { board: "esp32-s3", toolchain: "platformio", simulator: "", editor: "monaco" } }) });
+    api.register("templates", { id: "ESP32-C3 C++", name: "ESP32-C3 C++（原生 USB CDC）", description: "PlatformIO · Arduino · ESP32-C3 · Serial 走 USB CDC", board: "esp32-s3", create: () => ({ components: [structuredClone(board)], wires: [], files: { "platformio.ini": iniC3, "src/main.cpp": source.replace("Aether ESP32-S3 firmware", "Aether ESP32-C3 firmware") }, capabilities: { board: "esp32-s3", toolchain: "platformio", simulator: "", editor: "monaco" } }) });
+    api.register("commands", { id: "esp32c3.example", name: "ESP32-C3: 创建原生 USB CDC 工程", run: () => api.host.createProject("esp32-s3", "ESP32-C3 C++") });
     api.register("panels", { id: "build.tasks", name: "Build Tasks", render: BuildPanel });
     api.register("commands", { id: "compiledb.platformio", name: "Generate compilation database (PlatformIO)", run: async () => { const { useDisk } = await import("../../store/disk"); const { useStudio } = await import("../../store/studio"); useStudio.getState().openFile("panel:build.tasks"); await useDisk.getState().build("platformio.compiledb"); } });
     api.register("commands", { id: "build.platformio", name: "Build project (PlatformIO)", run: () => api.host.buildProject() });

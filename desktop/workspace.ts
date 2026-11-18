@@ -199,11 +199,15 @@ export class WorkspaceService {
     try { await this.trashItem(target); } finally { this.writing = false; }
     this.dropBaseline(name);
   }
-  /** Marks the current disk content as the accepted baseline after a per-file review. */
-  async accept(name: string) {
+  /**
+   * Marks the current disk content as the accepted baseline after a per-file review. When the caller
+   * saw a specific content (the listing it reviewed), a later write must not be silently accepted.
+   */
+  async accept(name: string, expected?: string | null) {
     this.checkName(name);
     const target = await this.target(name);
     const current = await fs.readFile(target, "utf8").catch(absent);
+    if (expected !== undefined && current !== expected) throw new Error("文件内容在检查后已再次改变：" + name + "。请重新检查磁盘变更。");
     if (current === null) this.baseline.delete(name);
     else this.baseline.set(name, digest(current));
   }

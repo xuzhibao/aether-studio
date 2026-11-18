@@ -58,8 +58,24 @@ const launch = async () => {
 try {
   await launch();
   await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
-  await page.getByRole('dialog').getByText('本地内置插件 · 14 / 14 已启用', { exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  // The packaged app must register exactly this set, all enabled; toggling one proves the count follows state.
+  const expectedPlugins = [
+    'ESP32-S3 DevKitC-1', '基础元器件库', 'MicroPython', 'Monaco 编辑器', 'Demo Simulation', 'OpenAI Compatible API',
+    'ESP32 示例工程', '工程文件', '工程 Agent Tools', '桌面串口', 'WebSocket 通信', 'PlatformIO', 'ESP 设备检测',
+    'C/C++ · clangd', '交互式终端', 'ESP Flash 备份/恢复',
+  ];
+  const pluginDialog = page.getByRole('dialog');
+  const summary = await pluginDialog.getByText(/^本地内置插件 · \d+ \/ \d+ 已启用$/).textContent();
+  const [, enabledText, totalText] = /· (\d+) \/ (\d+) 已启用/.exec(summary);
+  assert.equal(Number(totalText), expectedPlugins.length, 'registered plugin count must match the expected list: ' + summary);
+  assert.equal(Number(enabledText), Number(totalText), 'every built-in plugin starts enabled: ' + summary);
+  for (const name of expectedPlugins) assert.equal(await pluginDialog.getByRole('button').filter({ hasText: name }).count(), 1, 'plugin list must contain ' + name);
+  await pluginDialog.getByRole('button').filter({ hasText: 'ESP Flash 备份/恢复' }).click();
+  await pluginDialog.getByRole('button', { name: '停用', exact: true }).click();
+  await pluginDialog.getByText(`本地内置插件 · ${expectedPlugins.length - 1} / ${expectedPlugins.length} 已启用`, { exact: true }).waitFor();
+  await pluginDialog.getByRole('button', { name: '启用', exact: true }).click();
+  await pluginDialog.getByText(`本地内置插件 · ${expectedPlugins.length} / ${expectedPlugins.length} 已启用`, { exact: true }).waitFor();
+  await pluginDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
   const preferences = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
   assert.equal(preferences.contextIsolation, true); assert.equal(preferences.nodeIntegration, false); assert.equal(preferences.sandbox, true);
   await command('Open project folder');
@@ -274,7 +290,7 @@ try {
     const appBundle = path.resolve(executable, '../../..');
     await promisify(execFile)('codesign', ['--verify', '--deep', '--strict', appBundle]);
   }
-  console.log(`PASS packaged ${process.platform}/${process.arch}: v${version}, 14 plugins, isolated renderer, actual project picker I/O, real file create/rename/trash, external add/modify/delete review kept another unsaved buffer, dirty rename save/cancel/discard, dirty delete confirmation, directory trash, tool path survived restart, native PTY write and shutdown`);
+  console.log(`PASS packaged ${process.platform}/${process.arch}: v${version}, ${expectedPlugins.length} plugins (ESP device and Flash backup registered, enable count follows state), isolated renderer, actual project picker I/O, real file create/rename/trash, external add/modify/delete review kept another unsaved buffer, dirty rename save/cancel/discard, dirty delete confirmation, directory trash, tool path survived restart, native PTY write and shutdown`);
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: resultsDir + '/release-failure.png', fullPage: true }); await fs.writeFile(resultsDir + '/release-failure.txt', String(error.stack) + '\n' + errors.join('\n') + '\n' + await page.locator('body').innerText()); }
   throw error;

@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import type { HwComponent, ProjectMeta, Wire, EditProposal, ToolRun } from "../types";
+import type { EspInspectResult, EspPreflightResult } from "../../shared/esp";
 
 export interface ProjectWorkspace {
   components: HwComponent[];
@@ -8,7 +9,7 @@ export interface ProjectWorkspace {
   capabilities: { board: string; toolchain: string; simulator: string; editor: string };
 }
 export interface ProjectContext extends ProjectWorkspace { project: ProjectMeta }
-export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language" | "terminal";
+export type PluginType = "board" | "components" | "toolchain" | "simulator" | "ai-provider" | "editor" | "template" | "workspace" | "agent" | "tool" | "transport" | "deployment" | "language" | "terminal" | "device";
 export interface PluginSettingField {
   key: string;
   label: string;
@@ -30,6 +31,8 @@ export interface PluginManifest {
   enabled: boolean;
   settingsHelp?: string;
   settings?: PluginSettingField[];
+  /** Values the user can fill into the settings form; prefilling never sends a request. */
+  presets?: { id: string; label: string; description?: string; settings: Record<string, string> }[];
 }
 export interface PartViewProps {
   comp: HwComponent;
@@ -56,6 +59,8 @@ export interface SimulationFrame {
 export interface AIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 export interface AIMessage { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: AIToolCall[]; tool_call_id?: string }
 export interface AgentResult { text: string; proposals?: EditProposal[]; toolRuns?: ToolRun[] }
+/** A real, minimal Chat Completions round trip made from the current form values. */
+export interface ProviderTestResult { model: string; latencyMs: number; detail: string }
 export interface TransportPort { path: string; label: string; detail?: string }
 export interface DeploymentResult { taskId: string }
 /** Optional port enumeration contributed by a deployment plugin, shown in the deploy dialog. */
@@ -78,7 +83,9 @@ export interface EditorAttachment {
 export interface CapabilityMap {
   terminals: { id: string; name: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; interrupt: () => Promise<void>; clear: () => Promise<void>; mount: (element: HTMLElement) => () => void };
   languages: { id: string; name: string; languageIds: string[]; diagnosticsPanel: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; restart?: () => Promise<void>; attach: (attachment: EditorAttachment) => () => void };
-  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; ports?: DeploymentPortSource; monitor?: DeploymentMonitor; deploy: (project: ProjectContext, address: string) => Promise<DeploymentResult | void> };
+  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; ports?: DeploymentPortSource; monitor?: DeploymentMonitor; deploy: (project: ProjectContext, address: string, options?: Record<string, string>) => Promise<DeploymentResult | void> };
+  /** Read-only device identification and deploy preflight. Registered by a device plugin, never hardcoded in the host. */
+  devices: { id: string; name: string; inspect: (port: string) => Promise<EspInspectResult>; preflight: (options: { environment: string; port: string }) => Promise<EspPreflightResult>; /** Task provider that performs the verified write for this device kind. */ uploadProvider: string };
   transports: { id: string; name: string; unavailable?: string; endpoint: { label: string; placeholder: string }; parameters: TransportParameter[]; description: string; sendHint: string; list?: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers, signal?: AbortSignal) => Promise<TransportConnection> };
   boards: { id: string; name: string; component: string; description: string };
   components: PartDefinition;
@@ -87,7 +94,7 @@ export interface CapabilityMap {
   simulators: { id: string; name: string; start: (project: ProjectContext) => string[]; tick: (project: ProjectContext, elapsed: number) => SimulationFrame };
   agents: { id: string; name: string; run: (project: ProjectContext, messages: AIMessage[], signal?: AbortSignal, onTool?: (run: ToolRun) => void) => Promise<AgentResult> };
   tools: { id: string; name: string; description: string; parameters: Record<string, unknown>; execute: (args: unknown, project: ProjectContext) => { output: unknown; proposal?: EditProposal } | Promise<{ output: unknown; proposal?: EditProposal }> };
-  providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string>; chat: (messages: AIMessage[], tools: CapabilityMap["tools"][], signal?: AbortSignal) => Promise<AIMessage> };
+  providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string>; chat: (messages: AIMessage[], tools: CapabilityMap["tools"][], signal?: AbortSignal) => Promise<AIMessage>; test?: (signal?: AbortSignal) => Promise<ProviderTestResult> };
   templates: { id: string; name: string; description: string; board: string; create: () => ProjectWorkspace };
   projectFormats: { id: string; name: string; encode: (project: ProjectContext) => string; decode: (content: string) => ProjectContext };
   commands: { id: string; name: string; shortcut?: string; run: () => void | Promise<void> };

@@ -5,13 +5,28 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { TaskSnapshot, BuildArtifact, TaskEnvironment } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
+import { acquirePort, releasePort } from "./portLease";
+
+/** Quotes an argument only for the human-readable log line; the process still receives the raw value. */
+const quoteForLog = (arg: string) => /[\s"]/.test(arg) ? '"' + arg.replace(/"/g, '\\"') + '"' : arg;
+
 export interface TaskProvider {
   id: string; executable: string | (() => string); args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
   inputExcludes?: string[]; recordName?: string;
   // Host-side behavior is declared by the provider: main only reacts to this generic kind.
   kind?: string;
+  // Runs before the process starts; a thrown error cancels the task and its note is written to the log.
+  beforeStart?: (root: string, executable: string, options: Record<string, string>) => Promise<string | null>;
   // Runs after a successful task (still inside the explicit user action); the result is stored in .aether/<record>.
   afterSuccess?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal) => Promise<unknown>;
+  // Inspects the finished task (log, artifacts, options) and stores the result as task metadata.
+  verify?: (task: TaskSnapshot, root: string, options: Record<string, string>) => Promise<unknown>;
+  // Option key that names the serial port this task owns for its whole run.
+  portOption?: string;
+  // Runs after the port lease is taken and before the process exists: it decides the real argv and can refuse.
+  prepare?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal, log: (line: string) => void) => Promise<{ executable?: string; args: string[]; metadata?: unknown }>;
+  // Runs once the task can no longer use host-side temporary inputs (success, failure, cancel or a failed start).
+  afterRun?: () => Promise<void>;
   // Providers that build one selected environment at a time expose what the project currently declares.
   environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
   artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
@@ -38,15 +53,40 @@ export class TaskService {
     if (!root) throw new Error("请先打开工程目录");
     if (this.list().some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
     // Resolve once so a settings change cannot swap the executable of a running task.
-    const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
+    const baseExecutable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
     // The environment is fixed before the process starts; a settings change or a later UI selection cannot swap it.
-    const environment = await this.resolveEnvironment(provider, root, executable, options.environment);
+    const environment = await this.resolveEnvironment(provider, root, baseExecutable, options.environment);
     const resolved = environment ? { ...options, environment } : options;
-    const args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
-    const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
-    const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [] };
-    const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
+    // The port belongs to this task from the verification step through the actual write.
+    const leased = provider.portOption ? options[provider.portOption]?.trim() ?? "" : "";
+    // "task" is the same owner the IPC entry claims, so the lease is shared, not re-entered.
+    if (leased) acquirePort(leased, "task");
+    const abort = new AbortController();
+    const preparedLog: string[] = [];
+    let executable = baseExecutable;
+    let args: string[];
+    let metadata: unknown;
+    let preparation: string | null | undefined = "";
+    let toolVersion: string | undefined;
+    let inputHash = "";
+    try {
+      // A changed build input may invalidate cached artifacts; this runs before the fingerprint and spawn.
+      preparation = await provider.beforeStart?.(root, baseExecutable, resolved);
+      if (provider.prepare) {
+        const prepared = await provider.prepare(root, baseExecutable, resolved, abort.signal, (line) => preparedLog.push(line));
+        executable = prepared.executable ?? baseExecutable;
+        args = prepared.args;
+        metadata = prepared.metadata;
+      } else args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
+      toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
+      inputHash = await this.workspace.fingerprint(provider.inputExcludes);
+    } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
+    const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
+    let child: ChildProcess;
+    try {
+      child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
+    } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
     let cancelled = false;
     let processClosed = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -58,7 +98,6 @@ export class TaskService {
       if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }).on("error", (error) => { task.error = error.message; emit(); });
       else { try { process.kill(-child.pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") { task.error = String(error); emit(); } } }
     };
-    const abort = new AbortController();
     const cancel = () => { cancelled = true; abort.abort(); if (task.status !== "running" || processClosed) return; kill("SIGTERM"); killTimer = setTimeout(() => kill("SIGKILL"), 1500); };
     this.jobs.set(task.id, { task, child, done, cancel, abort });
     const append = (chunk: Buffer) => { task.log = (task.log + chunk.toString()).slice(-250000); emit(); };
@@ -66,6 +105,7 @@ export class TaskService {
     child.on("error", (error) => { task.error = error.message; });
     child.on("close", async (code) => {
       processClosed = true;
+      if (leased) releasePort(leased);
       clearTimeout(killTimer);
       task.exitCode = code;
       task.endedAt = new Date().toISOString();
@@ -73,11 +113,19 @@ export class TaskService {
       try {
         if (result === "succeeded") {
           if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
-          let metadata: unknown;
           let metadataError = "";
+          if (provider.verify) {
+            try {
+              const verified = await provider.verify(task, root, resolved);
+              const base = task.metadata && typeof task.metadata === "object" ? task.metadata as Record<string, unknown> : {};
+              task.metadata = verified && typeof verified === "object" ? { ...base, ...(verified as Record<string, unknown>) } : (verified ?? base);
+            } catch (error) { metadataError = String(error); task.log = (task.log + "\n[aether] 结果核对失败：" + metadataError).slice(-250000); }
+          }
           if (provider.afterSuccess) {
-            try { metadata = await provider.afterSuccess(root, executable, resolved, abort.signal); }
-            catch (error) {
+            try {
+              const extra = await provider.afterSuccess(root, executable, resolved, abort.signal);
+              if (extra !== undefined) task.metadata = { ...(task.metadata && typeof task.metadata === "object" ? task.metadata as Record<string, unknown> : {}), ...(extra as Record<string, unknown>) };
+            } catch (error) {
               // The hook is part of the task: a cancellation stops here without writing a cache or a success record.
               if (cancelled) result = "cancelled";
               else {
@@ -99,11 +147,13 @@ export class TaskService {
             else {
               task.artifacts = artifacts;
               await fs.mkdir(path.join(root, ".aether"), { recursive: true });
-              await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadata !== undefined ? { metadata } : {}), ...(metadataError ? { metadataError } : {}) }, null, 2));
+              await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadataError ? { metadataError } : {}) }, null, 2));
             }
           }
         }
       } catch (error) { result = "failed"; task.error = String(error); }
+      try { await provider.afterRun?.(); }
+      catch (error) { task.log = (task.log + "\n[aether] 清理临时写入快照失败：" + String(error)).slice(-250000); }
       task.status = result;
       emit(); finish();
     });

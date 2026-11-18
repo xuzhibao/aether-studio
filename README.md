@@ -14,7 +14,8 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 - PlatformIO C++ 工程构建：实际进程、实时日志、退出码、取消任务和子进程清理。
 - 构建成功后记录已加载工程文本快照 SHA-256、PlatformIO 版本、产物路径、大小和校验和。
 - PlatformIO 部署插件：明确填写端口后，运行实际构建及上传命令。不会因为打开串口而显示烧录成功。
-- ESP32-S3 C++ 模板，以及 MicroPython 电路演示模板。
+- ESP32-S3 与 ESP32-C3（原生 USB CDC）C++ 模板，以及 MicroPython 电路演示模板。
+- ESP 设备插件：按端口显式触发的只读检测（芯片、flash、板上分区表、安全状态）和部署前核对（构建产物、写入地址、擦除对齐、分区覆盖），写入前为被擦除的 4KB 区块生成并校验快照。
 - 交互式 PTY 终端：在磁盘工程目录启动本机 shell，支持输入、中断、尺寸调整和会话清理。
 - 原生串口与 WebSocket 字节通信；设备输出与 Demo Simulation 分开显示。
 - `.aether` 工程导入导出、面板布局和编辑设置保存。
@@ -151,15 +152,76 @@ npm run desktop
 
 最近成功任务保存在 `.aether/build.json`，包含已加载文本与元数据的快照指纹、工具版本、所选环境、日志和产物校验和。构建前后若已加载的磁盘输入发生变化，不登记产物。此前成功任务的记录不代表当前未保存缓冲区已经构建。
 
+### 构建缓存与分区表
+
+PlatformIO 的增量构建可能沿用 `.pio/build/<环境名>/partitions.bin`：只修改 `platformio.ini` 或分区 CSV 后，旧分区表仍可能被烧录。Aether 在每次普通构建和上传前记录并核对以下输入：
+
+- `platformio.ini` 的完整内容（包含所选环境）；
+- `platformio project config --json-output` 解析后的完整配置，因此 `[platformio] extra_configs` 引用文件中的环境或分区设置变化也会被发现；
+- 该环境实际使用的 `board_build.partitions`（以展开后的 `[env:环境名]` 为准，因此 `[env]` 默认值、`extends` 和 `[common]` 都按 PlatformIO 的解析结果处理）；
+- 平台内置表与同名工程文件：`default.csv`、`huge_app.csv`、`min_spiffs.csv` 等内置表名优先于工程内的同名文件；其他工程内 CSV 按内容哈希（文件名不变、只改内容也能发现）；
+- 实际构建目录（遵循 `build_dir` / `workspace_dir` / `PLATFORMIO_BUILD_DIR` / `PLATFORMIO_WORKSPACE_DIR`）、工程根路径和环境名。
+
+输入与上次记录不同，或环境已有构建目录但没有记录时，只把该环境的 `partitions.bin`、`partitions.csv`、`bootloader.bin`、`firmware.bin` 移动到该构建目录下的 `.aether-stale/<环境名>/`，同名文件只保留最近一份，不删除其他文件，也不动其他环境；`firmware.elf` 和 `firmware.map` 留在原处，移除 `firmware.bin` 会强制重新链接。下一次构建会重新生成。输入没有变化时不会清理任何缓存。记录保存在 `.aether/build-config.json`。
+
+分区表和构建目录必须位于工程目录内；`build_dir` / `workspace_dir` 指向工程外时会拒绝构建，而不是静默跳过检查。工程内的 `.pio`、构建目录、环境构建目录、`.aether` 和 `.aether-stale` 若是指向别处的符号链接，或分区表路径经过链接、包含无法解析的 `${...}` 插值，构建会在启动前拒绝，不会移动链接目标里的内容。`.aether/build-config.json.writing` 是写入临时文件；上次中断留下的普通临时文件会被替换，符号链接或非普通文件则拒绝写入。生成编译数据库不会清理构建缓存。
+
+构建前如果发现磁盘被外部修改（包括 `platformio.ini` 和分区 CSV），Aether 会打开逐文件的差异检查：
+
+- 只有磁盘修改、缓冲区没有改动的文件：点 **重新读取并继续** 会按文件重新载入，然后继续原来的构建或烧录。
+- 磁盘和缓冲区都改过的文件：必须逐个选择 **使用磁盘版本** 或 **保留本地并覆盖磁盘**；其他未保存的代码和电路不受影响。
+- **取消（不构建或烧录）** 不会保存、不会创建任务、不会烧录。
+
+构建前检查由 **工程文件** 插件提供；该插件被停用时，构建会直接报错并释放构建名额，不会挂起。切换工程、新建或导入工程也会取消检查。确认后工程目录、构建环境和端口沿用打开检查时的值；期间发生变化会取消并提示重新构建，不会悄悄换目录、环境或端口。
+
 上传时点击 **Deploy to Device**，选择 **PlatformIO Upload**。对话框列出操作系统报告的串口路径、厂商和 VID/PID，点击一项填入，也可以手动输入未枚举到的路径；留空不会开始上传。这个列表不能判断开发板型号或固件，应用不会自动识别型号，也不会自动刷写未知设备。如果枚举与实际不符，拔插一次 USB 后点 **刷新端口**。
 
-上传前应用先断开当前串口监视器，并确认端口已释放；若关闭失败会取消任务并显示错误，而不是继续上传。插件执行 `platformio run -e ENV --target upload --upload-port PORT`，由 `platformio.ini` 决定芯片、构建和烧录方式。对话框显示真实任务状态、退出码和 PlatformIO 日志，区分运行中、成功、失败和已取消；成功仅表示命令退出码为 0，不代表固件已启动、设备已识别或启动日志正常。
+上传前应用先断开当前串口监视器，并确认端口已释放；若关闭失败会取消任务并显示错误，而不是继续上传。ESP 工程会先构建，再在**同一个端口锁内**重新核对设备与写入计划（见下一节），然后由宿主用已核验的参数直接调用 esptool 写入已核验的镜像文件；不再经过会重新构建的 `platformio run -t upload`。同一时刻只允许一个任务持有串口。非 ESP 工程仍执行原来的 `platformio run --target upload`，不做 ESP 检查；ESP 工程如果试图走平台上传入口，会在任务启动阶段被拒绝。对话框显示真实任务状态、退出码和 PlatformIO 日志，区分运行中、成功、失败和已取消；成功仅表示命令退出码为 0，不代表固件已启动、设备已识别或启动日志正常。
 
 任务结束后，可以直接在任务卡片点击 **连接串口监视器** 打开同一端口，连接波特率取 `platformio.ini` 的 `monitor_speed`（未声明时 115200）；也可以打开 **Devices**（会预填最近使用的串口）。端口被其他程序占用、上传中拔线或命令失败时，日志和退出码保留；修正后点 **重试上传** 会启动新任务，不复用已结束的任务或旧串口句柄。上传会修改设备固件，并可能使开发板复位。MicroPython 文件部署尚未接入。
 
-ESP32-S3 实机检查步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)。
+ESP32-S3 实机检查步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)。上方部署前核对、只读检测与限制见本文的 [ESP 设备检测与部署前核对](#esp-设备检测与部署前核对)。
 
-不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 提供固定平台版本的 ESP32-S3 Arduino 示例。
+
+## ESP 设备检测与部署前核对
+
+ESP 相关能力由 **ESP 设备检测** 插件（`aether.esp.device`）提供，宿主不内置任何板型表。芯片与分区信息全部通过 esptool 只读获取。
+
+**只读检测**：打开 **ESP 设备** 面板，选择端口后点 **只读检测**。它运行 `esptool flash_id`、读取 0x8000 处的分区表，并运行 `esptool get_security_info` 获取安全启动/flash 加密状态（不需要 PyYAML）；不会写 flash，但结束时会复位芯片。结果包括芯片型号/版本/特性、flash 容量与厂商、板上分区表、安全状态，以及 USB VID/PID 分类（303A 为 Espressif 原生 USB-Serial/JTAG，10C4/1A86/0403 等为 USB-UART 桥）。**板型始终标记为未知**：芯片型号和 USB 描述符都不能确定开发板型号，Aether 不会按板卡名推断烧录参数。MAC 只判断是否读到，不会出现在界面、日志或返回值中。
+
+**esptool 来源**：插件设置里的路径 → 环境变量 `AETHER_ESPTOOL` → PlatformIO 自带的 `tool-esptoolpy`（使用 PlatformIO 的 Python 解释器，本机实测 4.9.0）→ PATH 中的 `esptool`。已安装 PlatformIO 时无需额外配置。
+
+**部署前核对**：点 **开始构建并烧录** 后依次执行：
+
+1. 构建当前环境（`platformio run -e ENV`）。
+2. 只读读取设备芯片、flash 容量和板上分区表。
+3. 读取 `.pio/build/ENV/` 中真实的 `bootloader.bin`、`partitions.bin`、`firmware.bin` 与框架自带的 `boot_app0.bin`，解析镜像头中的芯片 ID 和分区表二进制，逐项核对：
+   - 构建产物芯片 ID、板卡清单 `build.mcu`、设备实际芯片三者一致；
+   - 每个写入段 4KB 擦除对齐、段之间不重叠、app 不超出 app 分区；
+   - app 写入地址（`board_upload.offset_address`，未声明时为 0x10000）必须落在构建分区表的 app 分区内。落在数据分区时直接阻止，例如厂商布局里 0x10000 的 `model` 分区；
+   - app 不能落在设备当前的数据分区上（例如 16MB 厂商布局里 0x10000 的 `model`）：这属于工程布局错误，直接阻止，用新的分区表重命名区域不能成为覆盖旧数据的理由；
+   - 构建分区表与设备现有分区表不一致、或 `boot_app0`（固定 0xe000/0x2000）跨过 otadata / phy_init 时，按设备当前分区表算出将被擦除的 4KB 区块，由宿主在写入前逐块读取两次并比对 SHA-256，快照失败就不写入；快照目录与路径显示在部署对话框；
+   - 声明的 flash 容量不能大于设备实际容量；
+   - 设备启用安全启动、flash 加密或禁用下载模式时阻止；
+   - `.aether/build.json` 记录的产物 SHA-256 必须与磁盘一致，构建后产物被替换就拒绝。
+
+   核对通过后，宿主对 bootloader / 分区表 / boot_app0 覆盖的 4KB 区块做一次短读快照（固件区不重复读取；esptool 自身校验读取摘要），把快照与清单写入应用数据目录 `esp-journal/`（不在工程内、不进 git、不上传）。读取失败时任务在启动写入进程之前失败。整片备份请使用 **Flash 备份/恢复** 面板。
+
+   任一阻止项都不会启动上传进程，因此不会产生任何写入。两个勾选项只解除各自区域，不能绕过芯片不匹配。
+4. 上传。任务结束后应用解析日志中的真实 `write_flash` 命令，把写入地址/文件与预检计划逐段比对；不一致时界面显示“实际写入段与预检计划不一致”，不会把退出码 0 当成成功。
+
+**会明确阻止而不是假装通过的场景**：`upload_protocol` 不是 esptool（例如 espota）、工程声明了 `extra_scripts`、找不到板卡清单、构建记录缺失。非 ESP 工程（例如 `platform = native`）完全不经过上述检查，上传行为与之前一致。
+
+**已验证范围**：
+
+- ESP32-C3（COM4，原生 USB-Serial/JTAG，16MB）：真实只读检测成功（芯片、flash、6 个厂商分区、USB 分类）；真实部署前核对在“4MB 默认构建 vs 16MB 厂商分区”下正确阻止写入，全程只执行 `flash_id` / `read_flash` / `summary`，没有任何写入命令。
+- ESP32-S3：beta.3 已完成真机上传与串口验证；本轮未重新刷写任何设备。
+- 安全状态通过 `esptool get_security_info` 读取，不需要 PyYAML；只有工具输出无法解析时才标记为未读取，部署前核对会给出警告并要求自行确认。
+
+**Flash 备份/恢复**：Plugins → Flash 备份/恢复 面板通过本机 esptool 按块备份整片 Flash，并在恢复前只读比较、列出将写范围、要求显式确认，写入后逐段读回核对；不修改 eFuse，无法安全写入时明确拒绝。部署前核对生成的写前快照位于应用数据目录 `esp-journal/`。操作说明见 [docs/esp-flash-backup-restore.md](docs/esp-flash-backup-restore.md)，自动化用例为 `npm run smoke:flash`（文件型假设备，不接硬件）。
+
+不连接硬件也可打开 `examples/platformio-native`，使用本机 GCC 构建一个真实 C++ 可执行文件。`examples/platformio-esp32s3` 与 `examples/platformio-esp32c3` 分别提供固定平台版本的 ESP32-S3 与 ESP32-C3（原生 USB CDC）Arduino 示例。
+
 
 ## C/C++ 编辑
 
@@ -237,7 +299,11 @@ ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s
 
 ## AI
 
-在 Plugins 配置 **OpenAI Compatible API** 的完整 Chat Completions URL、模型和 API Key。地址和模型保存到本地，Key 仅保留在当前会话。请求直接从渲染进程发出，服务需要允许对应来源的跨域访问；AI 服务不是 IDE 的必选依赖。
+在 Plugins 配置 **OpenAI Compatible API** 的完整 Chat Completions URL、模型和 API Key。地址和模型保存到本地，Key 仅保留在当前会话；关闭或重启应用后需要重新填写 Key。请求直接从渲染进程发出，服务需要允许对应来源的跨域访问；AI 服务不是 IDE 的必选依赖。
+
+设置中的 **测试连接** 使用表单当前的 endpoint、模型和 Key，发送一条只包含 `ping` 的最小 Chat Completions 请求（不包含任何工程内容），最多 15 秒，可随时点 **取消测试**。只有在收到并解析真实响应后才显示成功，并列出响应模型和耗时；HTTP 状态、无效 JSON、缺少消息和网络错误会显示为失败。测试不会保存成功状态、不会写入或持久化 Key，也不会修改工程。
+
+**填入 GOAT 端点** 只把 `https://api.commandcode.ai/provider/v1/chat/completions` 和 `deepseek/deepseek-v4.1-flash` 填进设置表单，模型名可以继续编辑；预填本身不会发起连接，仍需填写 Key 后点 **测试连接**。
 
 普通问答发送当前工程上下文；**Project Tools** 按模型请求读取文件或电路，并生成文件修改建议。修改须预览后应用，应用后仍需保存。文件改变后禁止用过期建议覆盖。Agent 不自动构建、上传或执行硬件操作。
 
@@ -278,9 +344,12 @@ npm run smoke:terminal
 npm run build
 npm run build:desktop
 npm run smoke:recovery
+npm run smoke:build-inputs
+npm run smoke:build-review
+npm run smoke:provider
 ```
 
-`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、PlatformIO 展开后的环境段、内置表优先级、`extends`/`[common]`、`extra_configs` 合并配置、`build_dir`/`workspace_dir`、无记录旧缓存、按环境隔离、quarantine 只保留最近一份、`.pio`/`.aether`/`.aether-stale` 链接与路径边界，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
@@ -317,4 +386,4 @@ Aether 原创代码采用 Apache-2.0，见 `LICENSE` 和 `NOTICE`。第三方组
 
 PlatformIO Core 使用 Apache-2.0；其下载的开发平台、编译器和 SDK 按各自许可提供。IDE 不要求商业模拟器、账号或付费模型。支持 ESP32 不代表其无线固件依赖全部提供源码。
 
-当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 的完整硬件工作流仍需在对应环境验证，发行检查仅覆盖打包启动和基础操作。
+当前尚未提供其他语言的 LSP、DAP 调试、Git 面板、真实固件仿真、MicroPython 设备文件管理、ESP 设备 flash 备份/恢复、外部插件安装、签名安装器和自动更新。电路画布不提供电气正确性保证。真实设备上传及 macOS/Windows 的完整硬件工作流仍需在对应环境验证，发行检查仅覆盖打包启动和基础操作。

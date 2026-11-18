@@ -1,5 +1,6 @@
 import type { ProjectContext } from "../src/plugins/api";
 import type { ToolsAPI } from "./tools";
+import type { EspInspectResult, EspPreflightResult } from "./esp";
 export interface DiskWorkspace { root: string; context: ProjectContext; directories: string[] }
 export interface DiskListing { files: Record<string, string>; directories: string[] }
 /** One unsaved editing session, stored outside the project folder while the user keeps working. */
@@ -37,7 +38,7 @@ export interface WorkspaceFileOptions {
   rename: (from: string, to: string) => Promise<void>;
   trash: (path: string) => Promise<void>;
   write: (path: string, text: string, expected: string | null) => Promise<void>;
-  accept: (path: string) => Promise<void>;
+  accept: (path: string, expected?: string | null) => Promise<void>;
 }
 export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskEnvironment { name: string; default: boolean }
@@ -45,11 +46,20 @@ export interface TaskSnapshot {
   id: string; provider: string; root: string; environment?: string; kind?: string; status: "running" | "succeeded" | "failed" | "cancelled";
   startedAt: string; endedAt?: string; exitCode: number | null; log: string; error?: string; options?: Record<string, string>;
   inputHash: string; toolVersion?: string; artifacts: BuildArtifact[];
+  /** Provider-specific result recorded after the task settles (e.g. the ESP write verification). */
+  metadata?: unknown;
+}
+/** Read-only ESP device operations. Both act only on an explicit user action and never write flash. */
+export interface EspAPI {
+  inspect: (port: string) => Promise<EspInspectResult>;
+  preflight: (options: { environment: string; port: string }) => Promise<EspPreflightResult>;
 }
 export interface DesktopAPI {
+  esp: EspAPI;
   terminal: import("./terminal").TerminalAPI;
   tools: ToolsAPI;
   language: import("./language").LanguageAPI;
+  flash: import("./flash").FlashAPI;
   runtime: "electron";
   window: (action: "close" | "minimize" | "maximize") => Promise<void>;
   files: { export: (name: string, content: string) => Promise<string | null>; import: () => Promise<string | null> };

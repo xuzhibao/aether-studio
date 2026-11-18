@@ -5,6 +5,7 @@ import path from "node:path";
 import type { TaskEnvironment } from "../../shared/desktop";
 import type { TaskProvider } from "../tasks";
 import type { ToolDefinition, ToolService } from "../tools";
+import { prepareBuildCache, type ProjectConfig } from "../buildInputs";
 
 // Public tool identity used by the PlatformIO plugin UI. Users configure this path in the app.
 export const platformioTool: ToolDefinition = {
@@ -12,12 +13,10 @@ export const platformioTool: ToolDefinition = {
   description: "构建、上传和生成编译数据库所用的 PlatformIO Core 可执行文件。",
 };
 
-type ProjectConfig = [string, [string, unknown][]][];
-
 const invalidEnvironment = (name: string) => !name || name.includes("/") || name.includes("\\") || name === "..";
 
 // PlatformIO Core本身负责解析 platformio.ini；这里只读取 `project config --json-output` 的结果，不执行自定义发现脚本。
-async function projectConfig(root: string, executable: string): Promise<ProjectConfig> {
+export async function projectConfig(root: string, executable: string): Promise<ProjectConfig> {
   const output = await promisify(execFile)(executable, ["project", "config", "--json-output"], { cwd: root, timeout: 15000, windowsHide: true, maxBuffer: 1024 * 1024 });
   let parsed: unknown;
   try { parsed = JSON.parse(output.stdout); } catch (error) { throw new Error("无法解析 PlatformIO 工程配置：" + String(error)); }
@@ -29,6 +28,9 @@ async function projectConfig(root: string, executable: string): Promise<ProjectC
   return config;
 }
 
+// A task start resolves the environment and then prepares the build cache. Each step asks PlatformIO
+// again: `extra_configs` files can change without touching platformio.ini's timestamp, so caching the
+// parsed config by that single file could hide a new environment or a new partition table.
 function defaults(config: ProjectConfig) {
   const settings = config.find(([name]) => name === "platformio")?.[1];
   const value = settings?.find(([name]) => name === "default_envs")?.[1];
@@ -96,6 +98,8 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
   const build: TaskProvider = {
     id: "platformio.build", executable: () => tool.executable("platformio"), args: (options) => ["run", "-e", requireEnvironment(options)], versionArgs: ["--version"],
     environments: (root, executable) => platformioEnvironments(root, executable),
+    // A build and an upload share the environment's cache; both must see the current ini and partition table.
+    beforeStart: async (root, executable, options) => prepareBuildCache(root, requireEnvironment(options), await projectConfig(root, executable)),
     async artifacts(root, _executable, options) {
       const environment = requireEnvironment(options);
       const directory = path.join(root, ".pio", "build", environment);
@@ -107,13 +111,36 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
       return result;
     },
   };
+  const uploadArgs = (options: Record<string, string>) => {
+    if (!options.port?.trim()) throw new Error("请明确选择烧录端口");
+    return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim()];
+  };
   const upload: TaskProvider = {
-    ...build, id: "platformio.upload",
-    args: (options) => { if (!options.port?.trim()) throw new Error("请明确选择烧录端口"); return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim()]; },
+    ...build, id: "platformio.upload", portOption: "port",
+    args: uploadArgs,
+    // ESP projects are refused here so a renderer cannot bypass the verified esptool write path.
+    // Non-ESP builds keep exactly their previous behaviour.
+    async prepare(root, executable, options) {
+      const args = uploadArgs(options);
+      const environment = options.environment?.trim() ?? "";
+      try {
+        const config = await projectConfig(root, executable);
+        const platform = config.find(([name]) => name === "env:" + environment)?.[1].find(([name]) => name === "platform")?.[1];
+        if (typeof platform === "string" && platform.split("@")[0].trim() === "espressif32") {
+          throw new Error("ESP 工程必须通过 esp.upload 上传：写入前要在同一端口锁内核对芯片、分区与写前快照。请使用 Deploy to Device。");
+        }
+      } catch (error) {
+        // Only a confirmed ESP target is rejected; an unreadable project still fails in PlatformIO itself.
+        if (error instanceof Error && error.message.includes("esp.upload")) throw error;
+      }
+      return { args };
+    },
   };
   const compiledb: TaskProvider = {
     ...build, id: "platformio.compiledb", kind: "compile-database", args: (options) => ["run", "-e", requireEnvironment(options), "--target", "compiledb"],
     inputExcludes: ["compile_commands.json"], recordName: "compiledb.json",
+    // The compilation database does not produce or flash a firmware image, so it must not clear the build cache.
+    beforeStart: undefined,
     artifacts: async () => ["compile_commands.json"],
     afterSuccess: (root, executable, options, signal) => toolchainMetadata(root, executable, requireEnvironment(options), signal),
   };
