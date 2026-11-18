@@ -201,7 +201,7 @@ try {
   await guardDialog.getByText('构建或上传任务正在运行，暂时不能连接原生串口。', { exact: true }).waitFor();
   assert.equal(await guardDialog.getByRole('button', { name: '建立连接', exact: true }).isDisabled(), true);
   // Public Modal at 1280x720: the title/close row must stay pinned in the viewport while the body scrolls.
-  const baseViewport = page.viewportSize();
+  const baseViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
   await page.setViewportSize({ width: 1280, height: 720 });
   const closeVisible = async (width, height) => {
     const box = await guardDialog.getByRole('button', { name: 'Close dialog', exact: true }).boundingBox();
