@@ -332,7 +332,7 @@ try {
     await page.getByRole('heading', { name: 'ESP Flash 备份 / 恢复', exact: true }).waitFor();
     await page.getByLabel('端口', { exact: true }).selectOption('COM_SMOKE_FLASH');
     await page.getByRole('button', { name: '读取设备信息', exact: true }).click();
-    await page.getByText(/已读取 ESP32-C3/).waitFor({ timeout: 30000 });
+    await page.getByText(/已读取 ESP32-C3 · 1MB；esptool/).waitFor({ timeout: 30000 });
     await page.getByLabel('块大小', { exact: true }).selectOption('256');
     await page.getByLabel('每块重试', { exact: true }).selectOption('0');
     await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }); }, flashOutput);
