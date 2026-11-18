@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { isDesktop } from "../../lib/desktop";
-import { useDisk } from "../../store/disk";
+import { recomputeDirty, useDisk } from "../../store/disk";
 import { useStudio } from "../../store/studio";
 import { validProjectPath } from "../../../shared/projectFormat";
 
@@ -90,6 +90,7 @@ export async function deleteEntry(path: string, directory: boolean) {
       const diskFilesNext = { ...state.diskFiles }; delete diskFilesNext[path];
       return { synced, diskFiles: diskFilesNext };
     });
+    recomputeDirty();
     return;
   }
   await api.workspace.files.trash(path);
@@ -101,6 +102,7 @@ export async function deleteEntry(path: string, directory: boolean) {
     return { synced, diskFiles: diskFilesNext, directories };
   });
   await useDisk.getState().refresh();
+  recomputeDirty();
 }
 
 export async function renameEntry(from: string, to: string, choice: "save" | "discard") {
@@ -130,6 +132,7 @@ export async function renameEntry(from: string, to: string, choice: "save" | "di
     };
   });
   await settle();
+  recomputeDirty();
 }
 
 export async function openChanges() {

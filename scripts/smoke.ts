@@ -381,6 +381,7 @@ await useDisk.getState().acceptDisk("main.cpp");
 assert.equal(useStudio.getState().files["main.cpp"], "// external disk\n");
 assert.ok(acceptedFiles.includes("main.cpp"), "accepting the disk version resyncs the host baseline");
 assert.ok(useStudio.getState().files["other.cpp"].includes("/* local */"), "handling one file keeps other unsaved buffers");
+assert.equal(useStudio.getState().dirty, true, "another unsaved buffer keeps the workspace dirty");
 delete fixtureFiles["other.cpp"];
 await useDisk.getState().refresh();
 pendingChanges = diskChanges();
@@ -389,6 +390,12 @@ await useDisk.getState().keepLocal("other.cpp");
 assert.deepEqual(diskWrites.at(-1), { path: "other.cpp", text: localOther, expected: null });
 assert.equal(fixtureFiles["other.cpp"], localOther, "recreating an externally deleted file uses local content");
 assert.equal(diskChanges().length, 0);
+assert.equal(useStudio.getState().dirty, false, "resolving the last dirty buffer clears the unsaved flag");
+useStudio.getState().updateFile("main.cpp", "// saved locally\n");
+useStudio.setState({ dirty: true });
+await useDisk.getState().saveFile("main.cpp");
+assert.equal(fixtureFiles["main.cpp"], "// saved locally\n");
+assert.equal(useStudio.getState().dirty, false, "saving the last dirty file clears the unsaved flag");
 fixtureFiles["new.txt"] = "disk only\n";
 fixtureFiles["main.cpp"] = "// external again\n";
 await useDisk.getState().refresh();
@@ -407,6 +414,14 @@ assert.deepEqual(useStudio.getState().aiModifiedFiles, ["lib/nested/b.cpp"]);
 useStudio.getState().removePaths(["lib/nested"]);
 assert.equal(Object.hasOwn(useStudio.getState().files, "lib/nested/b.cpp"), false);
 assert.equal(useStudio.getState().activeTab, "lib/a.cpp");
+// Discarding a dirty buffer through the project tree restores the disk text and clears the unsaved flag.
+const { renameEntry } = await import("../src/plugins/builtin/projectFilesState");
+fixtureFiles["tree.cpp"] = "int tree() {}\n";
+useDisk.setState((state) => ({ synced: { ...state.synced, "tree.cpp": "int tree() {}\n" }, diskFiles: { ...state.diskFiles, "tree.cpp": "int tree() {}\n" } }));
+useStudio.setState({ files: { "tree.cpp": "int tree() { /* dirty */ }\n" }, openTabs: ["tree.cpp"], activeTab: "tree.cpp", dirty: true });
+await renameEntry("tree.cpp", "tree2.cpp", "discard");
+assert.equal(useStudio.getState().files["tree2.cpp"], "int tree() {}\n", "discard restores the disk text before renaming");
+assert.equal(useStudio.getState().dirty, false, "discarding the only dirty buffer clears the unsaved flag");
 console.log("PASS disk changes: per-file diff state, accept disk, keep local overwrite, external delete recreation, external add, refused whole-project save keeps other buffers, tab/buffer rename and removal (host fixture)");
 
 // Environment responses are deferred fixtures: a slow answer from the previous project or refresh must be ignored.

@@ -48,6 +48,23 @@ export function diskChanges(): DiskChange[] {
   }
   return result;
 }
+
+/**
+ * After a per-file resolution the buffers may match the last synced snapshot again. Recompute the unsaved flag from
+ * every buffer and the host files, and retire the autosaved draft when there is nothing left to recover.
+ */
+export function recomputeDirty() {
+  const disk = useDisk.getState();
+  const state = useStudio.getState();
+  const fileDirty = Object.entries(state.files).some(([name, text]) => name !== "circuit.json" && text !== (Object.hasOwn(disk.synced, name) ? disk.synced[name] : null));
+  const context = state.getProjectContext();
+  const hostDirty = circuitText(context) !== disk.diskCircuit || manifestText(context) !== disk.diskManifest;
+  if (fileDirty || hostDirty) return false;
+  useStudio.setState({ dirty: false });
+  // Nothing differs from the disk, so a draft left by an earlier edit would only prompt a pointless recovery.
+  if (disk.root) void noteRecoverySaved(disk.root, recoveryRevision()).catch(() => {});
+  return true;
+}
 export const useDisk = create<DiskState>((set, get) => {
   const recompute = () => set({ changed: diskChanges().length > 0 });
   // Responses are tied to the project and refresh that requested them; a slower answer must not win.
@@ -145,6 +162,7 @@ export const useDisk = create<DiskState>((set, get) => {
       if (change.kind === "added") useStudio.getState().openFile(file);
     }
     recompute();
+    recomputeDirty();
   },
   keepLocal: async (file) => {
     const change = diskChanges().find((item) => item.file === file);
@@ -157,6 +175,7 @@ export const useDisk = create<DiskState>((set, get) => {
     set((s) => ({ synced: { ...s.synced, [file]: local }, diskFiles: { ...s.diskFiles, [file]: local }, recoveryConflicts: s.recoveryConflicts.filter((name) => name !== file), error: "" }));
     if (wasDirty) useStudio.setState({ dirty: true });
     recompute();
+    recomputeDirty();
   },
   saveFile: async (file) => {
     const text = useStudio.getState().files[file];
@@ -165,6 +184,7 @@ export const useDisk = create<DiskState>((set, get) => {
     await desktop().workspace.files.write(file, text, expected);
     set((s) => ({ synced: { ...s.synced, [file]: text }, diskFiles: { ...s.diskFiles, [file]: text }, recoveryConflicts: s.recoveryConflicts.filter((name) => name !== file), error: "" }));
     recompute();
+    recomputeDirty();
   },
   loadEnvironments: async (provider = "platformio.build") => {
     const root = get().root;
