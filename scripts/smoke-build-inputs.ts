@@ -5,11 +5,14 @@ import path from "node:path";
 import { TaskService, type TaskProvider } from "../desktop/tasks";
 import { WorkspaceService } from "../desktop/workspace";
 import {
-  fingerprintOf, invalidateEnvironment, prepareBuildCache, resolvePartitionInputs, signatureFor,
+  fingerprintOf, invalidateEnvironment, prepareBuildCache, resolveBuildDirectory, resolvePartitionInputs, signatureFor,
   type ProjectConfig,
 } from "../desktop/buildInputs";
 
 const fixture = path.resolve("scripts/fixture-pio.mjs");
+// The host test process must not inherit a build directory from the caller.
+delete process.env.PLATFORMIO_BUILD_DIR;
+delete process.env.PLATFORMIO_WORKSPACE_DIR;
 const read = (root: string, name: string) => fs.readFile(path.join(root, name), "utf8");
 const exists = async (target: string) => fs.lstat(target).then(() => true, () => false);
 
@@ -89,11 +92,16 @@ try {
   await assert.rejects(() => resolvePartitionInputs(root, [["env:env-a", [["board_build.partitions", "linked/linked-partitions.csv"]]]], "env-a"), /链接/);
   check("path boundary: ${PROJECT_DIR} allowed, escape/interpolation/junction refused");
 
-  // --- Fingerprint stability and content sensitivity (the file name is not the key).
-  const sig = signatureFor(root, "env-a", await read(root, "platformio.ini"), fromEnv);
-  assert.equal(fingerprintOf(sig), fingerprintOf(signatureFor(root, "env-a", await read(root, "platformio.ini"), fromEnv)));
-  assert.notEqual(fingerprintOf(sig), fingerprintOf(signatureFor(root, "env-a", await read(root, "platformio.ini"), [{ ...fromEnv[0], sha256: "x" }])));
-  check("fingerprint is deterministic and content-sensitive");
+  // --- Fingerprint stability and content sensitivity (the file name is not the key; merged config counts).
+  const defaultBuildDir = await resolveBuildDirectory(root, config);
+  assert.equal(defaultBuildDir, ".pio/build");
+  const iniText = await read(root, "platformio.ini");
+  const sig = signatureFor(root, "env-a", iniText, config, defaultBuildDir, fromEnv);
+  assert.equal(fingerprintOf(sig), fingerprintOf(signatureFor(root, "env-a", iniText, config, defaultBuildDir, fromEnv)));
+  assert.notEqual(fingerprintOf(sig), fingerprintOf(signatureFor(root, "env-a", iniText, config, defaultBuildDir, [{ ...fromEnv[0], sha256: "x" }])));
+  const configExtra: ProjectConfig = [...config, ["env:env-extra", [["platform", "native@1.2.1"]]]];
+  assert.notEqual(fingerprintOf(sig), fingerprintOf(signatureFor(root, "env-a", iniText, configExtra, defaultBuildDir, fromEnv)), "a config-file change (extra_configs) changes the fingerprint");
+  check("fingerprint is deterministic, content-sensitive and covers the merged config");
 
   // --- First build records the inputs; an unchanged rebuild clears nothing.
   assert.equal(await prepareBuildCache(root, "env-a", config), "", "first build with no cache has nothing to move");
@@ -142,7 +150,7 @@ try {
   // --- An ini change is an input change for the selected environment.
   await fs.writeFile(path.join(buildDir, "partitions.bin"), "STALE-ini");
   await write("platformio.ini", ini("build_flags = -DAETHER=1"));
-  assert.match(await prepareBuildCache(root, "env-a", config), /platformio\.ini 或分区表已变化/);
+  assert.match(await prepareBuildCache(root, "env-a", config), /platformio\.ini\/其他配置文件或分区表已变化/);
   assert.equal(await exists(path.join(buildDir, "partitions.bin")), false);
   check("platformio.ini edits invalidate the selected environment");
 
@@ -158,7 +166,7 @@ try {
   await fs.mkdir(linkBuild, { recursive: true });
   await fs.writeFile(path.join(linkBuild, "partitions.bin"), "LINKED-KEEP");
   await fs.symlink(linkBuild, path.join(root, ".pio", "build", "env-e"), "junction");
-  await assert.rejects(() => invalidateEnvironment(root, "env-e"), /符号链接/);
+  await assert.rejects(() => invalidateEnvironment(root, ".pio/build", "env-e"), /符号链接/);
   assert.equal(await read(outside, "linked-build/partitions.bin"), "LINKED-KEEP");
   check("symlinked environment build directory is refused without touching the target");
 
@@ -168,7 +176,7 @@ try {
   await fs.mkdir(path.join(linkedPio, "build", "env-a"), { recursive: true });
   await fs.writeFile(path.join(linkedPio, "build", "env-a", "partitions.bin"), "OUTSIDE-KEEP");
   await fs.symlink(linkedPio, path.join(linkedProject, ".pio"), "junction");
-  await assert.rejects(() => invalidateEnvironment(linkedProject, "env-a"), /符号链接/, "a buildRoot that is itself a junction to a user tree is refused");
+  await assert.rejects(() => invalidateEnvironment(linkedProject, ".pio/build", "env-a"), /符号链接/, "a buildRoot that is itself a junction to a user tree is refused");
   assert.equal(await read(linkedPio, "build/env-a/partitions.bin"), "OUTSIDE-KEEP");
   check("a .pio junction outside the project is refused before moving anything");
 
@@ -180,7 +188,7 @@ try {
   await fs.mkdir(staleOutside, { recursive: true });
   await fs.mkdir(path.join(staleLinkProject, ".pio", "build", ".aether-stale"), { recursive: true });
   await fs.symlink(staleOutside, path.join(staleLinkProject, ".pio", "build", ".aether-stale", "env-a"), "junction");
-  await assert.rejects(() => invalidateEnvironment(staleLinkProject, "env-a"), /符号链接/);
+  await assert.rejects(() => invalidateEnvironment(staleLinkProject, ".pio/build", "env-a"), /符号链接/);
   assert.equal(await exists(path.join(staleOutside, "partitions.bin")), false);
   check("a linked quarantine directory is refused");
 
@@ -194,15 +202,58 @@ try {
   assert.equal(await exists(path.join(aetherOutside, "build-config.json")), false);
   check("a linked .aether directory is refused");
 
-  // --- A leftover .writing temp is reported instead of being overwritten.
+  // --- A leftover regular .writing temp is our own interrupted write and can be replaced; a link is refused.
   const writingProject = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aether-writing-")));
   await fs.writeFile(path.join(writingProject, "platformio.ini"), ini());
   await fs.writeFile(path.join(writingProject, "partitions.csv"), "x\n");
   await fs.mkdir(path.join(writingProject, ".aether"), { recursive: true });
   await fs.writeFile(path.join(writingProject, ".aether", "build-config.json.writing"), "leftover");
-  await assert.rejects(() => prepareBuildCache(writingProject, "env-a", config), /临时构建配置记录已存在/);
-  assert.equal(await read(writingProject, ".aether/build-config.json.writing"), "leftover", "the existing temp is not overwritten");
-  check("a leftover .writing record is reported, never overwritten");
+  assert.equal(await prepareBuildCache(writingProject, "env-a", config), "");
+  assert.equal(await exists(path.join(writingProject, ".aether/build-config.json")), true, "the record is written after replacing the leftover temp");
+  assert.equal(await exists(path.join(writingProject, ".aether/build-config.json.writing")), false, "the temp was renamed, not left behind");
+  const linkedWritingProject = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aether-writing-link-")));
+  await fs.writeFile(path.join(linkedWritingProject, "platformio.ini"), ini());
+  await fs.writeFile(path.join(linkedWritingProject, "partitions.csv"), "x\n");
+  await fs.mkdir(path.join(linkedWritingProject, ".aether"), { recursive: true });
+  const writingTarget = path.join(outside, "writing-target");
+  await fs.mkdir(writingTarget, { recursive: true });
+  await fs.symlink(writingTarget, path.join(linkedWritingProject, ".aether", "build-config.json.writing"), "junction");
+  await assert.rejects(() => prepareBuildCache(linkedWritingProject, "env-a", config), /符号链接/);
+  assert.equal(await exists(path.join(writingTarget, "build-config.json")), false);
+  check("a leftover .writing temp is replaced; a linked one is refused");
+
+  // --- A parsed-config change (extra_configs) invalidates even when platformio.ini is untouched.
+  await fs.mkdir(path.join(root, ".pio", "build", "env-a"), { recursive: true });
+  await fs.writeFile(path.join(root, ".pio/build/env-a/partitions.bin"), "CONFIG-EXTRA-STALE");
+  assert.match(await prepareBuildCache(root, "env-a", configExtra), /其他配置文件或分区表已变化/);
+  assert.equal(await exists(path.join(root, ".pio/build/env-a/partitions.bin")), false);
+  assert.equal(await read(root, ".pio/build/.aether-stale/env-a/partitions.bin"), "CONFIG-EXTRA-STALE");
+  check("an extra_configs change (merged config) invalidates without an ini edit");
+
+  // --- A custom PlatformIO build_dir/workspace_dir is honored; a directory outside the project is refused.
+  const customProject = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aether-custom-build-")));
+  await fs.writeFile(path.join(customProject, "platformio.ini"), ini());
+  await fs.writeFile(path.join(customProject, "partitions.csv"), "custom-old\n");
+  const customBuild = path.join(customProject, "custom-build");
+  const customConfig: ProjectConfig = [
+    ["platformio", [["build_dir", customBuild]]],
+    ["env:env-a", [["board_build.partitions", "partitions.csv"]]],
+  ];
+  assert.equal(await resolveBuildDirectory(customProject, customConfig), "custom-build");
+  const workspaceConfig: ProjectConfig = [
+    ["platformio", [["workspace_dir", path.join(customProject, "ws")]]],
+    ["env:env-a", [["board_build.partitions", "partitions.csv"]]],
+  ];
+  assert.equal(await resolveBuildDirectory(customProject, workspaceConfig), "ws/build");
+  await assert.rejects(() => resolveBuildDirectory(customProject, [["platformio", [["build_dir", outside]]], ["env:env-a", []]]), /工程目录之外/);
+  await prepareBuildCache(customProject, "env-a", customConfig);
+  await fs.mkdir(path.join(customBuild, "env-a"), { recursive: true });
+  await fs.writeFile(path.join(customBuild, "env-a", "partitions.bin"), "CUSTOM-STALE");
+  await fs.writeFile(path.join(customProject, "partitions.csv"), "custom-new\n");
+  assert.match(await prepareBuildCache(customProject, "env-a", customConfig), /custom-build\/env-a/);
+  assert.equal(await read(customBuild, ".aether-stale/env-a/partitions.bin"), "CUSTOM-STALE");
+  assert.equal(await exists(path.join(customProject, ".pio/build/env-a/partitions.bin")), false);
+  check("custom build_dir/workspace_dir are used and outside-project directories are refused");
 
   // --- End to end: a stale table on disk never reaches the upload step.
   const project = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "aether-build-inputs-task-")));
@@ -243,7 +294,7 @@ try {
   try {
     const upload = await wait((await tasks.start("fixture.upload", { environment: "env-a" })).id);
     assert.equal(upload.status, "succeeded", (upload.error ?? "") + "\n" + upload.log);
-    assert.match(upload.log, /\[aether\] 构建前检查：platformio\.ini 或分区表已变化/);
+    assert.match(upload.log, /\[aether\] 构建前检查：platformio\.ini\/其他配置文件或分区表已变化/);
     assert.match(upload.log, /\[fixture\] generated partitions\.bin/);
     assert.doesNotMatch(upload.log, /reused existing partitions\.bin/);
     assert.equal(await exists(path.join(project, ".pio/fixture/stale-observed.json")), false, "the fixture never saw the old table");
@@ -271,7 +322,7 @@ try {
     await tasks.stopAll();
   }
   await fs.rm(project, { recursive: true, force: true });
-  console.log("PASS build inputs: " + passed + " checks; PIO env-section resolution, built-in precedence, content-based invalidation, link boundaries and a fixed fixture; no hardware, no real PlatformIO");
+  console.log("PASS build inputs: " + passed + " checks; PIO env-section resolution, built-in precedence, merged-config/build-dir inputs, content-based invalidation, link boundaries and a fixed fixture; no hardware, no real PlatformIO");
 } finally {
   await fs.rm(root, { recursive: true, force: true });
   await fs.rm(outside, { recursive: true, force: true });

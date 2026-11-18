@@ -30,7 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { useStudio } from "../store/studio";
-import { useDisk } from "../store/disk";
+import { useDisk, isActionCancelled } from "../store/disk";
 import { useTransport } from "../store/transport";
 import { useFlash } from "../store/flash";
 import type { TransportPort } from "../plugins/api";
@@ -231,6 +231,7 @@ export function DeployDialog() {
   const [portsError, setPortsError] = useState("");
   const [refreshToken, setRefreshToken] = useState(0);
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [monitorBaud, setMonitorBaud] = useState("115200");
@@ -246,12 +247,18 @@ export function DeployDialog() {
   const metadata = task?.metadata as { writeCheck?: EspUploadCheck; journal?: { directory: string; totalBytes: number; ranges: unknown[] } } | undefined;
   const writeCheck = metadata?.writeCheck;
   const journal = metadata?.journal;
+  // A user-cancelled pre-build review is not a deploy failure; show it as a neutral note.
+  const reportDeployFailure = (reason: unknown) => {
+    if (isActionCancelled(reason)) { setError(""); setNote(reason instanceof Error ? reason.message : String(reason)); return; }
+    setNote("");
+    setError(String(reason));
+  };
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);
     const first = available[0];
     setSelected(first?.id ?? "");
-    setError(""); setSubmitting(false);
+    setError(""); setNote(""); setSubmitting(false);
     setMonitorBaud(first?.monitor?.defaultBaudRate ?? "115200");
     // Results belong to the current disk project only; another project's upload must not look like this one.
     const latest = first ? disk.tasks.filter((item) => item.provider === first.id && item.root === disk.root).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1) : undefined;
@@ -268,14 +275,14 @@ export function DeployDialog() {
   const runDeploy = async () => {
     if (!provider || !address.trim() || busy || !isDesktop()) return;
     const port = address.trim();
-    setSubmitting(true); setError(""); setTaskId(""); useDisk.setState({ espPreflight: null });
+    setSubmitting(true); setError(""); setNote(""); setTaskId(""); useDisk.setState({ espPreflight: null });
     try {
       const result = await provider.deploy(getProjectContext(), port);
       if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); }
       else { setDialog(null); setTab("panel:build.tasks"); }
     } catch (reason) {
-      // A rejected hand-off (blocked preflight, failed build, busy port) never started a write.
-      setError(String(reason instanceof Error ? reason.message : reason));
+      // A rejected hand-off (blocked preflight, failed build, busy port, cancelled review) never started a write.
+      reportDeployFailure(reason);
     } finally { setSubmitting(false); }
   };
   const connectMonitor = async () => {
@@ -310,6 +317,7 @@ export function DeployDialog() {
         <button type="button" className="btn px-3 py-1.5" onClick={openLogs} disabled={!task}>查看完整日志</button>
       </div>
       {!isDesktop() && <p className="mt-2 text-[10px] leading-5 text-[#A8741F]">真实上传需要 Electron 桌面端和部署插件所需的工具；浏览器预览不会执行命令。</p>}
+      {note && <p role="status" className="mt-3 whitespace-pre-wrap text-xs text-[#7D848C]">{note}</p>}
       {error && <p role="alert" className="mt-3 whitespace-pre-wrap text-xs text-[#A8741F]">{error}</p>}
       {preflight && preflight.supported && <section data-esp-preflight={preflight.ok ? "ok" : "blocked"} data-esp-preflight-port={preflight.port} className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]">
         <div className="flex flex-wrap items-center gap-2"><strong>部署前核对</strong><span role="status" className={preflight.ok ? "text-[#3B9A68]" : "text-[#A8741F]"}>{preflight.ok ? "通过" : "已阻止写入"}</span><span className="text-[10px] text-[#90969E]">{preflight.port} · env {preflight.environment} · {new Date(preflight.checkedAt).toLocaleTimeString("en-GB", { hour12: false })}</span></div>

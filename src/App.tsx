@@ -36,7 +36,8 @@ export default function App() {
       const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       const mod = event.metaKey || event.ctrlKey;
       const s = useStudio.getState();
-      if (useDisk.getState().busy) { event.preventDefault(); return; }
+      const disk = useDisk.getState();
+      if (disk.busy || disk.starting) { event.preventDefault(); return; }
 
       if (target?.closest("[data-plugin-keyboard]")) return;
 

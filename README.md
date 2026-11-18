@@ -157,21 +157,22 @@ npm run desktop
 PlatformIO 的增量构建可能沿用 `.pio/build/<环境名>/partitions.bin`：只修改 `platformio.ini` 或分区 CSV 后，旧分区表仍可能被烧录。Aether 在每次普通构建和上传前记录并核对以下输入：
 
 - `platformio.ini` 的完整内容（包含所选环境）；
-- 该环境实际使用的 `board_build.partitions`（以 `platformio project config --json-output` 展开后的 `[env:环境名]` 为准，因此 `[env]` 默认值、`extends` 和 `[common]` 都按 PlatformIO 的解析结果处理）；
+- `platformio project config --json-output` 解析后的完整配置，因此 `[platformio] extra_configs` 引用文件中的环境或分区设置变化也会被发现；
+- 该环境实际使用的 `board_build.partitions`（以展开后的 `[env:环境名]` 为准，因此 `[env]` 默认值、`extends` 和 `[common]` 都按 PlatformIO 的解析结果处理）；
 - 平台内置表与同名工程文件：`default.csv`、`huge_app.csv`、`min_spiffs.csv` 等内置表名优先于工程内的同名文件；其他工程内 CSV 按内容哈希（文件名不变、只改内容也能发现）；
-- 工程根路径和环境名。
+- 实际构建目录（遵循 `build_dir` / `workspace_dir` / `PLATFORMIO_BUILD_DIR` / `PLATFORMIO_WORKSPACE_DIR`）、工程根路径和环境名。
 
-输入与上次记录不同，或环境已有构建目录但没有记录时，只把该环境的 `partitions.bin`、`partitions.csv`、`bootloader.bin`、`firmware.bin` 移动到 `.pio/build/.aether-stale/<环境名>/`，同名文件只保留最近一份，不删除其他文件，也不动其他环境；`firmware.elf` 和 `firmware.map` 留在原处，移除 `firmware.bin` 会强制重新链接。下一次构建会重新生成。输入没有变化时不会清理任何缓存。记录保存在 `.aether/build-config.json`。
+输入与上次记录不同，或环境已有构建目录但没有记录时，只把该环境的 `partitions.bin`、`partitions.csv`、`bootloader.bin`、`firmware.bin` 移动到该构建目录下的 `.aether-stale/<环境名>/`，同名文件只保留最近一份，不删除其他文件，也不动其他环境；`firmware.elf` 和 `firmware.map` 留在原处，移除 `firmware.bin` 会强制重新链接。下一次构建会重新生成。输入没有变化时不会清理任何缓存。记录保存在 `.aether/build-config.json`。
 
-分区表必须位于工程目录内。工程内的 `.pio`、`.pio/build`、环境构建目录、`.aether` 和 `.aether-stale` 若是指向别处的符号链接，或分区表路径经过链接、包含无法解析的 `${...}` 插值，构建会在启动前拒绝，不会移动链接目标里的内容。生成编译数据库不会清理构建缓存。
+分区表和构建目录必须位于工程目录内；`build_dir` / `workspace_dir` 指向工程外时会拒绝构建，而不是静默跳过检查。工程内的 `.pio`、构建目录、环境构建目录、`.aether` 和 `.aether-stale` 若是指向别处的符号链接，或分区表路径经过链接、包含无法解析的 `${...}` 插值，构建会在启动前拒绝，不会移动链接目标里的内容。`.aether/build-config.json.writing` 是写入临时文件；上次中断留下的普通临时文件会被替换，符号链接或非普通文件则拒绝写入。生成编译数据库不会清理构建缓存。
 
 构建前如果发现磁盘被外部修改（包括 `platformio.ini` 和分区 CSV），Aether 会打开逐文件的差异检查：
 
 - 只有磁盘修改、缓冲区没有改动的文件：点 **重新读取并继续** 会按文件重新载入，然后继续原来的构建或烧录。
 - 磁盘和缓冲区都改过的文件：必须逐个选择 **使用磁盘版本** 或 **保留本地并覆盖磁盘**；其他未保存的代码和电路不受影响。
-- **取消（不构建）** 不会保存、不会创建任务、不会烧录。
+- **取消（不构建或烧录）** 不会保存、不会创建任务、不会烧录。
 
-确认后工程目录、构建环境和端口沿用打开检查时的值；期间发生变化会取消并提示重新构建，不会悄悄换目录、环境或端口。
+构建前检查由 **工程文件** 插件提供；该插件被停用时，构建会直接报错并释放构建名额，不会挂起。切换工程、新建或导入工程也会取消检查。确认后工程目录、构建环境和端口沿用打开检查时的值；期间发生变化会取消并提示重新构建，不会悄悄换目录、环境或端口。
 
 上传时点击 **Deploy to Device**，选择 **PlatformIO Upload**。对话框列出操作系统报告的串口路径、厂商和 VID/PID，点击一项填入，也可以手动输入未枚举到的路径；留空不会开始上传。这个列表不能判断开发板型号或固件，应用不会自动识别型号，也不会自动刷写未知设备。如果枚举与实际不符，拔插一次 USB 后点 **刷新端口**。
 
@@ -348,7 +349,7 @@ npm run smoke:build-review
 npm run smoke:provider
 ```
 
-`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、PlatformIO 展开后的环境段、内置表优先级、`extends`/`[common]`、无记录旧缓存、按环境隔离、quarantine 只保留最近一份、`.pio`/`.aether`/`.aether-stale` 链接与路径边界，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、PlatformIO 展开后的环境段、内置表优先级、`extends`/`[common]`、`extra_configs` 合并配置、`build_dir`/`workspace_dir`、无记录旧缓存、按环境隔离、quarantine 只保留最近一份、`.pio`/`.aether`/`.aether-stale` 链接与路径边界，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
