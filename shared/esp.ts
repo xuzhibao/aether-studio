@@ -390,7 +390,8 @@ export function parseUploadCommand(log: string): EspUploadEvidence {
   const lines = log.split(/\r?\n/).filter((line) => line.includes("write_flash"));
   const line = lines[lines.length - 1]?.trim() ?? "";
   if (!line) return { parseable: false, writes: [], verifiedHashes: 0, command: "", error: "日志中没有 esptool write_flash 命令行" };
-  const tokens = line.split(/\s+/).map((token) => token.replace(/^"|"$/g, "")).filter(Boolean);
+  // The host logs paths with spaces as quoted arguments; split on quotes so a temp path stays one token.
+  const tokens = (line.match(/"[^"]*"|\S+/g) ?? []).map((token) => token.replace(/^"|"$/g, "")).filter(Boolean);
   const start = tokens.indexOf("write_flash");
   if (start < 0) return { parseable: false, writes: [], verifiedHashes: 0, command: line, error: "无法定位 write_flash" };
   const writes: EspUploadWrite[] = [];

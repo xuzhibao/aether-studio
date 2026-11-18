@@ -6,6 +6,10 @@ import path from "node:path";
 import type { TaskSnapshot, BuildArtifact, TaskEnvironment } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
 import { acquirePort, releasePort } from "./portLease";
+
+/** Quotes an argument only for the human-readable log line; the process still receives the raw value. */
+const quoteForLog = (arg: string) => /[\s"]/.test(arg) ? '"' + arg.replace(/"/g, '\\"') + '"' : arg;
+
 export interface TaskProvider {
   id: string; executable: string | (() => string); args: string[] | ((options: Record<string, string>) => string[]); versionArgs?: string[];
   inputExcludes?: string[]; recordName?: string;
@@ -21,6 +25,8 @@ export interface TaskProvider {
   portOption?: string;
   // Runs after the port lease is taken and before the process exists: it decides the real argv and can refuse.
   prepare?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal, log: (line: string) => void) => Promise<{ executable?: string; args: string[]; metadata?: unknown }>;
+  // Runs once the task can no longer use host-side temporary inputs (success, failure, cancel or a failed start).
+  afterRun?: () => Promise<void>;
   // Providers that build one selected environment at a time expose what the project currently declares.
   environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
   artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
@@ -74,13 +80,13 @@ export class TaskService {
       } else args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
       toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
       inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    } catch (error) { if (leased) releasePort(leased); throw error; }
+    } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
     const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + [executable, ...args].map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
     let child: ChildProcess;
     try {
       child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
-    } catch (error) { if (leased) releasePort(leased); throw error; }
+    } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
     let cancelled = false;
     let processClosed = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -146,6 +152,8 @@ export class TaskService {
           }
         }
       } catch (error) { result = "failed"; task.error = String(error); }
+      try { await provider.afterRun?.(); }
+      catch (error) { task.log = (task.log + "\n[aether] 清理临时写入快照失败：" + String(error)).slice(-250000); }
       task.status = result;
       emit(); finish();
     });

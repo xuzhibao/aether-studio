@@ -13,7 +13,7 @@ import {
 import { WorkspaceService } from "../desktop/workspace";
 import { TaskService } from "../desktop/tasks";
 import { ToolService } from "../desktop/tools";
-import { ESPTOOL_TOOL } from "../desktop/esp/esptool";
+import { ESPTOOL_TOOL, runEsptool } from "../desktop/esp/esptool";
 import { writeRanges, createEspUploadProvider } from "../desktop/esp/upload";
 import { preflightEspUpload } from "../desktop/esp/preflight";
 import { createPlatformioPlugins } from "../desktop/plugins/platformio";
@@ -216,6 +216,11 @@ assert.deepEqual(evidence.writes.map((write) => write.offset), [0, 0x8000, 0xe00
 const plan = [{ offset: 0, file: "bootloader.bin" }, { offset: 0x8000, file: "partitions.bin" }, { offset: 0xe000, file: "boot_app0.bin" }, { offset: 0x100000, file: "firmware.bin" }];
 assert.equal(checkUploadAgainstPlan(log, plan).ok, true);
 assert.equal(checkUploadAgainstPlan(log, plan.filter((item) => item.offset !== 0x100000)).ok, false);
+{
+  // A private snapshot path may contain spaces; quoted arguments must stay a single write entry.
+  const spaced = 'esptool write_flash 0x0 "C:\\Users\\Jane Doe\\bootloader.bin" 0x8000 "C:\\Users\\Jane Doe\\partitions.bin"';
+  assert.deepEqual(parseUploadCommand(spaced).writes.map((write) => write.file.split(/[\\/]/).pop()), ["bootloader.bin", "partitions.bin"]);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Provider: the authoritative path. Real PlatformIO metadata + recording fake esptool.
@@ -233,6 +238,9 @@ if (!pioAvailable) {
   const deviceTableFile = path.join(toolsDir, "device-partitions.bin");
   // The journal must live outside the project: writing it inside would change the build fingerprint.
   const journalRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aether-esp-journals-"));
+  // Private input snapshots are injected so the test can prove they are removed, and captured writes prove their bytes.
+  const snapshotRoot = await fs.mkdtemp(path.join(os.tmpdir(), "aether-esp-inputs-"));
+  const capture = path.join(toolsDir, "capture");
   const workspace = new WorkspaceService();
   const tasks = new TaskService(workspace);
   const tools = new ToolService(() => path.join(root, "tools.json"));
@@ -240,8 +248,9 @@ if (!pioAvailable) {
   // createPlatformioPlugins also registers the platformio tool identity the ESP provider resolves.
   const platformio = createPlatformioPlugins(tools);
   tasks.register(platformio.platformioUpload);
-  tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => journalRoot }));
-  const savedEnv = { AETHER_ESPTOOL: process.env.AETHER_ESPTOOL, AETHER_FAKE_LOG: process.env.AETHER_FAKE_LOG, AETHER_FAKE_CHIP: process.env.AETHER_FAKE_CHIP, AETHER_FAKE_PARTITIONS: process.env.AETHER_FAKE_PARTITIONS };
+  const upload = createEspUploadProvider(tools, workspace, { journalRoot: () => journalRoot, snapshotRoot: () => snapshotRoot });
+  tasks.register(upload);
+  const savedEnv = { AETHER_ESPTOOL: process.env.AETHER_ESPTOOL, AETHER_FAKE_LOG: process.env.AETHER_FAKE_LOG, AETHER_FAKE_CHIP: process.env.AETHER_FAKE_CHIP, AETHER_FAKE_PARTITIONS: process.env.AETHER_FAKE_PARTITIONS, AETHER_FAKE_CAPTURE: process.env.AETHER_FAKE_CAPTURE, AETHER_FAKE_TAMPER_ON: process.env.AETHER_FAKE_TAMPER_ON, AETHER_FAKE_TAMPER_FILE: process.env.AETHER_FAKE_TAMPER_FILE };
   const restoreEnv = () => { for (const [key, value] of Object.entries(savedEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } };
   Object.assign(process.env, { AETHER_ESPTOOL: fake, AETHER_FAKE_LOG: logFile, AETHER_FAKE_PARTITIONS: deviceTableFile });
 
@@ -253,6 +262,10 @@ if (!pioAvailable) {
 args = sys.argv[1:]
 with open(os.environ["AETHER_FAKE_LOG"], "a") as log:
     log.write(json.dumps(args) + "\\n")
+tamper_on = os.environ.get("AETHER_FAKE_TAMPER_ON", "")
+if tamper_on and tamper_on in args and os.environ.get("AETHER_FAKE_TAMPER_FILE"):
+    with open(os.environ["AETHER_FAKE_TAMPER_FILE"], "wb") as target:
+        target.write(b"TAMPERED-WORKSPACE")
 if "version" in args:
     print("esptool.py v4.9.0"); print("4.9.0"); sys.exit(0)
 if "get_security_info" in args:
@@ -269,6 +282,26 @@ if "read_flash" in args:
         out.write(open(os.environ["AETHER_FAKE_PARTITIONS"], "rb").read())
     sys.exit(0)
 if any(item in args for item in ("write_flash", "erase_flash", "erase_region", "write_mem")):
+    capture = os.environ.get("AETHER_FAKE_CAPTURE")
+    if capture:
+        import hashlib, re, shutil
+        os.makedirs(capture, exist_ok=True)
+        manifest = []
+        index = args.index("write_flash") + 1
+        while index < len(args):
+            token = args[index]
+            if re.match(r"^0x[0-9a-fA-F]+$", token) and index + 1 < len(args) and not args[index + 1].startswith("-"):
+                source = args[index + 1]
+                destination = os.path.join(capture, token + "-" + os.path.basename(source))
+                shutil.copyfile(source, destination)
+                with open(destination, "rb") as handle:
+                    digest = hashlib.sha256(handle.read()).hexdigest()
+                manifest.append({"offset": int(token, 16), "name": os.path.basename(source), "size": os.path.getsize(destination), "sha256": digest})
+                index += 2
+            else:
+                index += 1
+        with open(os.path.join(capture, "manifest.json"), "w") as handle:
+            json.dump(manifest, handle)
     print("Hash of data verified."); print("Hash of data verified."); print("Hash of data verified."); print("Hash of data verified.")
     sys.exit(0)
 sys.exit(0)
@@ -318,6 +351,53 @@ board_upload.offset_address = 0x100000
     const writeCheck = (safe.metadata as { writeCheck?: { ok: boolean } } | undefined)?.writeCheck;
     assert.ok(writeCheck, "the write command is compared with the verified plan");
     assert.equal((await writes()).length, 1, "exactly one verified write command");
+    const safeInputs = (safe.metadata as { inputSnapshot?: { directory: string; files: Array<{ name: string }> } } | undefined)?.inputSnapshot;
+    assert.ok(safeInputs && safeInputs.files.some((file) => file.name === "boot_app0.bin"), "boot_app0 is part of the private write snapshot");
+    assert.equal(await fs.stat(safeInputs!.directory).then(() => true, () => false), false, "the private input snapshot is removed after the task");
+    assert.deepEqual(await fs.readdir(snapshotRoot), [], "no private input directory is left behind");
+
+    // 1b. The verified bytes, not the workspace file, are what esptool writes. Replace firmware.bin after
+    //     prepare(); the captured write must still contain the original image and boot_app0.
+    await fs.writeFile(logFile, "");
+    await project(iniSafe, safeTable, safeTable);
+    const originalFirmware = await fs.readFile(path.join(root, ".pio", "build", "esp32-c3", "firmware.bin"));
+    const snapshotPrepared = await upload.prepare!(root, pio, { port: "COM_TEST", environment: "esp32-c3" }, new AbortController().signal, () => {});
+    const preparedMeta = snapshotPrepared.metadata as { espPreflight: { segments: Array<{ name: string; file: string }> }; inputSnapshot: { directory: string; files: Array<{ name: string; file: string; sha256: string }> } };
+    assert.ok(preparedMeta.inputSnapshot.files.some((file) => file.name === "boot_app0.bin"), "boot_app0 is snapshotted");
+    const segmentFiles = snapshotPrepared.args.filter((arg) => /\.bin$/i.test(arg));
+    assert.equal(segmentFiles.length, preparedMeta.espPreflight.segments.length, "every planned segment is written from a snapshot path");
+    assert.ok(segmentFiles.every((file) => path.dirname(file) === preparedMeta.inputSnapshot.directory), "esptool is pointed only at the private directory");
+    await fs.writeFile(path.join(root, ".pio", "build", "esp32-c3", "firmware.bin"), Buffer.from("TAMPERED AFTER PREPARE"));
+    await fs.rm(capture, { recursive: true, force: true });
+    process.env.AETHER_FAKE_CAPTURE = capture;
+    try {
+      const run = await runEsptool({ executable: snapshotPrepared.executable!, prefix: [] }, snapshotPrepared.args, { timeoutMs: 60000 });
+      assert.equal(run.code, 0, run.output);
+      const manifest = JSON.parse(await fs.readFile(path.join(capture, "manifest.json"), "utf8")) as Array<{ name: string; sha256: string; size: number }>;
+      const written = manifest.find((entry) => entry.name === "firmware.bin");
+      assert.equal(written?.sha256, createHash("sha256").update(originalFirmware).digest("hex"), "the flashed firmware is the verified snapshot, not the replaced workspace file");
+      assert.equal(manifest.some((entry) => entry.name === "boot_app0.bin"), true, "boot_app0 is written from the snapshot too");
+    } finally {
+      delete process.env.AETHER_FAKE_CAPTURE;
+      await upload.afterRun!();
+    }
+    assert.equal(await fs.stat(preparedMeta.inputSnapshot.directory).then(() => true, () => false), false, "afterRun removes the private input snapshot");
+    assert.deepEqual(await fs.readdir(snapshotRoot), [], "the injected snapshot root is empty after the write");
+
+    // 1c. A workspace change that lands between the preflight read and the copy is refused, and the
+    //     half-built private snapshot is removed without issuing a write command.
+    await fs.writeFile(logFile, "");
+    await project(iniSafe, safeTable, safeTable);
+    process.env.AETHER_FAKE_TAMPER_ON = "flash_id";
+    process.env.AETHER_FAKE_TAMPER_FILE = path.join(root, ".pio", "build", "esp32-c3", "firmware.bin");
+    try {
+      await assert.rejects(() => upload.prepare!(root, pio, { port: "COM_TEST", environment: "esp32-c3" }, new AbortController().signal, () => {}), /写前输入快照与预检不一致/);
+    } finally {
+      delete process.env.AETHER_FAKE_TAMPER_ON;
+      delete process.env.AETHER_FAKE_TAMPER_FILE;
+    }
+    assert.deepEqual(await fs.readdir(snapshotRoot), [], "a refused snapshot leaves no private directory");
+    assert.deepEqual(await writes(), [], "a refused snapshot never reaches write_flash");
 
     // 2. Chip mismatch: the provider refuses before spawning anything.
     await fs.writeFile(logFile, "");
@@ -357,7 +437,7 @@ board_upload.offset_address = 0x100000
 
     // Step 5 cleared the log; nothing after it may reach the device, and step 6 refused before spawning.
     assert.deepEqual(await writes(), [], "no write may happen after the verified plan");
-    console.log("PASS esp: parsing, security (get_security_info), 10 blocking rules (C3/S3 mismatch, 0x10000 model overlap via app-outside-table and app-over-device-data, unaligned, flash size, secure boot, unreadable device, unverifiable upload, build-record binding), write-plan evidence, and the authoritative esp.upload provider against real PlatformIO metadata: chip mismatch and destructive placement refused with zero write commands, valid plans journal every erased 4KB sector before writing, non-ESP untouched");
+    console.log("PASS esp: parsing, security (get_security_info), 10 blocking rules (C3/S3 mismatch, 0x10000 model overlap via app-outside-table and app-over-device-data, unaligned, flash size, secure boot, unreadable device, unverifiable upload, build-record binding), write-plan evidence, and the authoritative esp.upload provider against real PlatformIO metadata: chip mismatch and destructive placement refused with zero write commands, valid plans journal every erased 4KB sector before writing, a private snapshot (including boot_app0) is what esptool writes even when the workspace firmware is replaced after prepare, a changed snapshot is refused and cleaned up, non-ESP untouched");
   } finally {
     await tasks.stopAll().catch(() => {});
     await workspace.close();
@@ -365,5 +445,6 @@ board_upload.offset_address = 0x100000
     await fs.rm(root, { recursive: true, force: true });
     await fs.rm(toolsDir, { recursive: true, force: true });
     await fs.rm(journalRoot, { recursive: true, force: true });
+    await fs.rm(snapshotRoot, { recursive: true, force: true });
   }
 }
