@@ -16,6 +16,7 @@ const root = "A:/aether-review-fixture";
 const diskFiles: Record<string, string> = {};
 let saved = 0;
 let written = 0;
+let accepted = 0;
 const starts: { provider: string; options: Record<string, string> }[] = [];
 let sequence = 0;
 const recovery = { save: async () => {}, list: async () => [], read: async () => { throw new Error("no draft"); }, clear: async () => true, discard: async () => true };
@@ -32,7 +33,7 @@ const bridge = {
     files: {
       listing: async () => ({ files: { ...diskFiles }, directories: [] }),
       createFile: async () => {}, createDirectory: async () => {}, rename: async () => {}, trash: async () => {},
-      accept: async () => {},
+      accept: async () => { accepted++; },
       write: async (name: string, text: string, expected: string | null) => {
         const current = Object.hasOwn(diskFiles, name) ? diskFiles[name] : null;
         if (current !== expected) throw new Error("文件内容在预览后已再次改变：" + name);
@@ -83,7 +84,7 @@ function reset() {
   useDisk.getState().adopt({ root, context: { project, components: [], wires: [], files: { ...initial }, capabilities }, directories: [] });
   useDisk.setState({ environments: [{ name: "env-a", default: true }, { name: "env-b", default: false }], environment: "env-a", tasks: [], starting: false, error: "" });
   useProjectFiles.getState().close();
-  starts.length = 0; saved = 0; written = 0;
+  starts.length = 0; saved = 0; written = 0; accepted = 0;
 }
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function waitForReview() {
@@ -198,6 +199,18 @@ try {
   assert.equal(starts.length, 1);
   assert.equal(written, 0);
   check("an unchanged project builds directly without a review");
+
+  // --- An external write that exactly matches the buffer has no visible diff, but the host baseline
+  //     must advance too; otherwise the whole-project save would still refuse it.
+  reset();
+  useStudio.setState((state) => ({ files: { ...state.files, "platformio.ini": "identical external write\n" } }));
+  diskFiles["platformio.ini"] = "identical external write\n";
+  const identical = await useDisk.getState().build("platformio.build");
+  assert.equal(useProjectFiles.getState().dialog, null);
+  assert.equal(identical.provider, "platformio.build");
+  assert.equal(starts.length, 1);
+  assert.ok(accepted > 0, "the host baseline was advanced for the matching external write");
+  check("a matching external write advances the host baseline without a review");
 
   console.log("PASS build review: " + passed + " checks; external edits are re-read per file, conflicts need explicit choices, cancel creates no task, and the captured environment/port are never swapped");
 } finally {

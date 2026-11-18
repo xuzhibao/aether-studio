@@ -191,9 +191,16 @@ export const useDisk = create<DiskState>((set, get) => {
     const files = useStudio.getState().files;
     const synced = { ...get().synced };
     // A file that already matches the buffer needs no manual decision.
-    for (const [name, text] of Object.entries(listing.files)) if (Object.hasOwn(files, name) && files[name] === text) synced[name] = text;
+    const matched: string[] = [];
+    for (const [name, text] of Object.entries(listing.files)) if (Object.hasOwn(files, name) && files[name] === text) {
+      if (synced[name] !== text) matched.push(name);
+      synced[name] = text;
+    }
     set({ directories: listing.directories, diskFiles: listing.files, synced, error: "" });
     recompute();
+    // Advance the host baseline for the same files: the buffer already equals the disk, and without
+    // this a whole-project save would still refuse the external write as an unaccepted change.
+    for (const name of matched) await desktop().workspace.files.accept(name).catch(() => {});
   },
   acceptDisk: async (file) => {
     const change = diskChanges().find((item) => item.file === file);
