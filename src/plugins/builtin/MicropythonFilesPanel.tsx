@@ -24,11 +24,12 @@ export function MicropythonFilesPanel() {
   const [note, setNote] = useState("");
   const [downloading, setDownloading] = useState("");
   const [busy, setBusy] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const sequence = useRef(0);
   const current = useRef({ port: "", path: "/" });
   current.current = { port, path };
   const api = typeof window === "undefined" ? undefined : window.aether?.micropython;
-  const busyNow = loading || busy;
+  const busyNow = loading || busy || choosing;
 
   const loadPorts = useCallback(async () => {
     const serial = typeof window === "undefined" ? undefined : window.aether?.serial;
@@ -127,9 +128,10 @@ export function MicropythonFilesPanel() {
         <button type="button" data-micropython-files-up className="btn px-2 py-1 text-[10px]" disabled={!listing || path === "/" || busyNow} onClick={() => void open(port, parentOf(path))}><ArrowUp size={10} /> 上一级</button>
         <span data-micropython-files-path className="font-mono text-[11px] text-[#26282C]">{path}</span>
         <button type="button" className="btn ml-auto px-2 py-1 text-[10px]" disabled={!port.trim() || busyNow} onClick={() => void open(port, path)}><RefreshCw size={10} /> 刷新目录</button>
-        {busyNow && <button type="button" data-micropython-files-cancel className="btn px-2 py-1 text-[10px]" onClick={() => void cancel()}><X size={10} /> 取消</button>}
+        {busyNow && !choosing && <button type="button" data-micropython-files-cancel className="btn px-2 py-1 text-[10px]" onClick={() => void cancel()}><X size={10} /> {busy ? "取消下载" : "取消读取"}</button>}
       </div>
       {loading && <p role="status" className="mt-2 text-[10px] text-[#90969E]">正在读取 {path} …</p>}
+      {choosing && <p role="status" data-micropython-files-choosing className="mt-2 text-[10px] text-[#90969E]">请在系统保存对话框中选择位置或取消；在对话框关闭前不会写入任何本地文件。</p>}
       {!listing && !loading && !error && <p className="mt-2 text-[10px] text-[#90969E]">输入端口后按 Enter 或点“打开根目录”开始；不会自动挑选端口。</p>}
       {listing && !loading && entries.length === 0 && <p data-micropython-files-empty role="status" className="mt-2 rounded bg-[#F8F9FB] p-2 text-[10px] text-[#90969E]">该目录为空。</p>}
       {entries.length > 0 && <ul className="mt-2 divide-y divide-[#F0F2F5] rounded-md border border-[#E9EBEE]">

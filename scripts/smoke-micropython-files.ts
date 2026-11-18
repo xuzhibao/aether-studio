@@ -39,10 +39,13 @@ try {
   ]);
   assert.equal(listing.entries[4].path, "/数据 记录.txt", "a child path is the validated parent plus the literal name");
   assert.deepEqual(parseMicropythonListing("ls :/空 目录\r\n", "COM_TEST", "/空 目录").entries, [], "an empty directory has no entry lines");
-  assert.deepEqual(parseMicropythonListing("           7  leading  space.txt\r\n", "COM_TEST", "/").entries, [{ name: " leading  space.txt", path: "/ leading  space.txt", type: "file", size: 7 }], "leading and repeated spaces are part of the name");
-  assert.throws(() => parseMicropythonListing("this is not an entry\n", "COM_TEST", "/"), /无法解析/);
-  assert.throws(() => parseMicropythonListing("           0 lib/\n          12 ../escape\n", "COM_TEST", "/"), /条目/);
-  assert.throws(() => parseMicropythonListing("ls :/lib\n           1 helper.py\n", "COM_TEST", "/"), /目录与请求不一致/, "a header for another directory must not be shown");
+  assert.throws(() => parseMicropythonListing("", "COM_TEST", "/"), /目录头/, "empty output must not look like an empty directory");
+  assert.throws(() => parseMicropythonListing("\r\n\r\n", "COM_TEST", "/"), /目录头/, "blank output must not look like an empty directory");
+  assert.throws(() => parseMicropythonListing("ls :/\r\nls :/lib\r\n", "COM_TEST", "/"), /多个目录头/, "two headers are ambiguous");
+  assert.deepEqual(parseMicropythonListing("ls :/\r\n           7  leading  space.txt\r\n", "COM_TEST", "/").entries, [{ name: " leading  space.txt", path: "/ leading  space.txt", type: "file", size: 7 }], "leading and repeated spaces are part of the name");
+  assert.throws(() => parseMicropythonListing("ls :/\r\nthis is not an entry\r\n", "COM_TEST", "/"), /无法解析/);
+  assert.throws(() => parseMicropythonListing("ls :/\r\n           0 lib/\r\n          12 ../escape\r\n", "COM_TEST", "/"), /条目/);
+  assert.throws(() => parseMicropythonListing("ls :/lib\r\n           1 helper.py\r\n", "COM_TEST", "/"), /未返回预期的目录头/, "a header for another directory must not be shown");
   console.log("PASS micropython files: ls parser keeps spaces/Chinese/empty directories and refuses junk or a mismatched header");
 
   // ---- host-side path validation and exact argv ----
@@ -127,8 +130,13 @@ try {
   assert.equal(await fs.stat(cancelledTarget).catch(() => null), null);
   assert.deepEqual(await downloads(), startDownloads, "cancellation removes its temp directory");
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
+  // The process is really gone before the promise settles: nothing is written late and the port is free.
+  await new Promise((resolve) => setTimeout(resolve, 1300));
+  assert.equal(await fs.stat(cancelledTarget).catch(() => null), null, "a cancelled transfer never writes its target later");
+  assert.deepEqual(await downloads(), startDownloads, "a cancelled transfer creates no temp directory later");
   assert.doesNotThrow(() => { acquirePort("COM_TEST", "monitor"); releasePort("COM_TEST"); }, "cancellation releases the shared port lease");
-  console.log("PASS micropython files: cancellation kills mpremote, cleans temp and releases the port lease");
+  assert.ok((await service.list("COM_TEST", "/")).entries.length > 0, "the port can be used again immediately after a cancel");
+  console.log("PASS micropython files: cancellation kills mpremote, settles after exit, cleans temp and releases the port lease");
 
   // ---- the shared port lease blocks a second reader and is held through the operation ----
   acquirePort("COM_TEST", "task");
@@ -143,9 +151,31 @@ try {
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "garbage";
   await assert.rejects(() => service.list("COM_TEST", "/"), /无法解析/);
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "mismatch";
-  await assert.rejects(() => service.list("COM_TEST", "/"), /目录与请求不一致/);
+  await assert.rejects(() => service.list("COM_TEST", "/"), /目录头/);
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
   console.log("PASS micropython files: unparseable or mismatched ls output is refused with an explicit error");
+
+  // ---- a multi-byte Chinese name split across two writes is decoded intact ----
+  process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "split";
+  const split = await service.list("COM_TEST", "/");
+  assert.deepEqual(split.entries, [{ name: "数据 记录.txt", path: "/数据 记录.txt", type: "file", size: 35 }], "a UTF-8 sequence split across chunks must not corrupt the name");
+  process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
+  console.log("PASS micropython files: a multi-byte name split across pipe chunks is decoded correctly");
+
+  // ---- a timeout settles only after the process is gone, with no late write and a free port ----
+  const shortService = new MicropythonFilesService(tools, { downloadTimeoutMs: 600 });
+  process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "slow";
+  const timeoutTarget = path.join(root, "timeout.bin");
+  shortService.issueTarget(timeoutTarget);
+  await assert.rejects(() => shortService.download("COM_TEST", "/main.py", timeoutTarget), /超时/);
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  assert.equal(await fs.stat(timeoutTarget).catch(() => null), null, "a timed-out transfer never writes its target later");
+  assert.deepEqual(await downloads(), startDownloads, "a timed-out transfer creates no temp directory later");
+  process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
+  assert.doesNotThrow(() => { acquirePort("COM_TEST", "monitor"); releasePort("COM_TEST"); }, "a timeout releases the shared port lease");
+  assert.ok((await shortService.list("COM_TEST", "/")).entries.length > 0, "the port can be used again right after a timeout");
+  await shortService.dispose();
+  console.log("PASS micropython files: a timeout settles after the process exits, leaves no late write and releases the port");
 
   // ---- dispose cleans a temp directory left behind by an interrupted transfer ----
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "slow";

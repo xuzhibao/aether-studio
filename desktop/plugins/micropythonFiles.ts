@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  MICROPYTHON_FILES_OWNER, micropythonDownloadArgs, micropythonEntryName, micropythonListArgs, micropythonRemotePath,
+  MICROPYTHON_FILES_OWNER, micropythonChildPath, micropythonDownloadArgs, micropythonEntryName, micropythonListArgs, micropythonRemotePath,
   type MicropythonDownloadResult, type MicropythonFileEntry, type MicropythonListing,
 } from "../../shared/micropython";
 import { withPort } from "../portLease";
@@ -26,28 +26,36 @@ export const cancelled = () => Object.assign(new Error("操作已取消"), { nam
  * Anything else is reported instead of being guessed at.
  */
 export function parseMicropythonListing(text: string, port: string, remotePath: string): MicropythonListing {
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\r$/, ""));
+  // A trailing newline is normal; any other empty line means the output is not a clean listing.
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  if (!lines.length) throw new Error("mpremote 没有返回目录头，已停止（不会把空输出当空目录）");
+  // mpremote is verbose by default and prints exactly one `ls :<path>` header before the entries.
+  const expected = "ls :" + remotePath;
+  if (lines[0] !== expected) throw new Error("mpremote 未返回预期的目录头 " + JSON.stringify(expected) + "：" + JSON.stringify(lines[0]) + "，已停止（不会显示其他目录的内容）");
   const entries: MicropythonFileEntry[] = [];
-  let header = "";
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/\r$/, "");
-    if (!line.trim()) continue;
-    // mpremote is verbose by default: `fs ls :/dir` prints this one header line before the entries.
-    if (line.startsWith("ls :")) { header = line; continue; }
-    if (header && header !== "ls :" + remotePath) throw new Error("mpremote 报告的目录与请求不一致：" + JSON.stringify(header) + "，已停止（不会显示其他目录的内容）");
+  for (const line of lines.slice(1)) {
+    if (!line) throw new Error("mpremote 输出包含空行，无法可靠解析目录内容");
+    if (line.startsWith("ls :")) throw new Error("mpremote 输出了多个目录头：" + JSON.stringify(line) + "，已停止");
     if (line.length < 14) throw new Error("无法解析 mpremote fs ls 的输出：" + JSON.stringify(line));
     const sizeField = line.slice(0, 12);
     if (!/^\s*\d+$/.test(sizeField) || line[12] !== " ") throw new Error("无法解析 mpremote fs ls 的输出：" + JSON.stringify(line));
     const rest = line.slice(13);
     const directory = rest.endsWith("/");
     const name = micropythonEntryName(directory ? rest.slice(0, -1) : rest);
-    entries.push({ name, path: (remotePath === "/" ? "/" : remotePath + "/") + name, type: directory ? "directory" : "file", size: Number(sizeField) });
+    entries.push({ name, path: micropythonChildPath(remotePath, name), type: directory ? "directory" : "file", size: Number(sizeField) });
   }
   return { port: port.trim(), path: remotePath, entries };
 }
 
 interface CommandResult { code: number; stdout: string; stderr: string }
 
-/** Spawns mpremote with literal argv (no shell), honors cancellation and a hard timeout. */
+/**
+ * Spawns mpremote with literal argv (no shell). A cancel or timeout only records the reason and sends
+ * the kill signal: the promise settles on the child's `close`, so the port lease is released and the
+ * temp file is removed only after the process is actually gone. The SIGKILL upgrade timer is cleared
+ * on close as well, so no late kill can reach a recycled pid.
+ */
 function run(executable: string, argv: string[], signal: AbortSignal, timeoutMs: number): Promise<CommandResult> {
   return new Promise<CommandResult>((resolve, reject) => {
     if (signal.aborted) return reject(cancelled());
@@ -57,26 +65,43 @@ function run(executable: string, argv: string[], signal: AbortSignal, timeoutMs:
       env: { ...process.env, PYTHONIOENCODING: "utf-8" },
     });
     let stdout = ""; let stderr = ""; let settled = false;
+    let stopError: Error | null = null;
+    let upgrade: ReturnType<typeof setTimeout> | undefined;
     const kill = (sig: NodeJS.Signals) => {
       if (!child.pid) return;
       if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }).on("error", () => {});
       else { try { process.kill(-child.pid, sig); } catch { /* already gone */ } }
     };
-    const finish = (error: Error | null, result?: CommandResult) => {
+    const settle = (error: Error | null, result?: CommandResult) => {
       if (settled) return; settled = true;
-      clearTimeout(timer); signal.removeEventListener("abort", aborted);
-      if (error) reject(error); else resolve(result!);
+      clearTimeout(timer); clearTimeout(upgrade);
+      signal.removeEventListener("abort", aborted);
+      if (stopError) reject(stopError); else if (error) reject(error); else resolve(result!);
     };
-    const aborted = () => { kill("SIGTERM"); setTimeout(() => kill("SIGKILL"), 1200).unref?.(); finish(cancelled()); };
+    // Record the reason and ask the tree to exit; settlement waits for `close`.
+    const stop = (reason: Error) => {
+      if (settled || stopError) return;
+      stopError = reason;
+      kill("SIGTERM");
+      upgrade = setTimeout(() => kill("SIGKILL"), 1200);
+      upgrade.unref?.();
+    };
+    const aborted = () => stop(cancelled());
     const timer = setTimeout(() => {
-      kill("SIGKILL");
-      finish(new Error("mpremote 命令超时（" + Math.round(timeoutMs / 1000) + " 秒）：" + argv.join(" ") + "。设备可能没有响应，可重试或先断开串口监视器。"));
+      stop(new Error("mpremote 命令超时（" + Math.round(timeoutMs / 1000) + " 秒）：" + argv.join(" ") + "。设备可能没有响应，可重试或先断开串口监视器。"));
     }, timeoutMs);
     signal.addEventListener("abort", aborted, { once: true });
-    child.stdout?.on("data", (chunk: Buffer) => { stdout = (stdout + chunk.toString("utf8")).slice(-MAX_CAPTURE); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString("utf8")).slice(-MAX_CAPTURE); });
-    child.on("error", (error) => finish(error));
-    child.on("close", (code) => finish(null, { code: code ?? -1, stdout, stderr }));
+    // String decoding keeps a multi-byte Chinese character split across chunks intact.
+    child.stdout?.setEncoding("utf8"); child.stderr?.setEncoding("utf8");
+    const collect = (target: "stdout" | "stderr") => (text: string) => {
+      if (settled) return;
+      if (target === "stdout") stdout += text; else stderr += text;
+      if (stdout.length + stderr.length > MAX_CAPTURE) stop(new Error("mpremote 输出超过上限（" + MAX_CAPTURE + " 字符），已停止；不会把截断的内容当目录列表"));
+    };
+    child.stdout?.on("data", collect("stdout"));
+    child.stderr?.on("data", collect("stderr"));
+    child.on("error", (error) => settle(error));
+    child.on("close", (code) => settle(null, { code: code ?? -1, stdout, stderr }));
   });
 }
 
@@ -95,7 +120,7 @@ export class MicropythonFilesService {
   private running = new Set<Promise<unknown>>();
   private issued = new Set<string>();
   private temporary = new Set<string>();
-  constructor(private tools: ToolService) {}
+  constructor(private tools: ToolService, private options: { listTimeoutMs?: number; downloadTimeoutMs?: number } = {}) {}
 
   /** Records a path returned by the host save dialog; a download may write only one of these. */
   issueTarget(file: string) {
@@ -131,7 +156,7 @@ export class MicropythonFilesService {
     try {
       return await withPort(port, MICROPYTHON_FILES_OWNER, async () => {
         const command = resolveMicropythonCommand(this.tools);
-        const result = await run(command.executable, [...command.prefix, ...args], controller.signal, LIST_TIMEOUT_MS);
+        const result = await run(command.executable, [...command.prefix, ...args], controller.signal, this.options.listTimeoutMs ?? LIST_TIMEOUT_MS);
         if (result.code !== 0) throw new Error("读取设备目录失败（" + target + "）· " + failureText(result));
         return parseMicropythonListing(result.stdout, port, target);
       });
@@ -154,10 +179,12 @@ export class MicropythonFilesService {
         this.temporary.add(directory);
         const temporary = path.join(directory, "download.bin");
         const command = resolveMicropythonCommand(this.tools);
-        const result = await run(command.executable, [...command.prefix, ...micropythonDownloadArgs(port, remote, temporary)], controller.signal, DOWNLOAD_TIMEOUT_MS);
+        const result = await run(command.executable, [...command.prefix, ...micropythonDownloadArgs(port, remote, temporary)], controller.signal, this.options.downloadTimeoutMs ?? DOWNLOAD_TIMEOUT_MS);
         if (result.code !== 0) throw new Error("从设备下载失败（" + remote + "）· " + failureText(result));
         const stat = await fs.stat(temporary).catch(() => null);
         if (!stat?.isFile()) throw new Error("mpremote 报告成功，但没有生成本地文件；未写入目标位置");
+        // A cancel that arrives before delivery starts leaves no target at all.
+        if (controller.signal.aborted) throw cancelled();
         // Delivered by an exclusive copy so an existing local file is never overwritten.
         try { await fs.copyFile(temporary, resolved, fs.constants.COPYFILE_EXCL); }
         catch (error) {
@@ -166,6 +193,9 @@ export class MicropythonFilesService {
         }
         // The issued path is consumed only after a successful delivery, so a failed retry can reuse it.
         this.issued.delete(resolved);
+        // The copy is the commit point and cannot be rolled back reliably: report the real outcome
+        // instead of letting a late cancel look like a success or like nothing was written.
+        if (controller.signal.aborted) throw new Error("已取消，但复制已提交，文件已写入：" + resolved + "（未回滚）。");
         return { target: resolved, size: stat.size };
       });
     } finally {

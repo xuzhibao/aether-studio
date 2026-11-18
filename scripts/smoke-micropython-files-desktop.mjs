@@ -39,7 +39,14 @@ try {
   const command = async (text) => { await page.keyboard.press("Control+k"); await page.getByPlaceholder("Search commands, files and actions…").fill(text); await page.keyboard.press("Enter"); };
   const panel = page.locator("[data-micropython-files]");
   const pathLabel = page.locator("[data-micropython-files-path]");
-  const row = (name) => page.locator("[data-micropython-files-file], [data-micropython-files-dir]").filter({ hasText: name }).first();
+  const download = async (remote) => {
+    const button = page.locator('[data-micropython-files-download="' + remote + '"]');
+    for (let n = 0; n < 200 && await button.isDisabled(); n++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(await button.isDisabled(), false, "download button must be enabled: " + remote);
+    // The panel locks itself as soon as the save dialog opens, so a DOM click avoids Playwright's
+    // actionability wait racing the disabled state; a user click is unaffected.
+    await button.evaluate((element) => element.click());
+  };
   const settle = async (pathText) => {
     for (let n = 0; n < 100; n++) {
       if ((await pathLabel.textContent()) === pathText && !(await page.locator("[data-micropython-files]").getByRole("status").filter({ hasText: "正在读取" }).count())) return;
@@ -81,7 +88,7 @@ try {
   // Download through the host save dialog into a new local file.
   const target = path.join(exportsDir, "记录 copy.txt");
   await saveTarget(target);
-  await page.locator('[data-micropython-files-download="/数据 记录.txt"]').click();
+  await download("/数据 记录.txt");
   await panel.getByText(/已保存 数据 记录\.txt/).waitFor({ timeout: 30000 });
   assert.equal(await fs.readFile(target, "utf8"), "temperature,pressure\r\n21.5,1013.2\r\n");
   assert.deepEqual((await fs.readdir(os.tmpdir())).filter((name) => name.startsWith("aether-micropython-download-")), downloadsBefore, "no private temp directory remains");
@@ -91,7 +98,7 @@ try {
   const keep = path.join(exportsDir, "keep.txt");
   await fs.writeFile(keep, "KEEP");
   await saveTarget(keep);
-  await page.locator('[data-micropython-files-download="/main.py"]').click();
+  await download("/main.py");
   await panel.getByText(/目标文件已存在，未覆盖/).waitFor({ timeout: 30000 });
   assert.equal(await fs.readFile(keep, "utf8"), "KEEP");
   console.log("PASS Electron MicroPython files: an existing local file is refused, not overwritten");
@@ -100,7 +107,7 @@ try {
   await setMode("fail");
   const broken = path.join(exportsDir, "broken.bin");
   await saveTarget(broken);
-  await page.locator('[data-micropython-files-download="/main.py"]').click();
+  await download("/main.py");
   await panel.getByText(/退出码 5/).waitFor({ timeout: 30000 });
   assert.equal(await fs.stat(broken).catch(() => null), null);
   assert.deepEqual((await fs.readdir(os.tmpdir())).filter((name) => name.startsWith("aether-micropython-download-")), downloadsBefore);
@@ -110,7 +117,7 @@ try {
   await setMode("slow");
   const slowTarget = path.join(exportsDir, "slow.bin");
   await saveTarget(slowTarget);
-  await page.locator('[data-micropython-files-download="/main.py"]').click();
+  await download("/main.py");
   await page.locator('[data-micropython-files-download="/main.py"]').getByText("下载中…").waitFor({ timeout: 30000 });
   await page.locator("[data-micropython-files-cancel]").click();
   await panel.getByText(/操作已取消/).waitFor({ timeout: 30000 });
@@ -121,7 +128,7 @@ try {
   // Abnormal mpremote output is refused instead of displayed.
   await setMode("mismatch");
   await page.locator("[data-micropython-files] .btn").filter({ hasText: "刷新目录" }).click();
-  await panel.getByText(/目录与请求不一致/).waitFor({ timeout: 30000 });
+  await panel.getByText(/多个目录头|目录头/).waitFor({ timeout: 30000 });
   await setMode("ok");
   console.log("PASS Electron MicroPython files: a mismatched ls header is refused with an explicit error");
 

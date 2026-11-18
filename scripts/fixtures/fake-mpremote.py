@@ -83,7 +83,20 @@ def filesystem_command(rest):
         if path not in tree:
             fail("ls: " + path + ": No such file or directory.", 3)
         if fs_mode == "garbage":
+            say("ls :" + path)
             say("not an ls line at all")
+            return 0
+        if fs_mode == "split":
+            # One Chinese name written in two chunks with the split inside a multi-byte character.
+            say("ls :" + path)
+            line = "{:12} {}".format(35, "数据 记录.txt").encode("utf-8")
+            cut = 13 + 2
+            sys.stdout.flush()
+            os.write(sys.stdout.fileno(), line[:cut])
+            sys.stdout.flush()
+            time.sleep(0.2)
+            os.write(sys.stdout.fileno(), line[cut:] + b"\n")
+            sys.stdout.flush()
             return 0
         say("ls :" + path)
         if fs_mode == "mismatch":
