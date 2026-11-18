@@ -1,6 +1,7 @@
 import type { ProjectContext } from "../src/plugins/api";
 import type { ToolsAPI } from "./tools";
 import type { EspInspectResult, EspPreflightResult } from "./esp";
+import type { MicropythonFilesAPI } from "./micropython";
 export interface DiskWorkspace { root: string; context: ProjectContext; directories: string[] }
 export interface DiskListing { files: Record<string, string>; directories: string[] }
 /** One unsaved editing session, stored outside the project folder while the user keeps working. */
@@ -60,6 +61,7 @@ export interface DesktopAPI {
   tools: ToolsAPI;
   language: import("./language").LanguageAPI;
   flash: import("./flash").FlashAPI;
+  micropython: MicropythonFilesAPI;
   runtime: "electron";
   window: (action: "close" | "minimize" | "maximize") => Promise<void>;
   files: { export: (name: string, content: string) => Promise<string | null>; import: () => Promise<string | null> };

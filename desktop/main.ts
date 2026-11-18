@@ -19,6 +19,7 @@ import { createEspUploadProvider } from "./esp/upload";
 import { FlashService } from "./flash";
 import { createEsptoolRunner } from "./plugins/esptool";
 import { createMicropythonRunProvider } from "./plugins/micropython";
+import { MicropythonFilesService } from "./plugins/micropythonFiles";
 import { DeviceLease } from "./deviceLock";
 import type { ProjectContext } from "../src/plugins/api";
 
@@ -70,6 +71,8 @@ tasks.register(platformio.platformioBuild); tasks.register(platformio.platformio
 tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => path.join(app.getPath("userData"), "esp-journal") }));
 // mpremote runs one saved project script; it shares the same port lease and task log/cancel path.
 tasks.register(createMicropythonRunProvider(tools, workspace));
+// Read-only on-board file listing and single-file download; it shares the same port lease.
+const micropythonFiles = new MicropythonFilesService(tools);
 language.register(createClangdProvider(tools));
 // Flash backup/restore shares the single COM port with the monitor and upload tasks.
 const esptool = createEsptoolRunner(tools);
@@ -92,7 +95,7 @@ const flash = new FlashService(esptool, {
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { await tasks.stopAll(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
+const beforeSwitch = async () => { await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -171,6 +174,15 @@ function routes() {
     catch (error) { lease.release("task"); throw error; }
   });
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
+  // Read-only board files: list one directory, or download one file to a host-chosen new local file.
+  handle("micropython:files:list", (port: string, path: string) => micropythonFiles.list(port, path));
+  handle("micropython:files:chooseDownloadPath", async (suggestedName: string) => {
+    const name = typeof suggestedName === "string" && suggestedName && !/[\\/\x00-\x1f]/.test(suggestedName) ? suggestedName : "device-file.bin";
+    const result = await dialog.showSaveDialog(window, { title: "保存设备文件", defaultPath: path.join(app.getPath("documents"), name), properties: ["showOverwriteConfirmation", "createDirectory"] });
+    return result.canceled || !result.filePath ? null : micropythonFiles.issueTarget(result.filePath);
+  });
+  handle("micropython:files:download", (port: string, path: string, target: string) => micropythonFiles.download(port, path, target));
+  handle("micropython:files:cancel", () => micropythonFiles.cancel());
   handle("tasks:environments", (provider: string) => tasks.environments(provider));
   handle("tasks:list", () => tasks.list());
   handle("serial:list", () => serial.list());
@@ -205,7 +217,7 @@ app.on("before-quit", (event) => {
   void enqueue(async () => {
     // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
     if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
-    await Promise.all([tasks.stopAll(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+    await Promise.all([tasks.stopAll(), micropythonFiles.dispose(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
   }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
