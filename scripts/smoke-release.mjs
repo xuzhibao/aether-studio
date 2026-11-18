@@ -58,7 +58,7 @@ const launch = async () => {
 try {
   await launch();
   await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
-  await page.getByRole('dialog').getByText('本地内置插件 · 14 / 14 已启用', { exact: true }).waitFor();
+  await page.getByRole('dialog').getByText('本地内置插件 · 16 / 16 已启用', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   const preferences = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences());
   assert.equal(preferences.contextIsolation, true); assert.equal(preferences.nodeIntegration, false); assert.equal(preferences.sandbox, true);
@@ -274,7 +274,7 @@ try {
     const appBundle = path.resolve(executable, '../../..');
     await promisify(execFile)('codesign', ['--verify', '--deep', '--strict', appBundle]);
   }
-  console.log(`PASS packaged ${process.platform}/${process.arch}: v${version}, 14 plugins, isolated renderer, actual project picker I/O, real file create/rename/trash, external add/modify/delete review kept another unsaved buffer, dirty rename save/cancel/discard, dirty delete confirmation, directory trash, tool path survived restart, native PTY write and shutdown`);
+  console.log(`PASS packaged ${process.platform}/${process.arch}: v${version}, 16 plugins, isolated renderer, actual project picker I/O, real file create/rename/trash, external add/modify/delete review kept another unsaved buffer, dirty rename save/cancel/discard, dirty delete confirmation, directory trash, tool path survived restart, native PTY write and shutdown`);
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: resultsDir + '/release-failure.png', fullPage: true }); await fs.writeFile(resultsDir + '/release-failure.txt', String(error.stack) + '\n' + errors.join('\n') + '\n' + await page.locator('body').innerText()); }
   throw error;
