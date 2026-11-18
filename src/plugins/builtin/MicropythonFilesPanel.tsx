@@ -26,8 +26,6 @@ export function MicropythonFilesPanel() {
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const sequence = useRef(0);
-  const current = useRef({ port: "", path: "/" });
-  current.current = { port, path };
   const api = typeof window === "undefined" ? undefined : window.aether?.micropython;
   const busyNow = loading || busy || choosing;
 
