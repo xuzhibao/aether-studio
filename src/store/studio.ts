@@ -1,4 +1,4 @@
-import { useDisk } from "./disk";
+import { useDisk, isActionCancelled } from "./disk";
 import { useTransport } from "./transport";
 import { readLayout, writeLayout, defaultLayout } from "../lib/workspacePreferences";
 import { create } from "zustand";
@@ -435,7 +435,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         const lines = toolchain.check(s.getProjectContext());
         set({ dockOpen: true, dockTab: "console", console: [...s.console, ...lines.map((text): ConsoleLine => ({ id: uid("c"), source: "Build", text, tone: "muted" }))] });
       }
-    } catch (error) { useDisk.setState({ error: String(error) }); reportError(error); }
+    } catch (error) {
+      // A pre-build review cancelled by the user is not a failure: nothing was created or flashed.
+      if (isActionCancelled(error)) { get().addToast({ title: "已取消构建", detail: (error as Error).message, tone: "default" }); return; }
+      useDisk.setState({ error: String(error) });
+      reportError(error);
+    }
   },
   setAgentDraft: (v) => set({ agentDraft: v }),
   setAgent: (id) => { get().cancelAgent(); set({ activeAgentId: id }); },

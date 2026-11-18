@@ -8,6 +8,19 @@ import { decodeProject, encodeProject } from "../../shared/projectFormat";
 import { recoveryRevision, recoveryRestoredRoot, flushRecoveryDraft, noteRecoverySaved, noteRecoverySavedRevision, noteRecoveryDiscarded, recoveryOnRootOpened, startRecovery } from "./recovery";
 export type DiskChangeKind = "modified" | "deleted" | "added";
 export interface DiskChange { file: string; kind: DiskChangeKind; disk: string | null; local: string | null; dirty: boolean }
+/** A build or upload the user requested but that stopped before creating a task (pre-build review cancelled). */
+export class ActionCancelled extends Error {
+  constructor(message: string) { super(message); this.name = "ActionCancelled"; }
+}
+export const isActionCancelled = (error: unknown) => error instanceof ActionCancelled || (typeof error === "object" && error !== null && (error as { name?: unknown }).name === "ActionCancelled");
+export interface BuildReviewIntent { root: string; provider: string; environment: string; options: Record<string, string> }
+let pendingReview: { intent: BuildReviewIntent; resolve: (choice: "continue" | "cancel") => void } | null = null;
+/** Called by the pre-build review dialog; resolving twice is a no-op. */
+export function finishBuildReview(choice: "continue" | "cancel") {
+  const pending = pendingReview;
+  pendingReview = null;
+  pending?.resolve(choice);
+}
 interface DiskState {
   root: string | null; changed: boolean; busy: boolean; starting: boolean; tasks: TaskSnapshot[]; error: string;
   environments: TaskEnvironment[]; environment: string;
@@ -65,6 +78,39 @@ export function recomputeDirty() {
   if (disk.root) void noteRecoverySaved(disk.root, recoveryRevision()).catch(() => {});
   return true;
 }
+
+/**
+ * Re-reads every pure external change so the original build can continue. A file that also has
+ * unsaved buffer edits is a conflict: it must be resolved explicitly (use disk version or keep local)
+ * before this function will proceed, and other buffers are never touched.
+ */
+export async function acceptReviewedDiskChanges() {
+  for (const item of diskChanges()) {
+    if (item.dirty) throw new Error("仍在冲突中的文件：" + item.file + "。请先选择保留磁盘版本或本地版本。");
+    await useDisk.getState().acceptDisk(item.file);
+  }
+  const remaining = diskChanges();
+  if (remaining.length) throw new Error("仍有文件差异未处理：" + remaining.map((item) => item.file).join("、") + "。请重新构建。");
+}
+
+/**
+ * Opens the existing per-file disk review before a build. It resolves only when the user either
+ * resolved every conflict and chose to continue, or cancelled. No task exists while it is open.
+ */
+function requestBuildReview(intent: BuildReviewIntent) {
+  return new Promise<"continue" | "cancel">((resolve) => {
+    pendingReview = { intent, resolve };
+    // Loaded on demand: the dialog module imports this store, so a static import would be a cycle.
+    void import("../plugins/builtin/projectFilesState").then(({ useProjectFiles }) => {
+      useProjectFiles.getState().open({ kind: "changes", build: { provider: intent.provider, environment: intent.environment } });
+    }).catch((error) => {
+      pendingReview = null;
+      useDisk.setState({ error: "无法打开构建前差异检查：" + String(error) });
+      resolve("cancel");
+    });
+  });
+}
+
 export const useDisk = create<DiskState>((set, get) => {
   const recompute = () => set({ changed: diskChanges().length > 0 });
   // Responses are tied to the project and refresh that requested them; a slower answer must not win.
@@ -79,6 +125,7 @@ export const useDisk = create<DiskState>((set, get) => {
     set({ root, changed: false, error: "", environments: [], environment: "", directories: directories ?? [], synced, diskFiles: synced, recoveryConflicts: [], recoveryHostConflicts: [], ...diskHostFiles(context) }); plugins.emit("project:opened", { root, id: project.id });
   },
   open: async () => {
+    if (get().starting) throw new Error("构建准备中，请先完成或取消构建前检查");
     set({ busy: true });
     const previous = get().root; const hadUnsaved = useStudio.getState().dirty;
     try {
@@ -92,6 +139,7 @@ export const useDisk = create<DiskState>((set, get) => {
     } finally { set({ busy: false }); }
   },
   saveAs: async () => {
+    if (get().starting) throw new Error("构建准备中，请先完成或取消构建前检查");
     set({ busy: true });
     const previous = get().root; const restored = recoveryRestoredRoot();
     const state = useStudio.getState(); const context = state.getProjectContext(); const revision = recoveryRevision();
@@ -117,7 +165,7 @@ export const useDisk = create<DiskState>((set, get) => {
       }
     } finally { set({ busy: false }); }
   },
-  reload: async () => { set({ busy: true }); const previous = get().root; try { get().adopt(await desktop().workspace.reload()); if (previous) await noteRecoveryDiscarded(previous); } finally { set({ busy: false }); } },
+  reload: async () => { if (get().starting) throw new Error("构建准备中，请先完成或取消构建前检查"); set({ busy: true }); const previous = get().root; try { get().adopt(await desktop().workspace.reload()); if (previous) await noteRecoveryDiscarded(previous); } finally { set({ busy: false }); } },
   save: async () => {
     const state = useStudio.getState(); const context = state.getProjectContext();
     const unresolved = get().recoveryConflicts.filter((file) => Object.hasOwn(context.files, file));
@@ -192,14 +240,15 @@ export const useDisk = create<DiskState>((set, get) => {
     const request = ++environmentRequest;
     const environments = await desktop().tasks.environments(provider);
     if (request !== environmentRequest || get().root !== root) return;
-    // While a task runs its environment is fixed; refreshing may update the list but never the selection.
-    if (get().tasks.some((task) => task.status === "running")) { set({ environments }); return; }
+    // While a task runs or a build is being reviewed its environment is fixed; refreshing may update the list but never the selection.
+    if (get().tasks.some((task) => task.status === "running") || get().starting) { set({ environments }); return; }
     const current = get().environment;
     const environment = environments.some((item) => item.name === current) ? current : (environments.find((item) => item.default) ?? environments[0])?.name ?? "";
     set({ environments, environment });
   },
   setEnvironment: (name) => {
     const state = get();
+    if (state.starting) throw new Error("构建准备中，请先完成或取消构建前检查");
     if (state.tasks.some((task) => task.status === "running")) throw new Error("任务运行中，请等待或取消后再切换环境");
     if (!state.environments.some((item) => item.name === name)) throw new Error("未知的构建环境：" + name);
     set({ environment: name });
@@ -212,17 +261,32 @@ export const useDisk = create<DiskState>((set, get) => {
     if (get().root === root && get().environments.some((item) => item.name === name)) set({ environment: name });
   },
   build: async (provider, options) => {
-    if (!get().root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
-    // Reserve the port for the whole release/start window so the monitor cannot reopen it before the task is registered.
-    set({ starting: true });
+    const root = get().root;
+    if (!root) throw new Error("请先使用 Save project to folder 保存到磁盘，或打开工程目录");
+    if (get().starting) throw new Error("上一个构建请求仍在准备中，请稍候");
+    if (get().tasks.some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
+    // The project, environment and options are captured now; the review cannot swap them later.
+    const environment = get().environment;
+    const requested = { ...(options ?? {}) };
+    // Reserve the port for the whole review/save/start window so the monitor cannot reopen it before the task is registered.
+    set({ starting: true, error: "" });
     try {
+      // Read the current disk text first; external edits are the reason a build used to stop with an error.
+      await get().refresh();
+      if (diskChanges().length) {
+        const choice = await requestBuildReview({ root, provider, environment, options: requested });
+        if (choice !== "continue") throw new ActionCancelled("已取消：未创建构建任务，也未触发烧录。");
+        if (get().root !== root) throw new ActionCancelled("工程目录在确认后发生变化，已取消；未创建任务。");
+        if (provider.startsWith("platformio.") && get().environment !== environment) throw new ActionCancelled("构建环境在确认后发生变化，已取消；未创建任务。");
+        const remaining = diskChanges();
+        if (remaining.length) throw new Error("构建前检查后磁盘再次变化：" + remaining.map((item) => item.file).join("、") + "。请重新构建。");
+      }
       await get().save();
       await useTransport.getState().disconnect();
       // Do not start an upload while a serial session still owns the port; PlatformIO would fail with a misleading error.
       if (useTransport.getState().status !== "disconnected") throw new Error("串口监视器尚未释放端口，已取消任务。请手动断开连接后重试。");
       // PlatformIO 的构建、上传和编译数据库共用当前选定的环境，避免产物和数据库串用。
-      const environment = get().environment;
-      const task = await desktop().tasks.start(provider, provider.startsWith("platformio.") && environment ? { ...options, environment } : options);
+      const task = await desktop().tasks.start(provider, provider.startsWith("platformio.") && environment ? { ...requested, environment } : requested);
       set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
       return task;
     } finally { set({ starting: false }); }

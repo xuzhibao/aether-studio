@@ -30,6 +30,8 @@ export interface PluginManifest {
   enabled: boolean;
   settingsHelp?: string;
   settings?: PluginSettingField[];
+  /** Values the user can fill into the settings form; prefilling never sends a request. */
+  presets?: { id: string; label: string; description?: string; settings: Record<string, string> }[];
 }
 export interface PartViewProps {
   comp: HwComponent;
@@ -56,6 +58,8 @@ export interface SimulationFrame {
 export interface AIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 export interface AIMessage { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: AIToolCall[]; tool_call_id?: string }
 export interface AgentResult { text: string; proposals?: EditProposal[]; toolRuns?: ToolRun[] }
+/** A real, minimal Chat Completions round trip made from the current form values. */
+export interface ProviderTestResult { model: string; latencyMs: number; detail: string }
 export interface TransportPort { path: string; label: string; detail?: string }
 export interface DeploymentResult { taskId: string }
 /** Optional port enumeration contributed by a deployment plugin, shown in the deploy dialog. */
@@ -87,7 +91,7 @@ export interface CapabilityMap {
   simulators: { id: string; name: string; start: (project: ProjectContext) => string[]; tick: (project: ProjectContext, elapsed: number) => SimulationFrame };
   agents: { id: string; name: string; run: (project: ProjectContext, messages: AIMessage[], signal?: AbortSignal, onTool?: (run: ToolRun) => void) => Promise<AgentResult> };
   tools: { id: string; name: string; description: string; parameters: Record<string, unknown>; execute: (args: unknown, project: ProjectContext) => { output: unknown; proposal?: EditProposal } | Promise<{ output: unknown; proposal?: EditProposal }> };
-  providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string>; chat: (messages: AIMessage[], tools: CapabilityMap["tools"][], signal?: AbortSignal) => Promise<AIMessage> };
+  providers: { id: string; name: string; complete: (messages: AIMessage[], signal?: AbortSignal) => Promise<string>; chat: (messages: AIMessage[], tools: CapabilityMap["tools"][], signal?: AbortSignal) => Promise<AIMessage>; test?: (signal?: AbortSignal) => Promise<ProviderTestResult> };
   templates: { id: string; name: string; description: string; board: string; create: () => ProjectWorkspace };
   projectFormats: { id: string; name: string; encode: (project: ProjectContext) => string; decode: (content: string) => ProjectContext };
   commands: { id: string; name: string; shortcut?: string; run: () => void | Promise<void> };

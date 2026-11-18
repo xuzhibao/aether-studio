@@ -10,6 +10,8 @@ export interface TaskProvider {
   inputExcludes?: string[]; recordName?: string;
   // Host-side behavior is declared by the provider: main only reacts to this generic kind.
   kind?: string;
+  // Runs before the process starts; a thrown error cancels the task and its note is written to the log.
+  beforeStart?: (root: string, executable: string, options: Record<string, string>) => Promise<string | null>;
   // Runs after a successful task (still inside the explicit user action); the result is stored in .aether/<record>.
   afterSuccess?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal) => Promise<unknown>;
   // Providers that build one selected environment at a time expose what the project currently declares.
@@ -43,9 +45,12 @@ export class TaskService {
     const environment = await this.resolveEnvironment(provider, root, executable, options.environment);
     const resolved = environment ? { ...options, environment } : options;
     const args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
+    // The preparation hook runs before the fingerprint and the process: a changed build input can
+    // invalidate cached artifacts, and a failure leaves no task behind.
+    const preparation = await provider.beforeStart?.(root, executable, resolved);
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [] };
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n" + (preparation ? "[aether] " + preparation + "\n" : ""), inputHash, toolVersion, options: { ...options }, artifacts: [] };
     const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
     let cancelled = false;
     let processClosed = false;

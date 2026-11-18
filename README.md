@@ -151,6 +151,25 @@ npm run desktop
 
 最近成功任务保存在 `.aether/build.json`，包含已加载文本与元数据的快照指纹、工具版本、所选环境、日志和产物校验和。构建前后若已加载的磁盘输入发生变化，不登记产物。此前成功任务的记录不代表当前未保存缓冲区已经构建。
 
+### 构建缓存与分区表
+
+PlatformIO 的增量构建可能沿用 `.pio/build/<环境名>/partitions.bin`：只修改 `platformio.ini` 或分区 CSV 后，旧分区表仍可能被烧录。Aether 在每次普通构建和上传前记录并核对以下输入：
+
+- `platformio.ini` 的完整内容（包含所选环境）；
+- 该环境实际使用的 `board_build.partitions`（环境段优先，其次 `[board:...]`；`default` 表示平台内置表）；
+- 分区 CSV 的内容哈希（文件名不变、只改内容也能发现）；
+- 工程根路径和环境名。
+
+输入与上次记录不同，或环境已有构建目录但没有记录时，只把该环境的 `partitions.bin`、`partitions.csv`、`bootloader.bin`、`firmware.bin`、`firmware.elf`、`firmware.map` 移动到 `.pio/build/.aether-stale/<环境名>/<时间戳>/`，不删除，也不动其他环境；下一次构建会重新生成。输入没有变化时不会清理任何缓存。记录保存在 `.aether/build-config.json`。分区表必须位于工程目录内；路径经过符号链接，或包含无法解析的 `${...}` 插值时，构建会在启动前拒绝。生成编译数据库不会清理构建缓存。
+
+构建前如果发现磁盘被外部修改（包括 `platformio.ini` 和分区 CSV），Aether 会打开逐文件的差异检查：
+
+- 只有磁盘修改、缓冲区没有改动的文件：点 **重新读取并继续** 会按文件重新载入，然后继续原来的构建或烧录。
+- 磁盘和缓冲区都改过的文件：必须逐个选择 **使用磁盘版本** 或 **保留本地并覆盖磁盘**；其他未保存的代码和电路不受影响。
+- **取消（不构建）** 不会保存、不会创建任务、不会烧录。
+
+确认后工程目录、构建环境和端口沿用打开检查时的值；期间发生变化会取消并提示重新构建，不会悄悄换目录、环境或端口。
+
 上传时点击 **Deploy to Device**，选择 **PlatformIO Upload**。对话框列出操作系统报告的串口路径、厂商和 VID/PID，点击一项填入，也可以手动输入未枚举到的路径；留空不会开始上传。这个列表不能判断开发板型号或固件，应用不会自动识别型号，也不会自动刷写未知设备。如果枚举与实际不符，拔插一次 USB 后点 **刷新端口**。
 
 上传前应用先断开当前串口监视器，并确认端口已释放；若关闭失败会取消任务并显示错误，而不是继续上传。插件执行 `platformio run -e ENV --target upload --upload-port PORT`，由 `platformio.ini` 决定芯片、构建和烧录方式。对话框显示真实任务状态、退出码和 PlatformIO 日志，区分运行中、成功、失败和已取消；成功仅表示命令退出码为 0，不代表固件已启动、设备已识别或启动日志正常。
@@ -237,7 +256,11 @@ ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s
 
 ## AI
 
-在 Plugins 配置 **OpenAI Compatible API** 的完整 Chat Completions URL、模型和 API Key。地址和模型保存到本地，Key 仅保留在当前会话。请求直接从渲染进程发出，服务需要允许对应来源的跨域访问；AI 服务不是 IDE 的必选依赖。
+在 Plugins 配置 **OpenAI Compatible API** 的完整 Chat Completions URL、模型和 API Key。地址和模型保存到本地，Key 仅保留在当前会话；关闭或重启应用后需要重新填写 Key。请求直接从渲染进程发出，服务需要允许对应来源的跨域访问；AI 服务不是 IDE 的必选依赖。
+
+设置中的 **测试连接** 使用表单当前的 endpoint、模型和 Key，发送一条只包含 `ping` 的最小 Chat Completions 请求（不包含任何工程内容），最多 15 秒，可随时点 **取消测试**。只有在收到并解析真实响应后才显示成功，并列出响应模型和耗时；HTTP 状态、无效 JSON、缺少消息和网络错误会显示为失败。测试不会保存成功状态、不会写入或持久化 Key，也不会修改工程。
+
+**填入 GOAT 端点** 只把 `https://api.commandcode.ai/provider/v1/chat/completions` 和 `deepseek/deepseek-v4.1-flash` 填进设置表单，模型名可以继续编辑；预填本身不会发起连接，仍需填写 Key 后点 **测试连接**。
 
 普通问答发送当前工程上下文；**Project Tools** 按模型请求读取文件或电路，并生成文件修改建议。修改须预览后应用，应用后仍需保存。文件改变后禁止用过期建议覆盖。Agent 不自动构建、上传或执行硬件操作。
 
@@ -278,9 +301,12 @@ npm run smoke:terminal
 npm run build
 npm run build:desktop
 npm run smoke:recovery
+npm run smoke:build-inputs
+npm run smoke:build-review
+npm run smoke:provider
 ```
 
-`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、无记录旧缓存、按环境隔离、路径边界、符号链接拒绝，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host

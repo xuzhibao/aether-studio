@@ -173,6 +173,41 @@ try {
   await dialog.getByRole("button", { name: /^OpenAI Compatible API/ }).click();
   await dialog.getByLabel("完整 Chat Completions URL").fill("https://agent-fixture.example/v1/chat/completions");
   await dialog.getByLabel("模型名称").fill("tool-fixture");
+  // "Test connection" uses the form's own adapter against a local route fixture (no online model).
+  const probeUrl = "https://agent-fixture.example/v1/probe";
+  const probeCors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "content-type,authorization" };
+  let probeStatus = 200;
+  const probeRequests = [];
+  await page.route(probeUrl, async (route) => {
+    if (route.request().method() === "OPTIONS") { await route.fulfill({ status: 204, headers: probeCors }); return; }
+    probeRequests.push({ body: route.request().postDataJSON(), authorization: route.request().headers()["authorization"] ?? "" });
+    if (probeStatus !== 200) { await route.fulfill({ status: probeStatus, headers: probeCors, json: { error: { message: "fixture rejected" } } }); return; }
+    await route.fulfill({ headers: probeCors, json: { model: "probe-response-model", choices: [{ message: { content: "pong" } }] } });
+  });
+  // The GOAT prefill only fills the form; it never connects by itself.
+  await dialog.getByRole("button", { name: "填入 GOAT 端点", exact: true }).click();
+  assert.equal(await dialog.getByLabel("完整 Chat Completions URL").inputValue(), "https://api.commandcode.ai/provider/v1/chat/completions");
+  assert.equal(await dialog.getByLabel("模型名称").inputValue(), "deepseek/deepseek-v4.1-flash");
+  await dialog.getByLabel("完整 Chat Completions URL").fill(probeUrl);
+  await dialog.getByLabel("模型名称").fill("probe-form-model");
+  await dialog.getByLabel("API Key（仅本次会话）").fill("smoke-session-key-123");
+  await dialog.locator('[data-provider-test]').getByText(/API Key 只保存在本次会话内存/).waitFor();
+  await dialog.getByRole("button", { name: "测试连接", exact: true }).click();
+  await dialog.locator('[data-provider-test="success"]').waitFor();
+  await dialog.getByText(/连接成功 · 响应模型 probe-response-model/).waitFor();
+  assert.equal(probeRequests.length, 1);
+  assert.equal(probeRequests[0].authorization, "Bearer smoke-session-key-123");
+  assert.equal(probeRequests[0].body.model, "probe-form-model");
+  assert.deepEqual(probeRequests[0].body.messages, [{ role: "user", content: "ping" }]);
+  assert.equal(Object.hasOwn(probeRequests[0].body, "tools"), false);
+  assert.ok(!(await page.evaluate(() => localStorage.getItem("aether.plugins.settings") ?? "")).includes("smoke-session-key-123"), "the session key is not persisted");
+  probeStatus = 401;
+  await dialog.getByRole("button", { name: "测试连接", exact: true }).click();
+  await dialog.locator('[data-provider-test="error"]').waitFor();
+  await dialog.getByText(/连接失败：AI API 请求失败：HTTP 401/).waitFor();
+  await dialog.getByLabel("完整 Chat Completions URL").fill("https://agent-fixture.example/v1/chat/completions");
+  await dialog.getByLabel("模型名称").fill("tool-fixture");
+  await page.unroute(probeUrl);
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
   let fixtureMode = "apply";
   let fixtureTurn = 0;
@@ -287,8 +322,9 @@ try {
   assert.equal(await uploadPort.inputValue(), "COM_TEST", "manual port input stays available");
   assert.equal(await dialog.getByRole("button", { name: "开始构建并烧录", exact: true }).isDisabled(), true, "browser preview must not fake an upload");
   await dialog.getByRole("button", { name: "Close dialog" }).click();
-  assert.deepEqual(errors, [], "no browser console errors");
-  console.log("PASS UI: plugin settings/dependencies/toggle, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, real WebSocket text/binary round trip, pause/clear and disable cleanup, explicit deploy port selection without fake browser upload, no console errors");
+  // Chromium reports the intentional 401 connection-test probe as a resource error; only that one is expected.
+  assert.deepEqual(errors.filter((message) => !/status of 401 \(Unauthorized\)/.test(message)), [], "no unexpected browser console errors");
+  console.log("PASS UI: plugin settings/dependencies/toggle, AI test-connection success/401 with GOAT prefill and non-persisted key, plugin panel/menu, board selection, create project, add/drag parts, Monaco edit, demo console output, save/reload, disabled editor, portable export/import, invalid import, layout persistence/reset, tool calls and reviewed file edits/rejection/cancellation via HTTP fixtures, real WebSocket text/binary round trip, pause/clear and disable cleanup, explicit deploy port selection without fake browser upload, no unexpected console errors");
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: `${resultsDir}/failure.png`, fullPage: true });
