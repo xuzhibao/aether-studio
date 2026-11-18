@@ -5,14 +5,13 @@ import path from "node:path";
 import type { TaskEnvironment } from "../../shared/desktop";
 import type { TaskProvider } from "../tasks";
 import type { ToolDefinition, ToolService } from "../tools";
+import { prepareBuildCache, type ProjectConfig } from "../buildInputs";
 
 // Public tool identity used by the PlatformIO plugin UI. Users configure this path in the app.
 export const platformioTool: ToolDefinition = {
   id: "platformio", name: "PlatformIO Core CLI", env: "AETHER_PLATFORMIO_CLI", defaultExecutable: "platformio", versionArgs: ["--version"],
   description: "构建、上传和生成编译数据库所用的 PlatformIO Core 可执行文件。",
 };
-
-type ProjectConfig = [string, [string, unknown][]][];
 
 const invalidEnvironment = (name: string) => !name || name.includes("/") || name.includes("\\") || name === "..";
 
@@ -29,6 +28,20 @@ export async function projectConfig(root: string, executable: string): Promise<P
   return config;
 }
 
+// A task start resolves the environment and then prepares the build cache; both need the same config.
+// The ini timestamp and size key the cache so an external edit is still read again.
+const configCache = new Map<string, { key: string; value: Promise<ProjectConfig> }>();
+async function cachedProjectConfig(root: string, executable: string): Promise<ProjectConfig> {
+  const stat = await fs.stat(path.join(root, "platformio.ini"));
+  const key = stat.mtimeMs + ":" + stat.size;
+  const hit = configCache.get(root);
+  if (hit?.key === key) return hit.value;
+  const value = projectConfig(root, executable);
+  configCache.set(root, { key, value });
+  value.catch(() => { if (configCache.get(root)?.value === value) configCache.delete(root); });
+  return value;
+}
+
 function defaults(config: ProjectConfig) {
   const settings = config.find(([name]) => name === "platformio")?.[1];
   const value = settings?.find(([name]) => name === "default_envs")?.[1];
@@ -38,7 +51,7 @@ function defaults(config: ProjectConfig) {
 }
 
 export async function platformioEnvironments(root: string, executable: string): Promise<TaskEnvironment[]> {
-  const config = await projectConfig(root, executable);
+  const config = await cachedProjectConfig(root, executable);
   const declared = defaults(config);
   const names = config.filter(([name]) => name.startsWith("env:")).map(([name]) => name.slice(4));
   for (const name of names) if (invalidEnvironment(name)) throw new Error("无效的构建环境名：" + name);
@@ -96,6 +109,8 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
   const build: TaskProvider = {
     id: "platformio.build", executable: () => tool.executable("platformio"), args: (options) => ["run", "-e", requireEnvironment(options)], versionArgs: ["--version"],
     environments: (root, executable) => platformioEnvironments(root, executable),
+    // A build and an upload share the environment's cache; both must see the current ini and partition table.
+    beforeStart: async (root, executable, options) => prepareBuildCache(root, requireEnvironment(options), await cachedProjectConfig(root, executable)),
     async artifacts(root, _executable, options) {
       const environment = requireEnvironment(options);
       const directory = path.join(root, ".pio", "build", environment);
@@ -135,6 +150,8 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
   const compiledb: TaskProvider = {
     ...build, id: "platformio.compiledb", kind: "compile-database", args: (options) => ["run", "-e", requireEnvironment(options), "--target", "compiledb"],
     inputExcludes: ["compile_commands.json"], recordName: "compiledb.json",
+    // The compilation database does not produce or flash a firmware image, so it must not clear the build cache.
+    beforeStart: undefined,
     artifacts: async () => ["compile_commands.json"],
     afterSuccess: (root, executable, options, signal) => toolchainMetadata(root, executable, requireEnvironment(options), signal),
   };

@@ -3,7 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { DiffEditor, useMonaco } from "@monaco-editor/react";
 import { AlertTriangle, FilePlus2, FolderPlus, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { CloseButton, Modal } from "../../components/Dialogs";
-import { useDisk, diskChanges } from "../../store/disk";
+import { useDisk, diskChanges, finishBuildReview, acceptReviewedDiskChanges } from "../../store/disk";
 import { useStudio } from "../../store/studio";
 import { cn } from "../../lib/utils";
 import { RecoveryDialog } from "./RecoveryDialog";
@@ -213,6 +213,8 @@ function DiskChangesDialog() {
   const modelPaths = useRef(new Set<string>());
   const touch = (kind: "disk" | "buffer", file: string) => `inmemory://aether/${encodeURIComponent(root)}/${session}/${kind}/${encodeURIComponent(file)}`;
   const changes = diskChanges();
+  const build = initial && initial.kind === "changes" ? initial.build : undefined;
+  const conflicts = changes.filter((item) => item.dirty);
   const [selected, setSelected] = useState<string | null>(initial && initial.kind === "changes" ? initial.file ?? null : null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -222,6 +224,18 @@ function DiskChangesDialog() {
   const run = async (action: () => Promise<void>) => {
     setBusy(true); setError("");
     try { await action(); } catch (failure) { setError(errorText(failure)); } finally { setBusy(false); }
+  };
+  // Closing the review without an explicit continue never creates the requested build or upload task.
+  const cancelReview = () => { close(); finishBuildReview("cancel"); };
+  const continueBuild = async () => {
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      // Pure external edits are re-read now; conflicting files were already resolved one by one.
+      await acceptReviewedDiskChanges();
+      close();
+      finishBuildReview("continue");
+    } catch (failure) { setError(errorText(failure)); } finally { setBusy(false); }
   };
   const local = change?.local ?? null;
   const diskPath = change ? touch("disk", change.file) : "";
@@ -236,15 +250,19 @@ function DiskChangesDialog() {
     };
   }, [monaco]);
   return (
-    <Modal open onOpenChange={(open) => !open && close()} width={1040}>
+    <Modal open onOpenChange={(open) => { if (!open) { if (build) cancelReview(); else close(); } }} width={1040}>
       <div className="flex items-start justify-between p-5">
         <div>
-          <Dialog.Title className="text-sm font-semibold">磁盘与缓冲区差异</Dialog.Title>
-          <Dialog.Description className="mt-2 text-xs text-[#7D848C]">逐文件比较磁盘版本与本地缓冲区。处理一个文件不会丢弃其他文件的未保存修改；未处理的冲突仍会阻止整工程保存。</Dialog.Description>
+          <Dialog.Title className="text-sm font-semibold">{build ? "构建前：磁盘与缓冲区差异" : "磁盘与缓冲区差异"}</Dialog.Title>
+          <Dialog.Description className="mt-2 text-xs text-[#7D848C]">
+            {build
+              ? "磁盘上有外部修改。纯外部修改会在你点“重新读取并继续”后按文件重新载入，并继续原来的构建或烧录；同时在磁盘和缓冲区都有修改的文件需要逐项确认保留哪一版，其他未保存的代码和电路不受影响。关闭或取消不会创建任务，也不会烧录。"
+              : "逐文件比较磁盘版本与本地缓冲区。处理一个文件不会丢弃其他文件的未保存修改；未处理的冲突仍会阻止整工程保存。"}
+          </Dialog.Description>
         </div>
         <div className="flex items-center gap-2">
           <button className="btn h-[24px] px-2 text-[10px]" onClick={() => void disk.refresh().catch((failure) => setError(errorText(failure)))}><RefreshCw size={11} /> 重新检查</button>
-          <CloseButton onClick={close} />
+          <CloseButton onClick={build ? cancelReview : close} />
         </div>
       </div>
       {changes.length === 0 ? (
@@ -303,10 +321,27 @@ function DiskChangesDialog() {
         </div>
       )}
       {error && <p role="alert" className="border-t border-[#ECEEF1] px-5 py-2 text-[11px] text-[#A8741F]">{error}</p>}
-      <div className="flex items-center justify-between border-t border-[#ECEEF1] bg-[#FAFBFC] px-4 py-2.5 text-[9px] text-[#9AA0A8]">
-        <span className="flex items-center gap-1.5"><span className="h-[4px] w-[4px] rounded-full bg-[#C08A2E]" />{changes.length} 个文件待处理 · 不会自动合并</span>
-        <button className="btn h-[25px] px-2.5 text-[10px]" onClick={close}>Close</button>
-      </div>
+      {build ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#ECEEF1] bg-[#FAFBFC] px-4 py-2.5 text-[9px] text-[#9AA0A8]">
+          <span className="flex items-center gap-1.5">
+            <span className="h-[4px] w-[4px] rounded-full bg-[#C08A2E]" />
+            {changes.length ? changes.length + " 个文件待处理 · 不会自动合并" : "磁盘与缓冲区一致"}
+            {" · 构建目标：" + build.provider + (build.environment ? " · 环境 " + build.environment : "")}
+          </span>
+          <span className="flex items-center gap-2">
+            {conflicts.length > 0 && <span className="text-[#A8741F]">请先为 {conflicts.length} 个冲突文件选择保留哪一版</span>}
+            <button className="btn h-[25px] px-2.5 text-[10px]" disabled={busy} onClick={cancelReview}>取消（不构建或烧录）</button>
+            <button className="btn btn-primary h-[25px] px-3 text-[10px]" disabled={busy || conflicts.length > 0} onClick={() => void continueBuild()}>
+              {changes.length ? "重新读取并继续" : "继续"}
+            </button>
+          </span>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between border-t border-[#ECEEF1] bg-[#FAFBFC] px-4 py-2.5 text-[9px] text-[#9AA0A8]">
+          <span className="flex items-center gap-1.5"><span className="h-[4px] w-[4px] rounded-full bg-[#C08A2E]" />{changes.length} 个文件待处理 · 不会自动合并</span>
+          <button className="btn h-[25px] px-2.5 text-[10px]" onClick={close}>Close</button>
+        </div>
+      )}
     </Modal>
   );
 }

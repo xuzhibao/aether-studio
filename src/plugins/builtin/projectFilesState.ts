@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { isDesktop } from "../../lib/desktop";
-import { recomputeDirty, useDisk } from "../../store/disk";
+import { recomputeDirty, useDisk, finishBuildReview } from "../../store/disk";
 import { useStudio } from "../../store/studio";
 import { validProjectPath } from "../../../shared/projectFormat";
 
@@ -8,7 +8,7 @@ export type ProjectFilesDialog =
   | { kind: "create"; mode: "file" | "directory"; parent: string }
   | { kind: "rename"; target: string; directory: boolean }
   | { kind: "delete"; target: string; directory: boolean }
-  | { kind: "changes"; file?: string }
+  | { kind: "changes"; file?: string; build?: { provider: string; environment: string } }
   | { kind: "recovery"; root?: string }
   | null;
 
@@ -20,10 +20,16 @@ interface ProjectFilesState {
   select: (path: string | null) => void;
 }
 
-export const useProjectFiles = create<ProjectFilesState>((set) => ({
+export const useProjectFiles = create<ProjectFilesState>((set, get) => ({
   dialog: null,
   selected: null,
-  open: (dialog) => set({ dialog }),
+  open: (dialog) => {
+    // Replacing a build-review dialog without choosing means the requested build must not start.
+    const current = get().dialog;
+    const keepsReview = dialog?.kind === "changes" && !!dialog.build;
+    if (current?.kind === "changes" && current.build && !keepsReview) finishBuildReview("cancel");
+    set({ dialog });
+  },
   close: () => set({ dialog: null }),
   select: (path) => set({ selected: path }),
 }));

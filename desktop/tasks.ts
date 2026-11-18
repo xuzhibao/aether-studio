@@ -11,6 +11,8 @@ export interface TaskProvider {
   inputExcludes?: string[]; recordName?: string;
   // Host-side behavior is declared by the provider: main only reacts to this generic kind.
   kind?: string;
+  // Runs before the process starts; a thrown error cancels the task and its note is written to the log.
+  beforeStart?: (root: string, executable: string, options: Record<string, string>) => Promise<string | null>;
   // Runs after a successful task (still inside the explicit user action); the result is stored in .aether/<record>.
   afterSuccess?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal) => Promise<unknown>;
   // Inspects the finished task (log, artifacts, options) and stores the result as task metadata.
@@ -58,7 +60,10 @@ export class TaskService {
     let executable = baseExecutable;
     let args: string[];
     let metadata: unknown;
+    let preparation: string | null | undefined = "";
     try {
+      // A changed build input may invalidate cached artifacts; this runs before the fingerprint and spawn.
+      preparation = await provider.beforeStart?.(root, baseExecutable, resolved);
       if (provider.prepare) {
         const prepared = await provider.prepare(root, baseExecutable, resolved, abort.signal, (line) => preparedLog.push(line));
         executable = prepared.executable ?? baseExecutable;
@@ -68,7 +73,8 @@ export class TaskService {
     } catch (error) { if (leased) releasePort(leased); throw error; }
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: (preparedLog.length ? preparedLog.join("\n") + "\n" : "") + "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
+    const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
     let child: ChildProcess;
     try {
       child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
