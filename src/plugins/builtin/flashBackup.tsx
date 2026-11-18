@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import type { StudioPlugin } from "../api";
-const LazyPanel = lazy(() => import("./FlashBackupPanel"));
+// Store-backed UI loads on demand: the plugin registry (and this module) initialize before the stores.
+const LazyPanel = lazy(() => import("./FlashBackupPanel").then((module) => ({ default: module.FlashBackupPanel })));
 function FlashBackupPanel() { return <Suspense fallback={<div className="p-4 text-xs">Loading flash panel…</div>}><LazyPanel /></Suspense>; }
 
 export const flashBackupPlugin: StudioPlugin = {

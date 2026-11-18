@@ -6,7 +6,6 @@ import { useStudio } from "../../store/studio";
 import { useDisk } from "../../store/disk";
 import { useTransport } from "../../store/transport";
 import type { TransportPort } from "../api";
-import type { StudioPlugin } from "../api";
 
 const hex = (value: number) => "0x" + value.toString(16).toUpperCase();
 
@@ -14,7 +13,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <div className="flex gap-2 py-0.5"><span className="w-[92px] flex-none text-[#90969E]">{label}</span><span className="min-w-0 break-all text-[#3B424A]">{children}</span></div>;
 }
 
-export default function EspDevicePanel() {
+export function EspDevicePanel() {
   const taskRunning = useDisk((state) => state.tasks.some((task) => task.status === "running"));
   const io = useTransport();
   const setDialog = useStudio((state) => state.setDialog);

@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import type { StudioPlugin } from "../api";
-const LazyPanel = lazy(() => import("./EspDevicePanel"));
+// Store-backed UI loads on demand: the plugin registry (and this module) initialize before the stores.
+const LazyPanel = lazy(() => import("./EspDevicePanel").then((module) => ({ default: module.EspDevicePanel })));
 function EspDevicePanel() { return <Suspense fallback={<div className="p-4 text-xs">Loading ESP device panel…</div>}><LazyPanel /></Suspense>; }
 
 export const espDevicePlugin: StudioPlugin = {
