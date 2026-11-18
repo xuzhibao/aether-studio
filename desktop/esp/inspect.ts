@@ -3,10 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { SerialPort } from "serialport";
 import {
-  chipByKey, classifyUsb, describeEsptoolFailure, parseEfuseSummary, parseFlashId, parsePartitionTable,
+  chipByKey, classifyUsb, describeEsptoolFailure, parseFlashId, parsePartitionTable, parseSecurityInfo,
   type EspInspectResult, type EspPartitionTable, type EspSecurityFacts, type EspToolChipFacts, type EspToolFlashFacts, type EspUsbDescriptor,
 } from "../../shared/esp";
-import { esptoolVersion, findEsptool, runEsptool, siblingScript, type EsptoolTool } from "./esptool";
+import { esptoolVersion, findEsptool, runEsptool, type EsptoolTool } from "./esptool";
 import { withPort } from "../portLease";
 import type { ToolService } from "../tools";
 
@@ -62,14 +62,13 @@ export async function readDeviceFacts(tool: EsptoolTool, port: string, signal?: 
 
   const notes: string[] = [];
   let security: EspSecurityFacts | null = null;
-  const efuse = await siblingScript(tool, "espefuse.py");
-  if (!efuse) notes.push("工具包中没有 espefuse.py，跳过 eFuse 安全状态读取");
-  else {
-    const summary = await runEsptool(efuse, ["--port", port, "summary"], { signal, timeoutMs: 60000 });
-    if (summary.cancelled) notes.push("eFuse 读取已取消");
-    else if (summary.code !== 0) notes.push("eFuse 读取失败：" + describeEsptoolFailure(summary.output));
-    else security = parseEfuseSummary(summary.output);
-  }
+  // get_security_info runs through the stub and reports the three flags that matter for flashing,
+  // without the PyYAML dependency espefuse.py has. Unknown flags stay null and block nothing here;
+  // the deploy preflight treats an unread security state as an explicit warning.
+  const info = await runEsptool(tool, ["--port", port, "get_security_info"], { signal, timeoutMs: 60000 });
+  if (info.cancelled) notes.push("安全信息读取已取消");
+  else if (info.code !== 0) notes.push("安全信息读取失败：" + describeEsptoolFailure(info.output));
+  else security = parseSecurityInfo(info.output);
 
   return { ok: true, error: "", chip: parsed.chip, flash: parsed.flash, chipId: chip?.id ?? null, chipName: parsed.chip.name, revision: parsed.chip.revision, flashSize: parsed.flash?.size ?? null, partitions, security, notes: [...parsed.errors, ...notes] };
 }

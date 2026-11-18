@@ -86,7 +86,7 @@ beta.4 在新工程上增加了 ESP 设备只读检测和部署前核对。本�
 1. 打开 **ESP 设备** 面板，选择 `COM4`，点 **只读检测**。
 2. 期望结果：芯片 `ESP32-C3`、`rev v0.4`、`WiFi, BLE`、`USB-Serial/JTAG`、flash `16MB`（`ef/4018`）、板上分区表 6 项（nvs 0x9000、otadata 0xd000、phy_init 0xf000、model 0x10000、ota_0 0x100000、ota_1 0x700000）。
 3. 板型显示为 **未知**，这是预期行为：芯片和 USB 描述符都不能确定开发板型号。
-4. 安全状态若显示“未读取”，说明 `espefuse.py` 缺少 PyYAML；不影响只读检测的其余部分，但部署前核对会给出警告。
+4. 安全状态来自 `esptool get_security_info`（本机实测输出 `Secure Boot: Disabled` / `Flash Encryption: Disabled`），不需要 PyYAML；只有输出无法解析时才显示未读取。
 
 命令行等价验证（不会写入 flash，但会复位芯片）：
 

@@ -1,6 +1,6 @@
 import type { ProjectContext } from "../src/plugins/api";
 import type { ToolsAPI } from "./tools";
-import type { EspInspectResult, EspPreflightAllow, EspPreflightResult } from "./esp";
+import type { EspInspectResult, EspPreflightResult } from "./esp";
 export interface DiskWorkspace { root: string; context: ProjectContext; directories: string[] }
 export interface DiskListing { files: Record<string, string>; directories: string[] }
 /** One unsaved editing session, stored outside the project folder while the user keeps working. */
@@ -52,7 +52,7 @@ export interface TaskSnapshot {
 /** Read-only ESP device operations. Both act only on an explicit user action and never write flash. */
 export interface EspAPI {
   inspect: (port: string) => Promise<EspInspectResult>;
-  preflight: (options: { environment: string; port: string; allow?: EspPreflightAllow }) => Promise<EspPreflightResult>;
+  preflight: (options: { environment: string; port: string }) => Promise<EspPreflightResult>;
 }
 export interface DesktopAPI {
   esp: EspAPI;

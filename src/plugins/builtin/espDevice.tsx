@@ -117,7 +117,9 @@ export const espDevicePlugin: StudioPlugin = {
     api.register("devices", {
       id: "esp32", name: "ESP32 / ESP32-C3 / ESP32-S3（esptool 只读）",
       inspect: (port) => desktop().inspect(port),
+      // The UI preview; the authoritative checks run again inside esp.upload while the port is locked.
       preflight: (options) => desktop().preflight(options),
+      uploadProvider: "esp.upload",
     });
     api.register("panels", { id: "esp.device", name: "ESP 设备", render: EspDevicePanel });
     api.register("commands", { id: "esp.openDevice", name: "ESP: 打开设备面板（只读检测）", run: () => useStudio.getState().setTab("panel:esp.device") });

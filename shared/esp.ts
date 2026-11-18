@@ -92,6 +92,19 @@ export function describeEsptoolFailure(text: string): string {
   return text.trim().split(/\r?\n/).filter((line) => !/^(esptool\.py v|Serial port )/i.test(line)).slice(-3).join(" / ").slice(0, 400);
 }
 
+/** Read-only security posture from esptool get_security_info (stub-only, no PyYAML needed). */
+export function parseSecurityInfo(text: string): EspSecurityFacts {
+  const state = (name: string): boolean | null => {
+    const line = text.split(/\r?\n/).find((item) => new RegExp("^\\s*" + name + "\\s*:", "i").test(item));
+    if (!line) return null;
+    const value = line.split(":").slice(1).join(":").trim().toLowerCase();
+    if (value.includes("disable") || value === "false") return false;
+    if (value.includes("enable") || value === "true") return true;
+    return null;
+  };
+  return { secureBoot: state("Secure Boot"), flashEncryption: state("Flash Encryption"), downloadModeDisabled: state("Disable Download Mode"), source: "esptool get_security_info（只读，无需 PyYAML）" };
+}
+
 export interface EspSecurityFacts { secureBoot: boolean | null; flashEncryption: boolean | null; downloadModeDisabled: boolean | null; source: string }
 const flagValue = (line: string | undefined): boolean | null => {
   if (!line) return null;
@@ -176,7 +189,7 @@ export function parsePartitionTable(bytes: Uint8Array): EspPartitionTable {
 export type EspSeverity = "block" | "warn" | "info";
 export interface EspFinding { id: string; severity: EspSeverity; title: string; detail: string; next: string }
 export interface EspPlannedSegment { name: string; file: string; offset: number; size: number; sha256: string; chipId: number | null; source: string }
-export interface EspPreflightAllow { bootApp0Overwrite?: boolean; partitionRewrite?: boolean }
+export interface EspRange { offset: number; size: number }
 export interface EspPreflightInput {
   port: string;
   environment: string;
@@ -193,7 +206,6 @@ export interface EspPreflightInput {
   layout: { appOffset: number | null; appOffsetSource: string; bootloaderOffset: number | null; partitionOffset: number; bootApp0Offset: number };
   device: { ok: boolean; error: string; partitions: EspPartitionTable | null; security: EspSecurityFacts | null };
   upload: { protocol: string; parseable: boolean; reason: string };
-  allow: EspPreflightAllow;
 }
 export interface EspPreflightResult {
   supported: boolean; skipped: string; ok: boolean;
@@ -203,6 +215,8 @@ export interface EspPreflightResult {
   segments: EspPlannedSegment[];
   partitions: { device: EspPartitionEntry[]; build: EspPartitionEntry[]; changed: boolean; deviceError: string; buildError: string };
   upload: EspPreflightInput["upload"];
+  /** Device partitions whose sectors this plan will overwrite; the host snapshots these ranges first. */
+  coverage: Array<{ label: string; typeName: string; offset: number; size: number; range: EspRange }>;
   findings: EspFinding[];
 }
 
@@ -221,7 +235,7 @@ export function evaluatePreflight(input: EspPreflightInput): EspPreflightResult 
   const block = (id: string, title: string, detail: string, next: string) => findings.push({ id, severity: "block", title, detail, next });
   const warn = (id: string, title: string, detail: string, next: string) => findings.push({ id, severity: "warn", title, detail, next });
   const info = (id: string, title: string, detail: string) => findings.push({ id, severity: "info", title, detail, next: "无需操作" });
-  const { images, chip, flash, layout, device, upload, allow } = input;
+  const { images, chip, flash, layout, device, upload } = input;
   const mcuChip = chip.expectedId === null ? null : chipById(chip.expectedId);
   const detectedChip = chip.detectedId === null ? null : chipById(chip.detectedId);
 
@@ -284,28 +298,34 @@ export function evaluatePreflight(input: EspPreflightInput): EspPreflightResult 
     }
   }
 
-  // 7. Compare the table that will be written with the table currently on the device.
+  // 7. The app must never land on sectors the device currently uses for data.
+  if (device.ok && device.partitions?.valid && layout.appOffset !== null && images.app.valid) {
+    const appEnd = layout.appOffset + images.app.size;
+    const data = device.partitions.entries.find((entry) => entry.type === PARTITION_TYPE_DATA && overlaps(layout.appOffset!, images.app.size, entry.offset, entry.size));
+    if (data) {
+      block("app-over-device-data", "app 会覆盖设备上的数据分区 " + data.label, "firmware.bin 计划写到 " + hex(layout.appOffset) + "–" + hex(appEnd) + "，而设备当前在该区域是 " + data.typeName + " 分区 " + data.label + "（" + hex(data.offset) + "/" + hex(data.size) + "）。用新的分区表重命名区域不能证明旧数据可以覆盖，因此阻止写入。", "让 partitions.csv 与设备现有布局一致，并把 board_upload.offset_address 指向设备的 app 分区（本机 16MB 布局为 0x100000）后重新构建。");
+    }
+  }
+
+  // 8. Compare the table that will be written with the table currently on the device.
   const deviceTable = device.partitions;
   const buildChanged = deviceTable?.valid ? !samePartitionTable(deviceTable.entries, buildTable) : false;
   if (device.ok && deviceTable?.valid && buildChanged) {
-    if (!allow.partitionRewrite) {
-      block("partition-rewrite", "分区表与设备现有布局不同", "构建的分区表会重写设备上的分区定义（" + summarizeDiff(deviceTable.entries, buildTable) + "）。改写分区表可能让现有数据分区无法访问。", "确认要改写分区表后勾选“允许改写分区表”再重试；或让 partitions.csv 与设备现有布局一致。");
-    } else warn("partition-rewrite-allowed", "已允许改写分区表", "本次会写入与设备不同的分区表（" + summarizeDiff(deviceTable.entries, buildTable) + "）。", "写入后原有的数据分区内容可能不可用。");
+    warn("partition-rewrite", "分区表与设备现有布局不同", "构建的分区表会替换设备上的分区定义（" + summarizeDiff(deviceTable.entries, buildTable) + "）。写入前宿主会按设备当前的分区表逐 4KB 区块读取并校验快照，快照失败则不会写入。", "写入后原有数据分区的映射会改变；需要时用 Flash 面板恢复被覆盖的区块。");
   } else if (device.ok && deviceTable && !deviceTable.valid && deviceTable.error.includes("空白")) {
     info("blank-table", "设备没有分区表", "0x8000 处是空白 flash，将写入构建的分区表。");
   }
 
-  // 8. boot_app0 crosses otadata / phy_init on some vendor layouts: always surfaced, never silent.
+  // 9. boot_app0 crosses otadata / phy_init on some vendor layouts: always surfaced, never silent.
   if (images.bootApp0 && device.ok && deviceTable?.valid) {
     const crossed = covers(deviceTable.entries, layout.bootApp0Offset, images.bootApp0.size).filter((entry) => !(entry.type === PARTITION_TYPE_DATA && entry.subtype === 0x00 && entry.offset === layout.bootApp0Offset && entry.size === images.bootApp0!.size));
     if (crossed.length) {
       const text = crossed.map((entry) => entry.label + " " + hex(entry.offset) + "/" + hex(entry.size)).join("、");
-      if (!allow.bootApp0Overwrite) block("bootapp0-overlap", "boot_app0 会跨区覆盖现有分区", "PlatformIO 固定把 boot_app0.bin 写到 " + hex(layout.bootApp0Offset) + "，长度 " + hex(images.bootApp0.size) + "，会覆盖设备上的 " + text + "。", "确认影响后勾选“允许写入 boot_app0（" + hex(layout.bootApp0Offset) + "–" + hex(layout.bootApp0Offset + images.bootApp0.size) + "）”再重试。");
-      else warn("bootapp0-overlap-allowed", "已允许 boot_app0 跨区写入", "将覆盖 " + text + "；其中 phy_init 的射频校准数据会在启动时重新生成。", "写入后可重新上电让固件重建校准数据。");
+      warn("bootapp0-overlap", "boot_app0 会跨区覆盖现有分区", "PlatformIO 固定把 boot_app0.bin 写到 " + hex(layout.bootApp0Offset) + "，长度 " + hex(images.bootApp0.size) + "，会覆盖设备上的 " + text + "。写入前宿主会读取并逐块校验这些 4KB 区块，快照失败则不会写入。", "写入后 phy_init 的射频校准数据会由固件重新生成；其他被覆盖区块可用 Flash 面板恢复。");
     }
   }
 
-  // 9. Security state makes a plain write unbootable or impossible.
+  // 10. Security state makes a plain write unbootable or impossible.
   const security = device.security;
   if (device.ok && !security) {
     warn("security-unknown", "未读取 eFuse 安全状态", "无法确认设备是否启用安全启动或 flash 加密；espefuse.py 需要 PyYAML，工具包缺失时只能跳过。", "在 PlatformIO 的 Python 环境中安装 PyYAML 后重新检测，或手动确认设备未启用安全启动 / flash 加密。");
@@ -316,9 +336,18 @@ export function evaluatePreflight(input: EspPreflightInput): EspPreflightResult 
     else if (security.downloadModeDisabled === true) block("download-mode-disabled", "设备禁用了下载模式", "DIS_DOWNLOAD_MODE 已烧写，设备不接受串口烧录。", "只能通过其他已授权的方式更新固件。");
   }
 
+  // Every device partition the plan will touch, computed from the device's own table and exact bytes.
+  const coverage: EspPreflightResult["coverage"] = [];
+  if (device.ok && deviceTable?.valid) for (const segment of segments) {
+    for (const entry of deviceTable.entries) {
+      if (!overlaps(segment.offset, segment.size, entry.offset, entry.size)) continue;
+      const start = Math.max(segment.offset, entry.offset);
+      coverage.push({ label: entry.label, typeName: entry.typeName, offset: entry.offset, size: entry.size, range: { offset: start, size: Math.min(segment.offset + segment.size, entry.offset + entry.size) - start } });
+    }
+  }
   return {
     supported: true, skipped: "", ok: !findings.some((finding) => finding.severity === "block"), port: input.port, environment: input.environment, checkedAt: new Date().toISOString(),
-    chip, flash, layout, segments,
+    chip, flash, layout, segments, coverage,
     partitions: { device: deviceTable?.entries ?? [], build: buildTable, changed: buildChanged, deviceError: device.error || deviceTable?.error || "", buildError: images.partitions.error },
     upload, findings,
   };
@@ -344,7 +373,7 @@ export function unsupportedPreflight(reason: string, port = "", environment = ""
     chip: { expectedId: null, expectedMcu: "", expectedSource: "", detectedId: null, detectedName: "", detectedRevision: "" },
     flash: { declared: null, declaredSource: "", detected: null },
     layout: { appOffset: null, appOffsetSource: "", bootloaderOffset: null, partitionOffset: 0x8000, bootApp0Offset: 0xe000 },
-    segments: [], partitions: { device: [], build: [], changed: false, deviceError: "", buildError: "" },
+    segments: [], coverage: [], partitions: { device: [], build: [], changed: false, deviceError: "", buildError: "" },
     upload: { protocol: "", parseable: false, reason: "非 ESP 工程" }, findings: [],
   };
 }

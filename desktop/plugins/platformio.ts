@@ -3,7 +3,6 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { TaskEnvironment } from "../../shared/desktop";
-import { checkUploadAgainstPlan } from "../../shared/esp";
 import type { TaskProvider } from "../tasks";
 import type { ToolDefinition, ToolService } from "../tools";
 
@@ -108,17 +107,29 @@ export function createPlatformioPlugins(tool: ToolService): { platformioBuild: T
       return result;
     },
   };
+  const uploadArgs = (options: Record<string, string>) => {
+    if (!options.port?.trim()) throw new Error("请明确选择烧录端口");
+    return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim()];
+  };
   const upload: TaskProvider = {
     ...build, id: "platformio.upload", portOption: "port",
-    // Verbose output prints the exact esptool write_flash command, which is then compared with the preflight plan.
-    args: (options) => { if (!options.port?.trim()) throw new Error("请明确选择烧录端口"); return ["run", "-e", requireEnvironment(options), "--target", "upload", "--upload-port", options.port.trim(), "-v"]; },
-    async verify(task) {
-      const raw = task.options?.espPlan;
-      if (!raw) return { writeCheck: { ok: false, problems: ["没有预检写入计划，无法核对实际写入段"], evidence: null } };
-      let plan: { offset: number; file: string }[];
-      try { plan = JSON.parse(raw); } catch { return { writeCheck: { ok: false, problems: ["预检写入计划格式错误"], evidence: null } }; }
-      const check = checkUploadAgainstPlan(task.log, plan);
-      return { writeCheck: check, plan };
+    args: uploadArgs,
+    // ESP projects are refused here so a renderer cannot bypass the verified esptool write path.
+    // Non-ESP builds keep exactly their previous behaviour.
+    async prepare(root, executable, options) {
+      const args = uploadArgs(options);
+      const environment = options.environment?.trim() ?? "";
+      try {
+        const config = await projectConfig(root, executable);
+        const platform = config.find(([name]) => name === "env:" + environment)?.[1].find(([name]) => name === "platform")?.[1];
+        if (typeof platform === "string" && platform.split("@")[0].trim() === "espressif32") {
+          throw new Error("ESP 工程必须通过 esp.upload 上传：写入前要在同一端口锁内核对芯片、分区与写前快照。请使用 Deploy to Device。");
+        }
+      } catch (error) {
+        // Only a confirmed ESP target is rejected; an unreadable project still fails in PlatformIO itself.
+        if (error instanceof Error && error.message.includes("esp.upload")) throw error;
+      }
+      return { args };
     },
   };
   const compiledb: TaskProvider = {

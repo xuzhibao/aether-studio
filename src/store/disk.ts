@@ -227,7 +227,7 @@ export const useDisk = create<DiskState>((set, get) => {
       if (useTransport.getState().status !== "disconnected") throw new Error("串口监视器尚未释放端口，已取消任务。请手动断开连接后重试。");
       // PlatformIO 的构建、上传和编译数据库共用当前选定的环境，避免产物和数据库串用。
       const environment = get().environment;
-      const task = await desktop().tasks.start(provider, provider.startsWith("platformio.") && environment ? { ...options, environment } : options);
+      const task = await desktop().tasks.start(provider, (provider.startsWith("platformio.") || provider.startsWith("esp.")) && environment ? { ...options, environment } : options);
       set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
       return task;
     } finally { set({ starting: false }); }
@@ -241,21 +241,22 @@ export const useDisk = create<DiskState>((set, get) => {
     const started = await get().build("platformio.build", { environment });
     const built = await waitForTask(started.id);
     if (built.status !== "succeeded") throw new Error("构建未通过（" + built.status + "）：" + (built.error || "见 Build Tasks 日志"));
-    // 2. Ask every registered device plugin. Only a supported, fully verified plan may write.
-    let plan = "";
+    // 2. Ask every registered device plugin which provider must perform the write. The preview below
+    //    only drives the UI; the provider re-derives and re-verifies everything before it writes.
+    let target = provider;
     let checked = false;
     for (const device of plugins.all("devices")) {
-      const result = await device.preflight({ environment, port: port.trim(), allow: { bootApp0Overwrite: options.allowBootApp0 === "1", partitionRewrite: options.allowPartitionRewrite === "1" } });
+      const result = await device.preflight({ environment, port: port.trim() });
       set({ espPreflight: result });
       if (!result.supported) continue;
       checked = true;
+      target = device.uploadProvider;
       if (!result.ok) throw new Error("部署前核对未通过：" + result.findings.filter((finding) => finding.severity === "block").map((finding) => finding.title).join("；"));
-      plan = JSON.stringify(result.segments.map((segment) => ({ name: segment.name, file: segment.file, offset: segment.offset, size: segment.size })));
       break;
     }
     if (!checked) set({ espPreflight: null });
-    // 3. Upload. The plan travels with the task so the finished log can be compared with it.
-    return get().build(provider, { ...options, port: port.trim(), ...(plan ? { espPlan: plan } : {}) });
+    // 3. Upload through the provider that owns the verified write path.
+    return get().build(target, { ...options, port: port.trim() });
   },
   };
 });

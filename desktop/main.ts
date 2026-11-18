@@ -15,6 +15,7 @@ import { ToolService } from "./tools";
 import { ESPTOOL_TOOL } from "./esp/esptool";
 import { inspectEspDevice } from "./esp/inspect";
 import { preflightEspUpload } from "./esp/preflight";
+import { createEspUploadProvider } from "./esp/upload";
 import type { ProjectContext } from "../src/plugins/api";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -53,6 +54,8 @@ const tools = new ToolService(() => path.join(app.getPath("userData"), "tools.js
 tools.define(ESPTOOL_TOOL);
 const platformio = createPlatformioPlugins(tools);
 tasks.register(platformio.platformioBuild); tasks.register(platformio.platformioUpload); tasks.register(platformio.platformioCompileDatabase);
+// ESP uploads are verified and journaled inside the task, while the port lease is held.
+tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => path.join(app.getPath("userData"), "esp-journal") }));
 language.register(createClangdProvider(tools));
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
@@ -123,10 +126,11 @@ function routes() {
   });
   // ESP operations run only on an explicit user action; both are read-only and take the port lease.
   handle("esp:inspect", (port: string) => inspectEspDevice(port, tools));
-  handle("esp:preflight", (options: { environment?: string; port: string; allow?: Record<string, boolean> }) => {
+  // UI preview only. The authoritative check runs inside the esp.upload task; there is no option to relax it.
+  handle("esp:preflight", (options: { environment?: string; port: string }) => {
     const root = workspace.root;
     if (!root) throw new Error("请先打开工程目录");
-    return preflightEspUpload({ root, environment: options.environment, port: options.port, allow: options.allow, workspace, tools, platformio: tools.executable("platformio") });
+    return preflightEspUpload({ root, environment: options.environment, port: options.port, workspace, tools, platformio: tools.executable("platformio") });
   });
   handle("tasks:start", (provider: string, options: Record<string, string> = {}) => enqueue(() => tasks.start(provider, options)));
   handle("tasks:cancel", (id: string) => tasks.cancel(id));

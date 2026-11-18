@@ -233,10 +233,6 @@ export function DeployDialog() {
   const [submitting, setSubmitting] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [monitorBaud, setMonitorBaud] = useState("115200");
-  // Two explicit, per-deploy acknowledgements. They never cover a chip mismatch; they only allow
-  // writing regions the device already uses (boot_app0 across otadata/phy_init) or a new partition table.
-  const [allowBootApp0, setAllowBootApp0] = useState(false);
-  const [allowPartitionRewrite, setAllowPartitionRewrite] = useState(false);
   const provider = providers.find((item) => item.id === selected);
   const monitor = provider?.monitor;
   const portSource = provider?.ports;
@@ -245,15 +241,15 @@ export function DeployDialog() {
   const uploadRunning = task?.status === "running";
   const busy = submitting || !!uploadRunning || disk.starting || ["connecting", "disconnecting"].includes(io.status);
   const preflight = disk.espPreflight;
-  const writeCheck = (task?.metadata as { writeCheck?: EspUploadCheck } | undefined)?.writeCheck;
-  // A block that names an acknowledgement is resolved by the matching checkbox, not by hiding it.
-  const accepted = preflight ? preflight.findings.filter((finding) => finding.severity === "block" && !(finding.id === "bootapp0-overlap" && allowBootApp0) && !(finding.id === "partition-rewrite" && allowPartitionRewrite)) : [];
+  const metadata = task?.metadata as { writeCheck?: EspUploadCheck; journal?: { directory: string; totalBytes: number; ranges: unknown[] } } | undefined;
+  const writeCheck = metadata?.writeCheck;
+  const journal = metadata?.journal;
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);
     const first = available[0];
     setSelected(first?.id ?? "");
-    setError(""); setSubmitting(false); setAllowBootApp0(false); setAllowPartitionRewrite(false);
+    setError(""); setSubmitting(false);
     setMonitorBaud(first?.monitor?.defaultBaudRate ?? "115200");
     // Results belong to the current disk project only; another project's upload must not look like this one.
     const latest = first ? disk.tasks.filter((item) => item.provider === first.id && item.root === disk.root).sort((a, b) => a.startedAt.localeCompare(b.startedAt)).at(-1) : undefined;
@@ -272,7 +268,7 @@ export function DeployDialog() {
     const port = address.trim();
     setSubmitting(true); setError(""); setTaskId(""); useDisk.setState({ espPreflight: null });
     try {
-      const result = await provider.deploy(getProjectContext(), port, { allowBootApp0: allowBootApp0 ? "1" : "", allowPartitionRewrite: allowPartitionRewrite ? "1" : "" });
+      const result = await provider.deploy(getProjectContext(), port);
       if (result?.taskId) { setTaskId(result.taskId); if (provider.monitor) io.setPreferredAddress(port, provider.monitor.transportId); }
       else { setDialog(null); setTab("panel:build.tasks"); }
     } catch (reason) {
@@ -306,11 +302,6 @@ export function DeployDialog() {
       {providers.length > 1 && <label className="mt-3 block text-xs">Deployment plugin<select aria-label="Deployment plugin" className="input mt-1 w-full" disabled={busy} value={selected} onChange={(event) => { const next = providers.find((item) => item.id === event.target.value); setSelected(event.target.value); setTaskId(""); setError(""); setMonitorBaud(next?.monitor?.defaultBaudRate ?? "115200"); setAddress(next?.monitor ? io.preferredAddress(next.monitor.transportId) : ""); }}>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
       <label className="mt-3 block text-xs">{provider?.endpointLabel}<input aria-label={provider?.endpointLabel} data-deploy-port className="input mt-1 w-full" list="deploy-ports" placeholder="COM3 / /dev/ttyUSB0 / /dev/cu.usbserial…" value={address} disabled={busy} onChange={(event) => setAddress(event.target.value)} /><datalist id="deploy-ports">{ports.map((item) => <option key={item.path} value={item.path}>{item.label}</option>)}</datalist></label>
       <p className="mt-1 text-[10px] leading-5 text-[#90969E]">必须明确填写或选择端口；留空不会开始上传。也可以手动输入未枚举到的端口路径。</p>
-      <div className="mt-3 space-y-1 rounded-md border border-[#E9EBEE] p-2 text-[10px]">
-        <p className="font-medium text-[#59616A]">仅在核对提示需要时勾选；不会绕过芯片不匹配</p>
-        <label className="flex items-start gap-1.5"><input type="checkbox" className="mt-[2px]" checked={allowBootApp0} disabled={busy} onChange={(event) => setAllowBootApp0(event.target.checked)} /><span>允许写入 boot_app0（0xE000–0x10000）。PlatformIO 固定把 boot_app0.bin 写在该区域；某些厂商布局会覆盖 otadata 与 phy_init。</span></label>
-        <label className="flex items-start gap-1.5"><input type="checkbox" className="mt-[2px]" checked={allowPartitionRewrite} disabled={busy} onChange={(event) => setAllowPartitionRewrite(event.target.checked)} /><span>允许改写分区表。设备现有分区定义将被构建出的 partitions.bin 替换。</span></label>
-      </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px]">
         <button type="submit" className="btn btn-primary px-3 py-1.5 text-xs" disabled={busy || !address.trim() || !isDesktop()}>{submitting ? "正在核对…" : uploadRunning ? "正在上传…" : "开始构建并烧录"}</button>
         {uploadRunning && <button type="button" className="btn px-3 py-1.5" onClick={() => { if (task) void disk.cancel(task.id).catch((reason) => setError(String(reason))); }}>取消上传</button>}
@@ -319,7 +310,7 @@ export function DeployDialog() {
       {!isDesktop() && <p className="mt-2 text-[10px] leading-5 text-[#A8741F]">真实上传需要 Electron 桌面端和部署插件所需的工具；浏览器预览不会执行命令。</p>}
       {error && <p role="alert" className="mt-3 whitespace-pre-wrap text-xs text-[#A8741F]">{error}</p>}
       {preflight && preflight.supported && <section data-esp-preflight={preflight.ok ? "ok" : "blocked"} data-esp-preflight-port={preflight.port} className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]">
-        <div className="flex flex-wrap items-center gap-2"><strong>部署前核对</strong><span role="status" className={preflight.ok || !accepted.length ? "text-[#3B9A68]" : "text-[#A8741F]"}>{preflight.ok ? "通过" : accepted.length ? "已阻止写入" : "等待确认"}</span><span className="text-[10px] text-[#90969E]">{preflight.port} · env {preflight.environment} · {new Date(preflight.checkedAt).toLocaleTimeString("en-GB", { hour12: false })}</span></div>
+        <div className="flex flex-wrap items-center gap-2"><strong>部署前核对</strong><span role="status" className={preflight.ok ? "text-[#3B9A68]" : "text-[#A8741F]"}>{preflight.ok ? "通过" : "已阻止写入"}</span><span className="text-[10px] text-[#90969E]">{preflight.port} · env {preflight.environment} · {new Date(preflight.checkedAt).toLocaleTimeString("en-GB", { hour12: false })}</span></div>
         <p className="mt-1 text-[10px] text-[#90969E]">设备 {preflight.chip.detectedName || "未识别"}（rev {preflight.chip.detectedRevision || "?"}）· 构建目标 {preflight.chip.expectedMcu || "未知"} · flash {preflight.flash.detected ? (preflight.flash.detected / 1048576) + " MB" : "?"} / 声明 {preflight.flash.declared ? (preflight.flash.declared / 1048576) + " MB" : "?"}</p>
         {preflight.segments.length > 0 && <div className="mt-2 overflow-x-auto"><table className="w-full border-collapse text-[10px]"><thead><tr className="text-left text-[#90969E]"><th className="border-b border-[#EEF0F3] py-1">段</th><th className="border-b border-[#EEF0F3]">地址</th><th className="border-b border-[#EEF0F3]">大小</th><th className="border-b border-[#EEF0F3]">SHA-256</th></tr></thead><tbody>{preflight.segments.map((segment) => <tr key={segment.name} className="font-mono"><td className="py-0.5">{segment.name}</td><td>0x{segment.offset.toString(16).toUpperCase()}</td><td>{segment.size}</td><td className="text-[9px]">{segment.sha256 ? segment.sha256.slice(0, 12) : "—"}</td></tr>)}</tbody></table></div>}
         {preflight.findings.length > 0 && <ul className="mt-2 space-y-1.5">{preflight.findings.map((finding) => <li key={finding.id} data-severity={finding.severity} className="leading-5"><span className={finding.severity === "block" ? "font-medium text-[#A8741F]" : finding.severity === "warn" ? "font-medium text-[#9A702C]" : "text-[#59616A]"}>{finding.severity === "block" ? "阻止" : finding.severity === "warn" ? "注意" : "信息"}：{finding.title}</span><span className="block text-[10px] text-[#7D848C]">{finding.detail}</span><span className="block text-[10px] text-[#59616A]">下一步：{finding.next}</span></li>)}</ul>}
@@ -328,6 +319,11 @@ export function DeployDialog() {
         <div className="flex flex-wrap items-center gap-2"><strong>上传任务</strong><span role="status">{statusText}</span><span className="text-[10px] text-[#90969E]">exit {task.exitCode ?? "—"}</span></div>
         <p className="mt-1 text-[10px] text-[#90969E]">端口 {taskPort || "—"} · {task.status === "running" ? "命令仍在运行" : "命令已结束"} · 任务 {task.id.slice(0, 8)}</p>
         {task.error && <p role="alert" className="mt-2 text-[#A8741F]">{task.error}</p>}
+        {journal && <div data-write-journal="1" className="mt-2 rounded border border-[#E9EBEE] p-2 text-[10px] leading-5">
+          <span className="font-medium text-[#3B9A68]">写前快照已校验：{journal.ranges.length} 个区块 / {journal.totalBytes} 字节</span>
+          <span className="block break-all font-mono text-[9px] text-[#90969E]">{journal.directory}</span>
+          <span className="block text-[#90969E]">写入会擦除这些 4KB 区块；快照在写入前读取两次并比对 SHA-256，快照失败时上传不会开始。</span>
+        </div>}
         {writeCheck && <div data-write-check={writeCheck.ok ? "ok" : "mismatch"} className="mt-2 rounded border border-[#E9EBEE] p-2 text-[10px]">
           <span className={writeCheck.ok ? "font-medium text-[#3B9A68]" : "font-medium text-[#A8741F]"}>{writeCheck.ok ? "实际写入段与预检计划一致" : "实际写入段与预检计划不一致"}</span>
           {!writeCheck.ok && <ul className="mt-1 list-disc pl-4 text-[#A8741F]">{writeCheck.problems.map((problem, index) => <li key={index}>{problem}</li>)}</ul>}
