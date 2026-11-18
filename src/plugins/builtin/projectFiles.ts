@@ -36,7 +36,7 @@ async function openFile(): Promise<string | null> {
   });
 }
 export const projectFilesPlugin: StudioPlugin = {
-  manifest: { id: "aether.project-files", name: "工程文件", version: "0.1.0", type: "workspace", entry: "builtin/projectFiles.ts", enabled: true, description: "导入和导出 .aether 工程文件；桌面端工程目录支持文件与目录的新建、重命名、移入系统回收站，以及按文件处理磁盘与缓冲区差异。" },
+  manifest: { id: "aether.project-files", name: "工程文件", version: "0.1.0", type: "workspace", entry: "builtin/projectFiles.ts", enabled: true, description: "导入和导出 .aether 工程文件；桌面端工程目录支持文件与目录的新建、重命名、移入系统回收站、按文件处理磁盘与缓冲区差异，以及异常退出后的未保存内容恢复草稿。" },
   activate(api) {
     api.register("commands", { id: "project.folder.open", name: "Open project folder", shortcut: "mod+alt+o", run: () => api.host.openProjectFolder() });
     api.register("commands", { id: "project.folder.save", name: "Save project to folder", run: () => api.host.saveProjectFolder() });
@@ -82,5 +82,9 @@ export const projectFilesPlugin: StudioPlugin = {
     api.register("menus", { id: "project.files.menu.new-file", name: "New file…", command: "project.files.new-file", location: "project" });
     api.register("menus", { id: "project.files.menu.new-folder", name: "New folder…", command: "project.files.new-folder", location: "project" });
     api.register("menus", { id: "project.files.menu.changes", name: "Review disk changes…", command: "project.files.changes", location: "project" });
+    if (isDesktop()) {
+      api.register("commands", { id: "project.recovery.open", name: "Open recovery drafts (unsaved content)", run: async () => { const { useRecovery } = await import("../../store/recovery"); useRecovery.getState().openDialog(); } });
+      api.register("menus", { id: "project.files.menu.recovery", name: "Open recovery drafts…", command: "project.recovery.open", location: "project" });
+    }
   },
 };

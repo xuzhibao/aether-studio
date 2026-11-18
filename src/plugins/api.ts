@@ -56,7 +56,17 @@ export interface SimulationFrame {
 export interface AIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 export interface AIMessage { role: "system" | "user" | "assistant" | "tool"; content: string | null; tool_calls?: AIToolCall[]; tool_call_id?: string }
 export interface AgentResult { text: string; proposals?: EditProposal[]; toolRuns?: ToolRun[] }
-export interface TransportPort { path: string; label: string }
+export interface TransportPort { path: string; label: string; detail?: string }
+export interface DeploymentResult { taskId: string }
+/** Optional port enumeration contributed by a deployment plugin, shown in the deploy dialog. */
+export interface DeploymentPortSource { list: () => Promise<TransportPort[]> }
+/** Optional monitor hand-off contributed by a deployment plugin after the command finishes. */
+export interface DeploymentMonitor {
+  label: string;
+  transportId: string;
+  defaultBaudRate: string;
+  connect: (address: string, baudRate: string) => Promise<void>;
+}
 export interface TransportOptions { address: string; parameters: Record<string, string> }
 export interface TransportParameter { key: string; label: string; type: "text" | "number"; initial: string; min?: number }
 export interface TransportHandlers { data: (bytes: Uint8Array) => void; error: (message: string) => void; closed: () => void }
@@ -67,8 +77,8 @@ export interface EditorAttachment {
 }
 export interface CapabilityMap {
   terminals: { id: string; name: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; interrupt: () => Promise<void>; clear: () => Promise<void>; mount: (element: HTMLElement) => () => void };
-  languages: { id: string; name: string; languageIds: string[]; diagnosticsPanel: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; attach: (attachment: EditorAttachment) => () => void };
-  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; deploy: (project: ProjectContext, address: string) => Promise<void> };
+  languages: { id: string; name: string; languageIds: string[]; diagnosticsPanel: string; start: (root: string) => Promise<void>; stop: () => Promise<void>; restart?: () => Promise<void>; attach: (attachment: EditorAttachment) => () => void };
+  deployments: { id: string; name: string; toolchain: string; endpointLabel: string; ports?: DeploymentPortSource; monitor?: DeploymentMonitor; deploy: (project: ProjectContext, address: string) => Promise<DeploymentResult | void> };
   transports: { id: string; name: string; unavailable?: string; endpoint: { label: string; placeholder: string }; parameters: TransportParameter[]; description: string; sendHint: string; list?: () => Promise<TransportPort[]>; connect: (options: TransportOptions, handlers: TransportHandlers, signal?: AbortSignal) => Promise<TransportConnection> };
   boards: { id: string; name: string; component: string; description: string };
   components: PartDefinition;

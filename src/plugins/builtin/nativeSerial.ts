@@ -42,7 +42,11 @@ export function createNativeSerialPlugin(backend = desktopBackend, supported = i
             close: () => {
               if (closing) return closing;
               closed = true; clearTimeout(timer);
-              closing = opened.then((id) => backend.close(id), () => {}).finally(() => { signal?.removeEventListener("abort", abort); if (active === connection) active = undefined; });
+              // Keep the active handle when the backend close fails, so a later disconnect can retry the same session.
+              closing = opened.then((id) => backend.close(id), () => {}).then(
+                () => { signal?.removeEventListener("abort", abort); if (active === connection) active = undefined; },
+                (error) => { closing = undefined; throw error; },
+              );
               return closing;
             },
           };

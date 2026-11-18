@@ -48,6 +48,7 @@ try {
   assert.equal(toolStatus.source, process.env.AETHER_PLATFORMIO_CLI ? "environment" : "path");
   assert.match(toolStatus.version, /PlatformIO/, "actual PlatformIO --version output");
   tasks.register(platformio.platformioBuild);
+  tasks.register(platformio.platformioUpload);
   // Isolated project: real disk create/rename/trash and empty-directory persistence.
   const managed = await fs.mkdtemp(path.join(os.tmpdir(), "aether-files-"));
   const bin = await fs.mkdtemp(path.join(os.tmpdir(), "aether-bin-"));
@@ -167,10 +168,26 @@ try {
   const changed = await workspace.reload(); changed.context.files["src/main.cpp"] = "invalid C++ syntax !\n"; await workspace.save(changed.context);
   const failed = await waitTask((await tasks.start("platformio.build")).id);
   assert.equal(failed.status, "failed"); assert.notEqual(failed.exitCode, 0); assert.equal(failed.artifacts.length, 0);
+  // The upload provider must reject an empty port instead of letting PlatformIO guess one.
+  const uploadArgs = platformio.platformioUpload.args as (options: Record<string, string>) => string[];
+  assert.throws(() => uploadArgs({}), /明确选择烧录端口/);
+  // The provider requires the explicit environment as well; the task service resolves a default, direct args do not.
+  assert.throws(() => uploadArgs({ port: "COM_SMOKE" }), /未选择 PlatformIO 构建环境/);
+  assert.deepEqual(uploadArgs({ port: "COM_SMOKE", environment: "native" }), ["run", "-e", "native", "--target", "upload", "--upload-port", "COM_SMOKE"]);
+  await assert.rejects(() => tasks.start("platformio.upload", {}), /明确选择烧录端口/);
+  // A failed upload keeps its real exit code and log; retry is a new task, never the finished one.
+  tasks.register({ id: "fixture.upload-fail", executable: process.execPath, args: ["-e", "console.error('fixture upload: could not open port');process.exit(7)"], artifacts: async () => [] });
+  const uploadFailure = await waitTask((await tasks.start("fixture.upload-fail", { port: "COM_SMOKE" })).id);
+  assert.equal(uploadFailure.status, "failed"); assert.equal(uploadFailure.exitCode, 7);
+  assert.match(uploadFailure.log, /could not open port/); assert.equal(uploadFailure.artifacts.length, 0);
+  assert.equal(uploadFailure.options?.port, "COM_SMOKE", "the task records the explicit upload port");
+  const uploadRetry = await waitTask((await tasks.start("fixture.upload-fail", { port: "COM_SMOKE" })).id);
+  assert.notEqual(uploadRetry.id, uploadFailure.id, "retry starts a fresh task");
+  assert.equal(uploadRetry.status, "failed"); assert.equal(uploadRetry.exitCode, 7);
   tasks.register({ id: "fixture.cancel", executable: process.execPath, args: ["-e", "require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit'});console.log('child tree started');setInterval(()=>{},1000)"], artifacts: async () => [] });
   const pending = await tasks.start("fixture.cancel");
   for (let n = 0; n < 100 && !tasks.list().find((task) => task.id === pending.id)!.log.includes("child tree started"); n++) await new Promise((resolve) => setTimeout(resolve, 10));
   await tasks.cancel(pending.id); assert.equal(tasks.list().find((task) => task.id === pending.id)!.status, "cancelled");
-  console.log("PASS host: actual folder save/reopen, external edit conflict, symlink boundary, real PlatformIO native compile and executable output, compiler failure, artifact hashes and child-process-tree cancellation");
+  console.log("PASS host: actual folder save/reopen, external edit conflict, symlink boundary, real PlatformIO native compile and executable output, compiler failure, artifact hashes, upload port validation and failed-upload retry with a fresh task, child-process-tree cancellation");
 
 } finally { await tasks.stopAll(); await workspace.close(); await fs.rm(directory, { recursive: true, force: true }); }

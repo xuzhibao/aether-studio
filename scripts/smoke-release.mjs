@@ -207,9 +207,12 @@ try {
   await until(async () => (await toolInput.inputValue()) === process.execPath);
   await until(async () => JSON.parse(await fs.readFile(path.join(profile, 'tools.json'), 'utf8').catch(() => '{}')).paths?.platformio === process.execPath);
   await pluginsDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  // Every buffer was saved or discarded above; a clean exit must not autosave a recovery draft.
+  assert.equal(await page.getByText('Saved to workspace', { exact: true }).count(), 1, 'no unsaved edits before the restart');
   await closeApp();
   await launch();
   await page.getByText(root, { exact: true }).first().waitFor();
+  assert.equal(await page.getByRole('dialog').filter({ hasText: '恢复未保存内容' }).count(), 0, 'a clean restart must not show a recovery draft');
   await page.locator('nav').getByRole('button', { name: 'Plugins', exact: true }).click();
   pluginsDialog = page.getByRole('dialog');
   await pluginsDialog.getByRole('button', { name: /^PlatformIO/ }).click();

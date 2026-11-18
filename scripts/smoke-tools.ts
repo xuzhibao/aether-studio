@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +36,7 @@ int main(int argc, char **argv) {
     puts(VERSION); return 0;
   }
   // Host artifact discovery parses stdout as JSON; keep this branch pure JSON.
+  if (argc > 2 && strcmp(argv[1], "project") == 0 && strcmp(argv[2], "metadata") == 0) { puts("{\"fixture\":{}}"); return 0; }
   if (argc > 1 && strcmp(argv[1], "project") == 0) { puts("[[\"platformio\",[[\"default_envs\",[\"fixture\"]]]],[\"env:fixture\",[]]]"); return 0; }
   printf("ARGV");
   for (int i = 1; i < argc; i++) printf(" [%s]", argv[i]);
@@ -213,24 +215,29 @@ export async function runToolSmoke() {
     process.env.AETHER_FIXTURE_MARKER = markerFile;
     const build = await waitTask((await tasks.start("platformio.build")).id);
     assert.equal(build.status, "succeeded", build.error);
-    assert.ok(build.log.startsWith("$ " + executableB + " run"), build.log);
+    assert.ok(build.log.startsWith("$ " + executableB + " run -e fixture"), build.log);
+    assert.equal(build.environment, "fixture");
     assert.match(build.toolVersion ?? "", /FixtureTool 2\.0\.0/);
     assert.ok(build.artifacts.some((artifact) => artifact.path === ".pio/build/fixture/program"), JSON.stringify(build.artifacts));
     const invocations = await fs.readFile(markerFile, "utf8");
-    assert.ok(invocations.includes("CALL [run]"), invocations);
+    assert.ok(invocations.includes("CALL [run] [-e] [fixture]"), invocations);
     assert.ok(invocations.includes("CALL [project] [config] [--json-output]"), "artifact discovery uses the same executable: " + invocations);
     const compiledb = await waitTask((await tasks.start("platformio.compiledb")).id);
     assert.equal(compiledb.status, "succeeded", compiledb.error);
-    assert.ok(compiledb.log.startsWith("$ " + executableB + " run --target compiledb"), compiledb.log);
+    assert.ok(compiledb.log.startsWith("$ " + executableB + " run -e fixture --target compiledb"), compiledb.log);
+    assert.equal(compiledb.environment, "fixture");
     const upload = await waitTask((await tasks.start("platformio.upload", { port: "COM9" })).id);
     assert.equal(upload.status, "succeeded", upload.error);
-    assert.ok(upload.log.startsWith("$ " + executableB + " run --target upload --upload-port COM9"), upload.log);
+    assert.ok(upload.log.startsWith("$ " + executableB + " run -e fixture --target upload --upload-port COM9"), upload.log);
+    assert.equal(upload.environment, "fixture");
+    const uploadInvocations = await fs.readFile(markerFile, "utf8");
+    assert.ok(uploadInvocations.includes("CALL [run] [-e] [fixture] [--target] [upload] [--upload-port] [COM9]"), "upload receives the fixed environment: " + uploadInvocations);
 
     // The literal ;&& path also reaches spawn unchanged for a real build task.
     await tools.setPath("platformio", literalExecutable);
     const literalBuild = await waitTask((await tasks.start("platformio.build")).id);
     assert.equal(literalBuild.status, "succeeded", literalBuild.error);
-    assert.ok(literalBuild.log.startsWith("$ " + literalExecutable + " run"), literalBuild.log);
+    assert.ok(literalBuild.log.startsWith("$ " + literalExecutable + " run -e fixture"), literalBuild.log);
     await tools.setPath("platformio", executableB);
 
     // A saved change must not swap the executable of a running task.
@@ -243,7 +250,7 @@ export async function runToolSmoke() {
     assert.ok(slowDone.log.startsWith("$ " + executableB + " sleep"), "running task keeps its executable");
     assert.match(slowDone.toolVersion ?? "", /FixtureTool 2\.0\.0/);
     const next = await waitTask((await tasks.start("platformio.build")).id);
-    assert.ok(next.log.startsWith("$ " + executableA + " run"), "the next task uses the saved path");
+    assert.ok(next.log.startsWith("$ " + executableA + " run -e fixture"), "the next task uses the saved path");
 
     // clangd resolves the saved path and restarts with it when the setting changes.
     const languageWorkspace = new WorkspaceService();
@@ -269,6 +276,37 @@ export async function runToolSmoke() {
     assert.equal(await language.restartForTool("platformio"), false);
     await language.stop();
     await languageWorkspace.close();
+
+    // afterSuccess is part of the task: source edits it makes invalidate the run, and final artifact hashes are recomputed.
+    await fs.mkdir(path.join(project, "src"), { recursive: true });
+    tasks.register({ id: "fixture.hook-edit", executable: process.execPath, args: ["-e", "0"], recordName: "hook-edit.json", artifacts: async () => ["platformio.ini"], afterSuccess: async () => { await fs.writeFile(path.join(project, "src/hook.txt"), "side effect\n"); } });
+    const hookEdit = await waitTask((await tasks.start("fixture.hook-edit")).id);
+    assert.equal(hookEdit.status, "failed");
+    assert.match(hookEdit.error ?? "", /附加步骤期间源文件发生变化/);
+    assert.equal(await fs.stat(path.join(project, ".aether/hook-edit.json")).catch(() => null), null, "a hook-side source change must not register a record");
+    const hookBytes = "[]\n// hook rewrote the database\n";
+    tasks.register({ id: "fixture.hook-artifact", executable: process.execPath, args: ["-e", "0"], recordName: "hook-artifact.json", inputExcludes: ["compile_commands.json"], artifacts: async () => ["compile_commands.json"], afterSuccess: async () => { await fs.writeFile(path.join(project, "compile_commands.json"), hookBytes); } });
+    const hookArtifact = await waitTask((await tasks.start("fixture.hook-artifact")).id);
+    assert.equal(hookArtifact.status, "succeeded", hookArtifact.error);
+    const artifactRecord = JSON.parse(await fs.readFile(path.join(project, ".aether/hook-artifact.json"), "utf8"));
+    assert.equal(artifactRecord.artifacts[0].sha256, createHash("sha256").update(hookBytes).digest("hex"), "artifact hashes must be computed after the hook");
+
+    // Cancelling while the hook runs stops it, reports cancelled and writes no success record.
+    const hookMarker = path.join(toolTemp, "hook-started.txt");
+    tasks.register({ id: "fixture.hook-cancel", executable: process.execPath, args: ["-e", "0"], recordName: "hook-cancel.json", artifacts: async () => ["platformio.ini"], afterSuccess: (_root, _executable, _options, signal) => {
+      return fs.writeFile(hookMarker, "started").then(() => new Promise<void>((_resolve, reject) => {
+        if (signal.aborted) { reject(new Error("hook aborted")); return; }
+        signal.addEventListener("abort", () => reject(new Error("hook aborted")), { once: true });
+      }));
+    } });
+    const pendingHook = await tasks.start("fixture.hook-cancel");
+    for (let n = 0; n < 300 && !(await fs.stat(hookMarker).catch(() => null)); n++) await new Promise((resolve) => setTimeout(resolve, 20));
+    await tasks.cancel(pendingHook.id);
+    const cancelledHook = tasks.list().find((item) => item.id === pendingHook.id)!;
+    assert.equal(cancelledHook.status, "cancelled");
+    assert.deepEqual(cancelledHook.artifacts, []);
+    assert.equal(await fs.stat(path.join(project, ".aether/hook-cancel.json")).catch(() => null), null, "a cancelled hook must not write a success record");
+
     await tasks.stopAll();
     await workspace.close();
     console.log("PASS tool settings: setting/env/PATH priority, user-data persistence and fresh-process restore, actual --version from paths with spaces, Chinese, ; and &&, cached probe errors, invalid and missing path errors, build/compiledb/upload executable wiring, no tool swap mid-task, clangd restart with the new path (real CLI and LSP fixtures, not PlatformIO/clangd themselves)");

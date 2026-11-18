@@ -5,10 +5,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter, CancellationTokenSource, type MessageConnection } from "vscode-jsonrpc/node.js";
 import type { CompletionItem, CompletionList, Definition, DefinitionLink, Hover, InitializeResult, PublishDiagnosticsParams } from "vscode-languageserver-protocol";
 import { validProjectPath } from "../shared/projectFormat";
-import type { LanguageRequest, LanguageSnapshot, Position, DefinitionTarget } from "../shared/language";
+import type { LanguageRequest, LanguageSnapshot, LanguageStartOptions, CompileDatabaseState, Position, DefinitionTarget } from "../shared/language";
 import type { WorkspaceService } from "./workspace";
-export interface LanguageProvider { id: string; executable: string | (() => string); args: (root: string) => string[]; tool?: string }
-interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void>; toolId?: string }
+export interface LanguageLaunchContext { environment: string; compileDatabase: CompileDatabaseState; compileDatabaseMessage: string; queryDrivers: string[] }
+export interface LanguageProvider {
+  id: string; executable: string | (() => string); tool?: string;
+  // Inspects the project before the process starts; the result is shown in the panel and passed to args().
+  context?: (root: string, options: LanguageStartOptions) => Promise<LanguageLaunchContext>;
+  args: (root: string, context: LanguageLaunchContext) => string[];
+  // Optional process environment, e.g. a PATH that lets clangd execute the authorized compiler from the compile command.
+  env?: (context: LanguageLaunchContext) => NodeJS.ProcessEnv;
+}
+interface Session { snapshot: LanguageSnapshot; child: ChildProcessWithoutNullStreams; rpc: MessageConnection; done: Promise<void>; toolId?: string; quiet: boolean; options: { environment: string; queryDriver: boolean } }
 const methods = { completion: "textDocument/completion", hover: "textDocument/hover", definition: "textDocument/definition" } as const;
 export class LanguageService {
   private providers = new Map<string, LanguageProvider>();
@@ -33,28 +41,44 @@ export class LanguageService {
     const file = path.relative(root, fileURLToPath(uri)).split(path.sep).join("/");
     return validProjectPath(file) ? file : null;
   }
-  async start(providerId: string, root: string) {
+  private options(options: LanguageStartOptions = {}) { return { environment: options.environment?.trim() ?? "", queryDriver: options.queryDriver === true }; }
+
+  async start(providerId: string, root: string, options: LanguageStartOptions = {}) {
     if (root !== this.workspace.root) throw new Error("请先打开对应磁盘工程");
-    if (this.session?.snapshot.provider === providerId && this.session.snapshot.root === root && this.session.snapshot.status === "ready") return this.get()!;
-    await this.stop();
+    const launchOptions = this.options(options);
+    const current = this.session;
+    // An empty requested environment means the UI has not loaded the list yet; keep the environment the process already uses.
+    const sameEnvironment = launchOptions.environment === "" || current?.snapshot.environment === launchOptions.environment;
+    if (current && current.snapshot.provider === providerId && current.snapshot.root === root && current.snapshot.status === "ready"
+      && sameEnvironment && current.options.queryDriver === launchOptions.queryDriver) return this.get()!;
+    // Keep the old documents while switching, so the renderer can reopen its unsaved buffers on the new session.
+    await this.stop(undefined, { quiet: !!current });
     const provider = this.providers.get(providerId); if (!provider) throw new Error("未注册的语言服务：" + providerId);
     const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
-    const snapshot: LanguageSnapshot = { id: ++this.sequence, provider: providerId, root, executable, status: "starting", compileDatabase: !!await fs.stat(path.join(root, "compile_commands.json")).catch(() => null), error: "", log: "", documents: [] };
-    const child = spawn(executable, provider.args(root), { cwd: root, shell: false, windowsHide: true });
+    const context = provider.context ? await provider.context(root, launchOptions) : { environment: launchOptions.environment, compileDatabase: "missing" as const, compileDatabaseMessage: "", queryDrivers: [] };
+    const args = provider.args(root, context);
+    const snapshot: LanguageSnapshot = {
+      id: ++this.sequence, provider: providerId, root, executable, environment: context.environment, status: "starting",
+      compileDatabase: context.compileDatabase, compileDatabaseMessage: context.compileDatabaseMessage, queryDrivers: context.queryDrivers, args, diagnosticsReceived: 0,
+      error: "", log: "", documents: [],
+    };
+    const child = spawn(executable, args, { cwd: root, shell: false, windowsHide: true, env: provider.env ? provider.env(context) : process.env });
     const spawned = new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
     const rpc = createMessageConnection(new StreamMessageReader(child.stdout), new StreamMessageWriter(child.stdin));
     let resolve!: () => void; const done = new Promise<void>((finish) => { resolve = finish; });
-    const session: Session = { snapshot, child, rpc, done, toolId: provider.tool }; this.session = session;
+    const session: Session = { snapshot, child, rpc, done, toolId: provider.tool, quiet: false, options: { ...launchOptions } }; this.session = session;
     child.stderr.on("data", (chunk: Buffer) => { snapshot.log = (snapshot.log + chunk.toString()).slice(-30000); this.emit(session); });
     child.on("error", (error) => { snapshot.error = error.message; snapshot.status = "error"; this.emit(session); rpc.dispose(); });
     child.on("close", (code, signal) => {
+      // A quiet restart keeps the UI on the old snapshot until the replacement is ready.
+      if (session.quiet) { snapshot.documents = []; rpc.dispose(); resolve(); return; }
       if (snapshot.status !== "stopped" && snapshot.status !== "error") { snapshot.status = "error"; snapshot.error = `语言服务退出：${signal ?? code}`; }
       snapshot.documents = []; this.emit(session); rpc.dispose(); resolve();
     });
     rpc.onNotification("textDocument/publishDiagnostics", (params: PublishDiagnosticsParams) => {
       const file = this.relative(root, params.uri); const document = snapshot.documents.find((item) => item.file === file);
       if (!document || (params.version !== undefined && params.version !== document.version)) return;
-      document.diagnostics = params.diagnostics; this.emit(session);
+      document.diagnostics = params.diagnostics; snapshot.diagnosticsReceived++; this.emit(session);
     });
     rpc.onRequest("workspace/configuration", (params: { items: unknown[] }) => params.items.map(() => null));
     rpc.listen(); this.emit(session);
@@ -119,10 +143,31 @@ export class LanguageService {
   }
   async stop(id?: number, options: { quiet?: boolean } = {}) {
     const session = this.session; if (!session || (id !== undefined && id !== session.snapshot.id)) return;
-    if (!options.quiet) { session.snapshot.status = "stopped"; session.snapshot.documents = []; this.emit(session); }
+    if (options.quiet) session.quiet = true;
+    else { session.snapshot.status = "stopped"; session.snapshot.documents = []; this.emit(session); }
     session.rpc.dispose(); session.child.kill();
     const timer = setTimeout(() => session.child.kill("SIGKILL"), 1500);
     try { await session.done; } finally { clearTimeout(timer); if (this.session === session) this.session = undefined; }
+  }
+
+  // Explicit restart (environment or query-driver change): a fresh process reads the current compilation database.
+  async restart(id: number, options: LanguageStartOptions = {}) {
+    const session = this.require(id);
+    const merged = { environment: options.environment ?? session.snapshot.environment, queryDriver: options.queryDriver ?? session.options.queryDriver };
+    const { provider, root } = session.snapshot;
+    await this.stop(undefined, { quiet: true });
+    return this.start(provider, root, merged);
+  }
+
+  // A successful compilation database task replaces the flags clangd uses; restart quietly so unsaved buffers are reopened.
+  async refreshCompileDatabase(root: string, environment = "") {
+    const session = this.session;
+    if (!session || session.snapshot.root !== root || session.snapshot.status !== "ready") return false;
+    const { provider } = session.snapshot;
+    const options = { ...session.options, environment: environment || session.snapshot.environment };
+    await this.stop(undefined, { quiet: true });
+    await this.start(provider, root, options);
+    return true;
   }
 
   // A saved tool change restarts a ready session so the next process uses the new executable.
@@ -131,6 +176,6 @@ export class LanguageService {
     if (!session || session.toolId !== toolId || session.snapshot.status !== "ready") return false;
     const { provider, root } = session.snapshot;
     await this.stop(undefined, { quiet: true });
-    try { await this.start(provider, root); return true; } catch { return false; }
+    try { await this.start(provider, root, session.options); return true; } catch { return false; }
   }
 }

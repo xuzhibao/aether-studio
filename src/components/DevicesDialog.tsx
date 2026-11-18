@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { useStudio } from "../store/studio";
 import { useTransport } from "../store/transport";
+import { useDisk } from "../store/disk";
 import { usePlugins } from "../plugins/usePlugins";
 import type { TransportPort } from "../plugins/api";
+import { cn } from "../lib/utils";
 import { CloseButton, Modal } from "./Dialogs";
 
 export function DevicesDialog() {
@@ -11,6 +13,8 @@ export function DevicesDialog() {
   const registry = usePlugins();
   const transports = registry.all("transports");
   const io = useTransport();
+  const taskRunning = useDisk((state) => state.tasks.some((task) => task.status === "running"));
+  const taskStarting = useDisk((state) => state.starting);
   const [selected, setSelected] = useState(() => transports[0]?.id ?? "");
   const [addresses, setAddresses] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<Record<string, Record<string, string>>>({});
@@ -20,7 +24,10 @@ export function DevicesDialog() {
   const addressRef = useRef<HTMLInputElement>(null);
   const revision = registry.getRevision();
   const transport = registry.get("transports", selected);
-  const busy = ["connecting", "connected", "disconnecting"].includes(io.status);
+  // Upload/build tasks own the native port; do not let the monitor reopen it and break the running command.
+  const ioBusy = ["connecting", "connected", "disconnecting"].includes(io.status);
+  const portBusy = (taskRunning || taskStarting) && !!transport?.list;
+  const busy = ioBusy || portBusy;
   const address = addresses[selected] ?? "";
   const parameters = Object.fromEntries(transport?.parameters.map((field) => [field.key, settings[selected]?.[field.key] ?? field.initial]) ?? []);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -29,6 +36,8 @@ export function DevicesDialog() {
   }, [revision, selected]);
   useEffect(() => {
     if (dialog !== "devices") return;
+    const preferred = io.preferredAddress(selected);
+    if (preferred) setAddresses((current) => current[selected] ? current : { ...current, [selected]: preferred });
     let current = true;
     setPorts([]); setError(""); setLoading(!!transport?.list && !transport.unavailable);
     if (transport?.list && !transport.unavailable) void transport.list().then((ports) => { if (current) setPorts(ports); }, (error) => { if (current) setError(String(error)); }).finally(() => { if (current) setLoading(false); });
@@ -39,17 +48,23 @@ export function DevicesDialog() {
       <div className="flex justify-between"><Dialog.Title className="text-[14px] font-semibold">Devices</Dialog.Title><CloseButton onClick={() => setDialog(null)} /></div>
       <Dialog.Description className="mt-3 text-[11px] leading-6 text-[#7D848C]">选择通信插件和地址，建立连接后在 Serial Monitor 收发数据。Demo Simulation 独立运行。</Dialog.Description>
       {!transports.length ? <p className="mt-4 text-xs text-[#9A702C]">没有已启用的通信插件。</p> : <form className="mt-4 space-y-3 text-[11px]" onSubmit={(event) => { event.preventDefault(); if (!busy && transport && !transport.unavailable) void io.connect(selected, { address: address.trim(), parameters }); }}>
-        <label className="block">通信插件<select aria-label="通信插件" disabled={busy} value={selected} onChange={(event) => setSelected(event.target.value)} className="input mt-1 w-full">{transports.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <label className="block">通信插件<select aria-label="通信插件" disabled={ioBusy} value={selected} onChange={(event) => setSelected(event.target.value)} className="input mt-1 w-full">{transports.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         {transport?.unavailable && <p role="status" className="rounded bg-[#FFF5E7] p-2 text-[#9A702C]">{transport.unavailable}</p>}
         <label className="block">{transport?.endpoint.label}<input ref={addressRef} aria-label={transport?.endpoint.label} list={transport?.list ? "transport-addresses" : undefined} disabled={busy || !!transport?.unavailable} value={address} onChange={(event) => setAddresses({ ...addresses, [selected]: event.target.value })} placeholder={transport?.endpoint.placeholder} className="input mt-1 w-full" /></label>
         <datalist id="transport-addresses">{ports.map((port) => <option key={port.path} value={port.path}>{port.label}</option>)}</datalist>
+        {transport?.list && !transport.unavailable && ports.length > 0 && <div className="rounded-md border border-[#E9EBEE] p-2">
+          <p className="text-[10px] font-medium text-[#59616A]">已枚举端口（操作系统报告）</p>
+          <ul className="mt-1 space-y-1">{ports.map((port) => <li key={port.path}><button type="button" aria-pressed={address === port.path} className={cn("w-full rounded px-2 py-1 text-left text-[10px]", address === port.path ? "bg-[#F2F8FF]" : "hover:bg-[#F8F9FB]")} onClick={() => setAddresses({ ...addresses, [selected]: port.path })}><span className="font-mono">{port.path}</span><span className="ml-2 text-[#59616A]">{port.label}</span>{port.detail && <span className="ml-2 text-[#90969E]">{port.detail}</span>}</button></li>)}</ul>
+          <p className="mt-1 text-[10px] leading-5 text-[#90969E]">厂商和 VID/PID 来自操作系统，不能据此判断开发板型号或固件；不会自动识别或自动刷写。</p>
+        </div>}
         <div className="flex items-end gap-2">{transport?.parameters.map((field) => <label key={field.key} className="block flex-1">{field.label}<input aria-label={field.label} type={field.type} min={field.min} step={field.type === "number" ? "1" : undefined} disabled={busy} value={parameters[field.key]} onChange={(event) => setSettings({ ...settings, [selected]: { ...settings[selected], [field.key]: event.target.value } })} className="input mt-1 w-full" /></label>)}<div className="flex flex-1 justify-end gap-2">{transport?.list && <button type="button" className="btn px-3 py-1.5" disabled={loading || busy || !!transport.unavailable} onClick={() => setRefreshToken((token) => token + 1)}>{loading ? "正在枚举…" : "刷新端口"}</button>}<button type="submit" className="btn btn-primary px-3 py-1.5" disabled={busy || !address.trim() || !transport || !!transport.unavailable}>建立连接</button></div></div>
         <p className="text-[10px] leading-5 text-[#90969E]">{transport?.description}</p>
+        {portBusy && <p role="status" className="text-[10px] leading-5 text-[#A8741F]">构建或上传任务正在运行，暂时不能连接原生串口。</p>}
         {!loading && transport?.list && !transport.unavailable && ports.length === 0 && <p className="text-[10px] text-[#90969E]">未枚举到端口，可手动输入路径。</p>}
       </form>}
       <div className="mt-4 rounded-md border border-[#E9EBEE] p-3 text-[11px]" role="status">{io.status === "connected" ? `已连接 ${io.label}` : io.status === "connecting" ? "正在建立连接…" : io.status === "disconnecting" ? "正在断开…" : "未建立连接"}</div>
       {(error || io.error) && <p role="alert" className="mt-3 whitespace-pre-wrap text-[11px] text-[#A8741F]">{error || io.error}</p>}
-      <div className="mt-4 flex justify-end gap-2 text-[11px]"><button className="btn px-3 py-1.5" onClick={() => setDialog("plugins")}>管理插件</button>{["connecting", "connected"].includes(io.status) && <button className="btn px-3 py-1.5" onClick={() => void io.disconnect()}>断开连接</button>}<button className="btn px-3 py-1.5" onClick={() => { setDialog(null); setTab("serial"); }}>打开 Serial Monitor</button></div>
+      <div className="mt-4 flex justify-end gap-2 text-[11px]"><button className="btn px-3 py-1.5" onClick={() => setDialog("plugins")}>管理插件</button>{["connecting", "connected", "error"].includes(io.status) && <button className="btn px-3 py-1.5" onClick={() => void io.disconnect()}>断开连接</button>}<button className="btn px-3 py-1.5" onClick={() => { setDialog(null); setTab("serial"); }}>打开 Serial Monitor</button></div>
     </div>
   </Modal>;
 }

@@ -6,6 +6,7 @@ import { CloseButton, Modal } from "../../components/Dialogs";
 import { useDisk, diskChanges } from "../../store/disk";
 import { useStudio } from "../../store/studio";
 import { cn } from "../../lib/utils";
+import { RecoveryDialog } from "./RecoveryDialog";
 import {
   createEntry, deleteEntry, dirtyUnder, joinPath, pathProblem, renameEntry, useProjectFiles,
 } from "./projectFilesState";
@@ -26,6 +27,7 @@ export function ProjectFilesDialogs() {
   if (dialog.kind === "create") return <CreateEntryDialog key={dialog.mode + ":" + dialog.parent} mode={dialog.mode} parent={dialog.parent} />;
   if (dialog.kind === "rename") return <RenameEntryDialog key={dialog.target} target={dialog.target} effectiveDirectory={dialog.directory} />;
   if (dialog.kind === "delete") return <DeleteEntryDialog key={dialog.target} target={dialog.target} directory={dialog.directory} />;
+  if (dialog.kind === "recovery") return <RecoveryDialog />;
   return <DiskChangesDialog />;
 }
 
