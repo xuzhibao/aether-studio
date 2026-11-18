@@ -1,6 +1,16 @@
+import { createElement, lazy, Suspense } from "react";
 import type { StudioPlugin } from "../api";
+// Store-backed UI loads on demand: the plugin registry initializes before the stores.
+const LazyRunPanel = lazy(() => import("./MicropythonRunPanel").then((module) => ({ default: module.MicropythonRunPanel })));
+const MicropythonRunPanel = () => createElement(Suspense, { fallback: createElement("div", { className: "p-4 text-xs" }, "Loading MicroPython panel…") }, createElement(LazyRunPanel));
+
 export const micropythonPlugin: StudioPlugin = {
-  manifest: { id: "aether.micropython", name: "MicroPython", version: "0.1.0", type: "toolchain", entry: "builtin/micropython.ts", enabled: true, description: "提供示例代码和工程文件检查；尚未接入真实编译器。" },
+  manifest: {
+    id: "aether.micropython", name: "MicroPython", version: "0.2.0", type: "toolchain", entry: "builtin/micropython.ts", enabled: true,
+    description: "提供示例代码和工程文件检查，并通过官方 mpremote 在已安装 MicroPython 的设备上运行当前工程中已保存的 .py 文件；不安装固件，不提供板上持久文件上传。",
+    settings: [{ key: "mpremote.cli", label: "mpremote 可执行文件", type: "tool-path", tool: "mpremote", placeholder: "例如 C:/Users/you/AppData/Local/Programs/Python/Python313/Scripts/mpremote.exe", help: "留空时使用环境变量 AETHER_MPREMOTE，其次在 PATH 中查找 mpremote。也可以填写 mpremote.py，此时会通过 Python 解释器运行（可用 AETHER_MPREMOTE_PYTHON 指定解释器）。" }],
+    settingsHelp: "运行任务使用固定 argv：connect port:<明确端口> run <本地文件>，不经过 shell，也不接受 auto/list。脚本必须在当前打开的磁盘工程中已保存。",
+  },
   activate(api) {
     api.register("toolchains", {
       id: "micropython", name: "MicroPython (示例工具链)",
@@ -15,6 +25,8 @@ export const micropythonPlugin: StudioPlugin = {
         return ["工程文件检查通过：main.py 非空，config.json 可解析。未执行 Python 语法检查或真实编译。"];
       },
     });
-    api.register("commands", { id: "micropython.info", name: "MicroPython: 显示工具链信息", run: () => api.host.log("MicroPython 示例工具链：文件检查已实现，真实编译/烧录尚未实现。") });
+    api.register("commands", { id: "micropython.info", name: "MicroPython: 显示工具链信息", run: () => api.host.log("MicroPython 插件：提供工程文件检查；可通过 mpremote 在设备上运行已保存的 .py。不安装固件，不提供板上持久文件上传。") });
+    api.register("panels", { id: "micropython.run", name: "在设备运行 Python", render: MicropythonRunPanel });
+    api.register("commands", { id: "micropython.run.open", name: "MicroPython: 在设备运行已保存的 Python 文件", run: async () => { const { useStudio } = await import("../../store/studio"); useStudio.getState().setTab("panel:micropython.run"); } });
   },
 };

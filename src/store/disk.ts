@@ -7,6 +7,7 @@ import type { DiskWorkspace, TaskSnapshot, TaskEnvironment } from "../../shared/
 import { plugins } from "../plugins/runtime";
 import type { EspPreflightResult } from "../../shared/esp";
 import { decodeProject, encodeProject } from "../../shared/projectFormat";
+import { mergeTaskList } from "../lib/tasks";
 import { recoveryRevision, recoveryRestoredRoot, flushRecoveryDraft, noteRecoverySaved, noteRecoverySavedRevision, noteRecoveryDiscarded, recoveryOnRootOpened, startRecovery } from "./recovery";
 export type DiskChangeKind = "modified" | "deleted" | "added";
 export interface DiskChange { file: string; kind: DiskChangeKind; disk: string | null; local: string | null; dirty: boolean }
@@ -325,7 +326,7 @@ export const useDisk = create<DiskState>((set, get) => {
       if (useTransport.getState().status !== "disconnected") throw new Error("串口监视器尚未释放端口，已取消任务。请手动断开连接后重试。");
       // PlatformIO 的构建、上传和编译数据库共用当前选定的环境，避免产物和数据库串用。
       const task = await desktop().tasks.start(provider, (provider.startsWith("platformio.") || provider.startsWith("esp.")) && environment ? { ...requested, environment } : requested);
-      set((s) => ({ error: "", tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
+      set((s) => ({ error: "", tasks: mergeTaskList(s.tasks, task) }));
       return task;
     } finally { set({ starting: false }); }
   },
