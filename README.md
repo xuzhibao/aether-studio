@@ -156,11 +156,13 @@ npm run desktop
 PlatformIO 的增量构建可能沿用 `.pio/build/<环境名>/partitions.bin`：只修改 `platformio.ini` 或分区 CSV 后，旧分区表仍可能被烧录。Aether 在每次普通构建和上传前记录并核对以下输入：
 
 - `platformio.ini` 的完整内容（包含所选环境）；
-- 该环境实际使用的 `board_build.partitions`（环境段优先，其次 `[board:...]`；`default` 表示平台内置表）；
-- 分区 CSV 的内容哈希（文件名不变、只改内容也能发现）；
+- 该环境实际使用的 `board_build.partitions`（以 `platformio project config --json-output` 展开后的 `[env:环境名]` 为准，因此 `[env]` 默认值、`extends` 和 `[common]` 都按 PlatformIO 的解析结果处理）；
+- 平台内置表与同名工程文件：`default.csv`、`huge_app.csv`、`min_spiffs.csv` 等内置表名优先于工程内的同名文件；其他工程内 CSV 按内容哈希（文件名不变、只改内容也能发现）；
 - 工程根路径和环境名。
 
-输入与上次记录不同，或环境已有构建目录但没有记录时，只把该环境的 `partitions.bin`、`partitions.csv`、`bootloader.bin`、`firmware.bin`、`firmware.elf`、`firmware.map` 移动到 `.pio/build/.aether-stale/<环境名>/<时间戳>/`，不删除，也不动其他环境；下一次构建会重新生成。输入没有变化时不会清理任何缓存。记录保存在 `.aether/build-config.json`。分区表必须位于工程目录内；路径经过符号链接，或包含无法解析的 `${...}` 插值时，构建会在启动前拒绝。生成编译数据库不会清理构建缓存。
+输入与上次记录不同，或环境已有构建目录但没有记录时，只把该环境的 `partitions.bin`、`partitions.csv`、`bootloader.bin`、`firmware.bin` 移动到 `.pio/build/.aether-stale/<环境名>/`，同名文件只保留最近一份，不删除其他文件，也不动其他环境；`firmware.elf` 和 `firmware.map` 留在原处，移除 `firmware.bin` 会强制重新链接。下一次构建会重新生成。输入没有变化时不会清理任何缓存。记录保存在 `.aether/build-config.json`。
+
+分区表必须位于工程目录内。工程内的 `.pio`、`.pio/build`、环境构建目录、`.aether` 和 `.aether-stale` 若是指向别处的符号链接，或分区表路径经过链接、包含无法解析的 `${...}` 插值，构建会在启动前拒绝，不会移动链接目标里的内容。生成编译数据库不会清理构建缓存。
 
 构建前如果发现磁盘被外部修改（包括 `platformio.ini` 和分区 CSV），Aether 会打开逐文件的差异检查：
 
@@ -306,7 +308,7 @@ npm run smoke:build-review
 npm run smoke:provider
 ```
 
-`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、无记录旧缓存、按环境隔离、路径边界、符号链接拒绝，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、PlatformIO 展开后的环境段、内置表优先级、`extends`/`[common]`、无记录旧缓存、按环境隔离、quarantine 只保留最近一份、`.pio`/`.aether`/`.aether-stale` 链接与路径边界，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host
