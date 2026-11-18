@@ -9,6 +9,7 @@ import { useStudio } from "../../store/studio";
 import { cn } from "../../lib/utils";
 import { IconButton, Tip } from "../../components/ui";
 import { useProjectFiles, parentOf } from "./projectFilesState";
+import { useRecovery } from "../../store/recovery";
 
 interface Node { name: string; path: string; dir: boolean; children: Node[] }
 
@@ -49,6 +50,8 @@ export function ProjectExplorer() {
   const selected = useProjectFiles((state) => state.selected);
   const select = useProjectFiles((state) => state.select);
   const openDialog = useProjectFiles((state) => state.open);
+  const recoveryDrafts = useRecovery((state) => state.drafts.length);
+  const openRecovery = useRecovery((state) => state.openDialog);
   const [closed, setClosed] = useState<string[]>([]);
   const diskReady = !!disk.root;
   const tree = buildTree(Object.keys(files), disk.directories);
@@ -92,6 +95,12 @@ export function ProjectExplorer() {
           />
         ))}
       </div>
+      {recoveryDrafts > 0 && (
+        <button className="mt-1 flex w-full items-center gap-1.5 rounded-[5px] px-1.5 py-1 text-left text-[9.5px] text-[#A8741F] hover:bg-[#FBF5E9]" onClick={openRecovery}>
+          <span className="h-[4px] w-[4px] rounded-full bg-[#C08A2E]" />
+          恢复草稿：{recoveryDrafts} 份未处理…
+        </button>
+      )}
       {diskReady && (
         <button className="mt-1 flex w-full items-center gap-1.5 rounded-[5px] px-1.5 py-1 text-left text-[9.5px] text-[#A8741F] hover:bg-[#FBF5E9]" onClick={() => openDialog({ kind: "changes" })}>
           <span className={cn("h-[4px] w-[4px] rounded-full", pendingChanges ? "bg-[#C08A2E]" : "bg-[#C7CBD1]")} />

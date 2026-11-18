@@ -9,6 +9,7 @@ export type ProjectFilesDialog =
   | { kind: "rename"; target: string; directory: boolean }
   | { kind: "delete"; target: string; directory: boolean }
   | { kind: "changes"; file?: string }
+  | { kind: "recovery"; root?: string }
   | null;
 
 interface ProjectFilesState {

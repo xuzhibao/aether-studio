@@ -7,6 +7,7 @@ const api: DesktopAPI = {
   tools: { list: () => ipcRenderer.invoke("tools:list"), status: (id) => ipcRenderer.invoke("tools:status", id), setPath: (id, value) => ipcRenderer.invoke("tools:setPath", id, value), pick: (id) => ipcRenderer.invoke("tools:pick", id), onChanged: (callback) => event("tools:changed", callback) },
   runtime: "electron", window: (action) => ipcRenderer.invoke("window:action", action),
   files: { export: (name, content) => ipcRenderer.invoke("files:export", name, content), import: () => ipcRenderer.invoke("files:import") },
+  recovery: { save: (draft) => ipcRenderer.invoke("recovery:save", draft), list: () => ipcRenderer.invoke("recovery:list"), read: (root) => ipcRenderer.invoke("recovery:read", root), clear: (root, revision) => ipcRenderer.invoke("recovery:clear", root, revision), discard: (root) => ipcRenderer.invoke("recovery:discard", root) },
   workspace: {
     open: () => ipcRenderer.invoke("workspace:open"), saveAs: (context) => ipcRenderer.invoke("workspace:saveAs", context), save: (context) => ipcRenderer.invoke("workspace:save", context),
     setDirty: (dirty) => ipcRenderer.invoke("workspace:setDirty", dirty), reload: () => ipcRenderer.invoke("workspace:reload"), close: () => ipcRenderer.invoke("workspace:close"), restore: () => ipcRenderer.invoke("workspace:restore"), onChanged: (callback) => event("workspace:changed", callback),

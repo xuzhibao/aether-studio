@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdirSync, promises as fs } from "node:fs";
 import { WorkspaceService } from "./workspace";
+import { RecoveryService } from "./recovery";
 import { TaskService } from "./tasks";
 import { createPlatformioPlugins } from "./plugins/platformio";
 import { LanguageService } from "./language";
@@ -17,6 +18,8 @@ protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard
 if (process.env.AETHER_USER_DATA_DIR) { mkdirSync(process.env.AETHER_USER_DATA_DIR, { recursive: true }); app.setPath("userData", path.resolve(process.env.AETHER_USER_DATA_DIR)); }
 let window: BrowserWindow;
 let dirty = false;
+// Set once the user explicitly confirms discarding unsaved changes; late autosaves must not resurrect a draft.
+let abandoned = false;
 const confirmClose = (detail = "选择放弃修改将关闭窗口。") => {
   if (!dirty) return true;
   const discard = dialog.showMessageBoxSync(window, { type: "question", message: "工程有未保存修改", detail, buttons: ["取消", "放弃修改并继续"], defaultId: 0, cancelId: 0 }) === 1;
@@ -26,6 +29,7 @@ let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
+const recovery = new RecoveryService(() => path.join(app.getPath("userData"), "recovery"));
 const tasks = new TaskService(workspace, (task) => {
   emit("tasks:changed", task);
   // Providers declare what a successful task produced; the host only reacts to the generic kind.
@@ -62,6 +66,13 @@ function routes() {
   });
   handle("files:import", async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project", properties: ["openFile"], filters: [{ name: "Aether Project", extensions: ["aether", "json"] }] }); return result.canceled ? null : fs.readFile(result.filePaths[0], "utf8"); });
   handle("workspace:setDirty", (value: boolean) => { dirty = value === true; });
+  // Recovery drafts are plain files in the user data directory; they never write into the project folder.
+  // After an explicit "discard changes" at quit time, ignore writes so the draft cannot reappear.
+  handle("recovery:save", (draft) => abandoned ? Promise.resolve() : recovery.save(draft));
+  handle("recovery:list", () => recovery.list());
+  handle("recovery:read", (root: string) => recovery.read(root));
+  handle("recovery:clear", (root: string, revision: number) => recovery.clear(root, revision));
+  handle("recovery:discard", (root: string) => recovery.discard(root));
   handle("workspace:open", () => enqueue(async () => { const folder = await chooseFolder(); if (!folder || !confirmClose("打开另一个目录将放弃当前未保存修改。")) return null; await beforeSwitch(); const result = await workspace.open(folder); await remember(); return result; }));
   handle("workspace:saveAs", (context: ProjectContext) => enqueue(async () => { const folder = await chooseFolder(); if (!folder) return null; await beforeSwitch(); const result = await workspace.saveAs(folder, context); await remember(); return result; }));
   handle("workspace:save", (context: ProjectContext) => enqueue(async () => { if (tasks.list().some((task) => task.status === "running")) throw new Error("构建运行中，请等待或取消任务后保存"); await workspace.save(context); }));
@@ -115,8 +126,12 @@ function routes() {
 let quitting = false;
 app.on("before-quit", (event) => {
   if (quitting) return;
-  event.preventDefault(); if (!confirmClose()) return; dirty = false; quitting = true;
-  void enqueue(async () => { await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]); }).finally(() => app.quit());
+  event.preventDefault(); const hadUnsaved = dirty; if (!confirmClose()) return; if (hadUnsaved) abandoned = true; dirty = false; quitting = true;
+  void enqueue(async () => {
+    // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
+    if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
+    await Promise.all([tasks.stopAll(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+  }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
 // Keep the ESM entry import complete so Electron can reach its ready event.
@@ -130,7 +145,7 @@ void app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(file).href);
   });
   window = new BrowserWindow({ width: 1728, height: 1080, minWidth: 1180, minHeight: 760, frame: false, backgroundColor: "#F5F6F8", webPreferences: { preload: path.join(directory, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false } });
-  window.on("close", (event) => { if (!confirmClose()) event.preventDefault(); else dirty = false; });
+  window.on("close", (event) => { const hadUnsaved = dirty; if (!confirmClose()) event.preventDefault(); else { if (hadUnsaved) abandoned = true; dirty = false; } });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   routes();
