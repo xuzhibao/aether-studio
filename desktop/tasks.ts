@@ -61,6 +61,8 @@ export class TaskService {
     let args: string[];
     let metadata: unknown;
     let preparation: string | null | undefined = "";
+    let toolVersion: string | undefined;
+    let inputHash = "";
     try {
       // A changed build input may invalidate cached artifacts; this runs before the fingerprint and spawn.
       preparation = await provider.beforeStart?.(root, baseExecutable, resolved);
@@ -70,9 +72,9 @@ export class TaskService {
         args = prepared.args;
         metadata = prepared.metadata;
       } else args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
+      toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
+      inputHash = await this.workspace.fingerprint(provider.inputExcludes);
     } catch (error) { if (leased) releasePort(leased); throw error; }
-    const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
-    const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
     const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
     const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
     let child: ChildProcess;

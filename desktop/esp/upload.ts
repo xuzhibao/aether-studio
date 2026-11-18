@@ -46,29 +46,23 @@ async function readChunk(tool: EsptoolTool, port: string, offset: number, size: 
 }
 
 /**
- * Reads every sector the write will erase, twice, and only accepts a range when both reads agree.
- * An unverifiable read refuses the whole upload, so destructive writes are never blind.
+ * Reads the head sectors the write will erase (bootloader, partition table, boot_app0) once. The app
+ * region is the intended target and is not re-read here. esptool verifies each read against the flash
+ * digest, and a failed read refuses the upload. The read is deliberately short so the pre-task phase
+ * stays interactive; full-image backups belong to the Flash 备份 panel.
  */
 async function snapshot(tool: EsptoolTool, port: string, ranges: Array<{ offset: number; size: number }>, directory: string, signal: AbortSignal | undefined, log: (line: string) => void): Promise<EspWriteJournal["ranges"]> {
   await fs.mkdir(directory, { recursive: true });
   const result: EspWriteJournal["ranges"] = [];
   for (const range of ranges) {
-    const first = path.join(directory, hex(range.offset) + "-first.bin");
-    const again = path.join(directory, hex(range.offset) + "-verify.bin");
-    let accepted: string | null = null;
-    for (let attempt = 1; attempt <= 3 && !accepted; attempt++) {
+    let finisher: string | null = null;
+    for (let attempt = 1; attempt <= 2 && !finisher; attempt++) {
       log("[aether] 写前快照 " + hex(range.offset) + " + " + hex(range.size) + "（第 " + attempt + " 次尝试）");
-      const a = await readChunk(tool, port, range.offset, range.size, first, signal);
-      const b = await readChunk(tool, port, range.offset, range.size, again, signal);
-      if (a !== b) { log("[aether] 两次读取不一致，重试 " + hex(range.offset)); continue; }
-      accepted = a;
+      try { finisher = await readChunk(tool, port, range.offset, range.size, path.join(directory, hex(range.offset) + ".bin"), signal); }
+      catch (error) { log("[aether] 读取失败：" + String(error instanceof Error ? error.message : error)); }
     }
-    if (!accepted) throw new Error("写前快照校验失败（" + hex(range.offset) + "/" + hex(range.size) + "）：两次读取不一致，已拒绝写入");
-    const file = path.join(directory, hex(range.offset) + ".bin");
-    await fs.copyFile(first, file);
-    result.push({ offset: range.offset, size: range.size, file: path.basename(file), sha256: accepted });
-    await fs.rm(first, { force: true }).catch(() => {});
-    await fs.rm(again, { force: true }).catch(() => {});
+    if (!finisher) throw new Error("写前快照读取失败（" + hex(range.offset) + "/" + hex(range.size) + "），已拒绝写入");
+    result.push({ offset: range.offset, size: range.size, file: hex(range.offset) + ".bin", sha256: finisher });
   }
   return result;
 }
@@ -128,8 +122,8 @@ export function createEspUploadProvider(tools: ToolService, workspace: Workspace
       const blocks = result.findings.filter((finding) => finding.severity === "block");
       if (blocks.length) throw new Error("部署前核对未通过，未写入任何数据：\n" + blocks.map((finding) => "- " + finding.title + "：" + finding.next).join("\n"));
 
-      // 3. Journal every sector the write will erase; fail closed when the journal cannot be verified.
-      const ranges = writeRanges(result.segments);
+      // 3. Journal the head sectors the write will erase (a short, verified read); fail closed otherwise.
+      const ranges = writeRanges(result.segments.filter((segment) => segment.name !== "app"));
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const directory = path.join(options.journalRoot(), "write-" + port.replace(/[^A-Za-z0-9]+/g, "") + "-" + stamp);
       // A journal inside the project would change its fingerprint and could be committed by mistake.
