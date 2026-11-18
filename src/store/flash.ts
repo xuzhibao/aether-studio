@@ -30,10 +30,10 @@ const desktop = () => {
   return window.aether.flash;
 };
 
-/** True while a flash operation owns the device; other port users must wait. */
+/** True while a flash operation owns the device; the renderer may be a tick ahead of the desktop event. */
 export function flashBusy() {
-  const snapshot = useFlash.getState().snapshot;
-  return !!snapshot && snapshot.status !== "idle";
+  const state = useFlash.getState();
+  return state.starting || (!!state.snapshot && state.snapshot.status !== "idle");
 }
 
 let subscribed = false;

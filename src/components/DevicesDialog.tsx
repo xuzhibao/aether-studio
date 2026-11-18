@@ -16,7 +16,7 @@ export function DevicesDialog() {
   const io = useTransport();
   const taskRunning = useDisk((state) => state.tasks.some((task) => task.status === "running"));
   const taskStarting = useDisk((state) => state.starting);
-  const flashStatus = useFlash((state) => state.snapshot?.status ?? "idle");
+  const flashBusy = useFlash((state) => state.starting || (state.snapshot?.status ?? "idle") !== "idle");
   const [selected, setSelected] = useState(() => transports[0]?.id ?? "");
   const [addresses, setAddresses] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<Record<string, Record<string, string>>>({});
@@ -29,7 +29,6 @@ export function DevicesDialog() {
   // Upload/build tasks and flash operations own the native port; do not let the monitor reopen it.
   const ioBusy = ["connecting", "connected", "disconnecting"].includes(io.status);
   const portBusy = (taskRunning || taskStarting) && !!transport?.list;
-  const flashBusy = flashStatus !== "idle";
   const busy = ioBusy || portBusy || flashBusy;
   const address = addresses[selected] ?? "";
   const parameters = Object.fromEntries(transport?.parameters.map((field) => [field.key, settings[selected]?.[field.key] ?? field.initial]) ?? []);

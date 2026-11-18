@@ -19,9 +19,14 @@ const pythonNames = process.platform === "win32" ? ["python.exe", "py.exe"] : ["
 
 function findOnPath(name: string) {
   const extensions = process.platform === "win32" ? (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean) : [""];
+  const hasExtension = !!path.extname(name);
   for (const directory of (process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
+    // esptool.py is a script, not a PATHEXT executable: check the exact name first.
+    const exact = path.join(directory, name);
+    if (existsSync(exact)) return exact;
+    if (hasExtension) continue;
     for (const extension of extensions) {
-      const candidate = path.join(directory, name.toLowerCase().endsWith(extension.toLowerCase()) ? name : name + extension);
+      const candidate = path.join(directory, name + extension);
       if (existsSync(candidate)) return candidate;
     }
   }
@@ -42,11 +47,21 @@ export function findPythonFor(esptoolPath: string) {
 }
 
 export function resolveEsptoolCommand(tool: ToolService): EsptoolCommand {
-  const { executable } = tool.resolve("esptool");
-  if (!/\.py$/i.test(executable)) return { executable };
-  const python = findPythonFor(executable);
-  if (!python) throw new Error("esptool.py 需要 Python 解释器，但未找到。请安装 Python，或在设置中直接填写 esptool 可执行文件路径。");
-  return { executable: python, prefixArgs: [executable] };
+  let executable = tool.resolve("esptool").executable;
+  if (/\.py$/i.test(executable)) {
+    // A bare name from PATH must become an absolute path before it is handed to a Python interpreter.
+    if (!path.isAbsolute(executable)) {
+      const found = /[\\/]/.test(executable)
+        ? (existsSync(path.resolve(executable)) ? path.resolve(executable) : "")
+        : findOnPath(path.basename(executable));
+      if (!found) throw new Error("找不到 esptool.py：" + executable + "。请在插件设置中填写完整路径。");
+      executable = found;
+    }
+    const python = findPythonFor(executable);
+    if (!python) throw new Error("esptool.py 需要 Python 解释器，但未找到。请安装 Python，或在设置中直接填写 esptool 可执行文件路径。");
+    return { executable: python, prefixArgs: [executable] };
+  }
+  return { executable };
 }
 
 /** Resolves the configured tool on every call so a settings change cannot leave a stale executable. */

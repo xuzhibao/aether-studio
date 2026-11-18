@@ -126,6 +126,8 @@ export interface FlashRestorePlan {
     sha256: boolean;
     deviceMatch: boolean;
     securityClear: boolean;
+    /** Length equals the recorded flash capacity and is a positive 4 KiB multiple. */
+    wholeImage: boolean;
   };
   /** Differing ranges that would be written. Empty means the chip already matches the backup. */
   ranges: FlashRange[];

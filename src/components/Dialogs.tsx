@@ -239,8 +239,8 @@ export function DeployDialog() {
   const task = taskId ? disk.tasks.find((item) => item.id === taskId) : undefined;
   const taskPort = task?.options?.port ?? "";
   const uploadRunning = task?.status === "running";
-  const flashStatus = useFlash((state) => state.snapshot?.status ?? "idle");
-  const busy = submitting || !!uploadRunning || disk.starting || flashStatus !== "idle" || ["connecting", "disconnecting"].includes(io.status);
+  const flashPortBusy = useFlash((state) => state.starting || (state.snapshot?.status ?? "idle") !== "idle");
+  const busy = submitting || !!uploadRunning || disk.starting || flashPortBusy || ["connecting", "disconnecting"].includes(io.status);
   useEffect(() => {
     if (dialog !== "deploy") return;
     const available = registry.all("deployments").filter((item) => item.toolchain === capabilities.toolchain);

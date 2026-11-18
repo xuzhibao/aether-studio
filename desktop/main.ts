@@ -14,6 +14,7 @@ import { SerialService } from "./plugins/serial";
 import { ToolService } from "./tools";
 import { FlashService } from "./flash";
 import { createEsptoolRunner } from "./plugins/esptool";
+import { DeviceLease } from "./deviceLock";
 import type { ProjectContext } from "../src/plugins/api";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -30,16 +31,22 @@ const confirmClose = (detail = "选择放弃修改将关闭窗口。") => {
 let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
+// Shared ownership of the single COM port: monitor, upload/build task, flash operation.
+const lease = new DeviceLease();
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
 const recovery = new RecoveryService(() => path.join(app.getPath("userData"), "recovery"));
 const tasks = new TaskService(workspace, (task) => {
   emit("tasks:changed", task);
+  // A finished task no longer owns the port.
+  if (task.status !== "running") lease.release("task");
   // Providers declare what a successful task produced; the host only reacts to the generic kind.
   if (task.status === "succeeded" && task.kind === "compile-database") {
     void enqueue(() => language.refreshCompileDatabase(task.root, task.environment ?? "")).catch((error) => console.error("clangd compile database refresh failed", error));
   }
 });
 const serial = new SerialService();
+// An unexpected unplug/close must release the port for flash, not leave it reserved forever.
+serial.setOnSessionEnd(() => lease.release("monitor"));
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
 terminal.register(shellProvider);
 const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
@@ -47,6 +54,8 @@ const language = new LanguageService(workspace, (snapshot) => emit("language:cha
 const tools = new ToolService(() => path.join(app.getPath("userData"), "tools.json"), (id) => {
   void tools.list().then((list) => emit("tools:changed", list)).catch((error) => console.error("Tool settings update failed", error));
   if (id === "clangd") void language.restartForTool("clangd").catch((error) => console.error("clangd restart failed", error));
+  // A new esptool path invalidates a prepared restore plan: its capabilities were measured on the old binary.
+  if (id === "esptool") flash.invalidatePlan();
 });
 const platformio = createPlatformioPlugins(tools);
 tasks.register(platformio.platformioBuild); tasks.register(platformio.platformioUpload); tasks.register(platformio.platformioCompileDatabase);
@@ -64,7 +73,10 @@ const flash = new FlashService(esptool, {
     return result.canceled ? null : result.filePaths[0] ?? null;
   },
   workspaceRoot: () => workspace.root,
+  appRoot: () => app.getAppPath(),
   serialBusy: () => serial.isOpen(),
+  claim: () => lease.claim("flash"),
+  release: () => lease.release("flash"),
 });
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
@@ -133,43 +145,36 @@ function routes() {
     const result = await dialog.showOpenDialog(window, { title: "选择 " + tool.name + " 可执行文件", properties: ["openFile"], ...(process.platform === "win32" ? { filters: [{ name: "可执行文件", extensions: ["exe"] }] } : {}) });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  handle("tasks:start", (provider: string, options: Record<string, string> = {}) => {
-    if (flash.busy()) throw new Error("Flash 备份/恢复正在进行，请完成或取消后再启动构建/上传任务");
+  handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
+    lease.claim("task");
     flash.invalidatePlan();
-    return enqueue(() => tasks.start(provider, options));
+    try { return await enqueue(() => tasks.start(provider, options)); }
+    catch (error) { lease.release("task"); throw error; }
   });
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   handle("tasks:environments", (provider: string) => tasks.environments(provider));
   handle("tasks:list", () => tasks.list());
   handle("serial:list", () => serial.list());
-  handle("serial:open", (port: string, baud: number) => {
-    if (flash.busy()) throw new Error("Flash 备份/恢复正在进行，端口暂不可用");
+  handle("serial:open", async (port: string, baud: number) => {
+    lease.claim("monitor");
     flash.invalidatePlan();
-    return serial.open(port, baud);
+    try { return await serial.open(port, baud); }
+    catch (error) { lease.release("monitor"); throw error; }
   });
-  handle("serial:read", (id: number) => serial.read(id)); handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes)); handle("serial:close", (id: number) => serial.close(id));
-  // Flash operations own the port while running; the monitor and upload tasks are refused above.
+  handle("serial:read", (id: number) => serial.read(id));
+  handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes));
+  handle("serial:close", async (id: number) => { try { return await serial.close(id); } finally { lease.release("monitor"); } });
+  // Flash operations acquire the same lease synchronously inside the service.
   handle("flash:snapshot", () => flash.snapshot());
   handle("flash:toolStatus", () => tools.status("esptool"));
   handle("flash:capabilities", () => flash.capabilities());
-  handle("flash:describe", (port: string) => {
-    if (flash.busy()) throw new Error("已有 Flash 操作正在进行");
-    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，暂时不能读取设备");
-    return flash.describeDevice(port);
-  });
+  handle("flash:describe", (port: string) => flash.describeExclusive(port));
   handle("flash:chooseBackupPath", (suggestedName: string) => flash.chooseBackupPath(suggestedName));
   handle("flash:chooseBackupFile", () => flash.chooseBackupFile());
   handle("flash:readMetadata", (backupPath: string) => flash.readMetadata(backupPath));
-  handle("flash:startBackup", (options) => {
-    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，请先等待或取消");
-    return flash.startBackup(options);
-  });
-  handle("flash:prepareRestore", (options) => {
-    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，请先等待或取消");
-    return flash.prepareRestore(options);
-  });
+  handle("flash:startBackup", (options) => flash.startBackup(options));
+  handle("flash:prepareRestore", (options) => flash.prepareRestore(options));
   handle("flash:executeRestore", (planId: string, confirmation: string) => {
-    if (tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务正在运行，请先等待或取消");
     return flash.executeRestore(planId, confirmation);
   });
   handle("flash:cancel", () => flash.cancel());

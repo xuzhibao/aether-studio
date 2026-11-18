@@ -182,7 +182,7 @@ export function FlashBackupPanel() {
         {status === "backing-up" && <button className="btn px-3 py-1.5" onClick={cancel}>取消</button>}
       </div>
       <p className="mt-1 text-[10px] leading-5 text-[#90969E]">备份不写入工程目录；完成后在所选位置生成 .bin 与 .meta.json（芯片/容量/MAC、文件长度、整片 SHA-256），不记录密钥或 eFuse 原始内容。</p>
-      <ProgressBar progress={status === "backing-up" || progress?.phase === "done" ? progress : null} />
+      <ProgressBar progress={progress && (status !== "idle" || ["done", "failed", "cancelled"].includes(progress.phase)) ? progress : null} />
       {snapshot?.backup && <div className="mt-2 rounded bg-[#F2FBF6] p-2 text-[10px] leading-5">
         <div className="font-medium text-[#2B9661]">备份完成（已核对长度与摘要）</div>
         <div className="break-all font-mono">{snapshot.backup.outputPath}</div>
@@ -202,28 +202,29 @@ export function FlashBackupPanel() {
         <div>备份设备：{metadata.device.chip} · {metadata.device.flashSizeLabel} · MAC <span className="font-mono">{metadata.device.mac || "—"}</span></div>
         <div>长度 {metadata.fileLength} 字节 · SHA-256 <span className="font-mono break-all">{metadata.sha256}</span></div>
       </div>}
-      <ProgressBar progress={(status === "restoring" && (!plan || progress?.phase !== "done")) ? progress : null} />
+      <ProgressBar progress={progress && (status !== "idle" || ["done", "failed", "cancelled"].includes(progress.phase)) ? progress : null} />
       {plan && <div className="mt-2">
         <div className={`rounded p-2 text-[10px] leading-5 ${plan.blocked ? "bg-[#FFF5E7] text-[#9A702C]" : "bg-[#F8F9FB]"}`}>
           <div className="font-medium">{plan.blocked ? "已拒绝恢复" : plan.ranges.length === 0 ? "设备已与备份一致，无需写入" : `将写入 ${plan.ranges.length} 段，共 ${plan.totalBytes} 字节`}</div>
           {plan.blocked && <div>{plan.blocked}</div>}
-          <div className="mt-1 grid gap-0.5"><Verification label="备份长度与元数据一致" ok={plan.verification.fileLength} blocked /><Verification label="备份 SHA-256 一致" ok={plan.verification.sha256} blocked /><Verification label="设备与备份记录匹配" ok={plan.verification.deviceMatch} blocked /><Verification label="安全启动/Flash 加密均关闭" ok={plan.verification.securityClear} blocked /></div>
+          <div className="mt-1 grid gap-0.5"><Verification label="备份长度与元数据一致" ok={plan.verification.fileLength} blocked /><Verification label="备份为整片镜像（长度=Flash 容量）" ok={plan.verification.wholeImage} blocked /><Verification label="备份 SHA-256 一致" ok={plan.verification.sha256} blocked /><Verification label="设备与备份记录匹配（含 MAC）" ok={plan.verification.deviceMatch} blocked /><Verification label="安全启动/Flash 加密均关闭" ok={plan.verification.securityClear} blocked /></div>
           {plan.warnings.length > 0 && <ul className="mt-1 list-disc pl-4">{plan.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
         </div>
         {plan.ranges.length > 0 && <div className="mt-1 max-h-[140px] overflow-auto rounded border border-[#E5E8EC]">
           <table className="w-full text-left text-[10px]"><thead className="sticky top-0 bg-[#F8F9FB]"><tr><th className="px-2 py-1">偏移</th><th className="px-2 py-1">长度</th></tr></thead><tbody>{plan.ranges.map((range) => <tr key={range.offset} className="border-t border-[#EEF0F3]"><td className="px-2 py-0.5 font-mono">{hex(range.offset)}</td><td className="px-2 py-0.5 font-mono">{range.size} B</td></tr>)}</tbody></table>
         </div>}
         {!plan.blocked && plan.ranges.length > 0 && <div className="mt-2 rounded border border-[#F0D9C0] bg-[#FFF9F2] p-2">
-          <p className="text-[10px] leading-5 text-[#9A702C]">写入会覆盖上述范围，可能短时间使设备无法启动。不会擦除整片，不会修改 eFuse，不会传入 --flash_mode/--flash_freq/--flash_size。取消或失败时会报告已写范围，且不会宣称恢复完成。</p>
+          <p className="text-[10px] leading-5 text-[#9A702C]">写入会覆盖上述范围，可能短时间使设备无法启动。不会擦除整片，不会修改 eFuse，不会传入 --flash_mode/--flash_freq/--flash_size；esptool 的 ESPTOOL_FF/FM/FS 也被固定为 keep。取消或失败时会报告已尝试/未尝试范围，且不会宣称恢复完成。比较结果是准备阶段的快照：准备后若设备运行过（固件可能写 NVS/OTA），未写入区域可能已经变化，建议重新准备。</p>
           <label className="mt-1 block">请输入 <b className="font-mono">{plan.confirmationPhrase}</b> 以确认<input aria-label="恢复确认文字" className="input mt-1 w-full font-mono" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} disabled={busy} /></label>
           <button className="btn btn-primary mt-2 px-3 py-1.5" disabled={busy || confirmation !== plan.confirmationPhrase} onClick={execute}>{status === "restoring" ? "正在写入…" : "写入并读回核对"}</button>
         </div>}
       </div>}
       {snapshot?.restore && <div className={`mt-2 rounded p-2 text-[10px] leading-5 ${snapshot.restore.status === "completed" ? "bg-[#F2FBF6]" : "bg-[#FFF5E7]"}`}>
-        <div className={`font-medium ${snapshot.restore.status === "completed" ? "text-[#2B9661]" : "text-[#9A702C]"}`}>{snapshot.restore.status === "completed" ? "恢复完成（读回已核对）" : snapshot.restore.status === "cancelled" ? "恢复已取消（未完成）" : "恢复未完成"}</div>
+        <div className={`font-medium ${snapshot.restore.status === "completed" ? "text-[#2B9661]" : "text-[#9A702C]"}`}>{snapshot.restore.status === "completed" ? (snapshot.restore.writtenRanges.length ? "计划范围已写入并读回核对" : "无需写入（准备阶段比较一致）") : snapshot.restore.status === "cancelled" ? "恢复已取消（未完成）" : "恢复未完成"}</div>
         <div>{snapshot.restore.message}</div>
+        {snapshot.progress?.failedOffset !== undefined && <div className="mt-1 font-mono text-[#D34A3D]">失败偏移：{hex(snapshot.progress.failedOffset)}</div>}
         {snapshot.restore.writtenRanges.length > 0 && <div className="mt-1">已尝试写入：{snapshot.restore.writtenRanges.map((range) => `${hex(range.offset)}+${range.size}${range.verified ? "✓" : "?"}`).join("，")}</div>}
-        {snapshot.restore.remainingRanges.length > 0 && <div>仍未完成：{snapshot.restore.remainingRanges.map((range) => `${hex(range.offset)}+${range.size}`).join("，")}</div>}
+        {snapshot.restore.remainingRanges.length > 0 && <div>未尝试写入：{snapshot.restore.remainingRanges.map((range) => `${hex(range.offset)}+${range.size}`).join("，")}</div>}
       </div>}
     </section>}
 
