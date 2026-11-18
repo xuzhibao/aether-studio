@@ -592,11 +592,22 @@ textarea {
   transform: translate(-50%, -50%);
   z-index: 91;
   width: min(560px, calc(100vw - 80px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
   background: #fdfdfe;
   border-radius: 14px;
   box-shadow: 0 0 0 0.5px rgba(20, 24, 33, 0.12), 0 32px 80px -20px rgba(20, 24, 33, 0.34), 0 4px 12px rgba(20, 24, 33, 0.08);
   animation: dialog-in 0.18s cubic-bezier(0.2, 0.9, 0.25, 1);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* A tall dialog scrolls its body while the row that owns the close button stays pinned and clickable. */
+.dialog :is(div, header):has(> button[aria-label="Close dialog"]) {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fdfdfe;
 }
 @keyframes dialog-in {
   from { opacity: 0; transform: translate(-50%, -48.5%) scale(0.985); }
