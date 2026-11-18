@@ -92,8 +92,10 @@ export const useDisk = create<DiskState>((set, get) => {
       if (source) {
         if (newer) {
           // The newer buffer now belongs to the new project: persist it there first, then retire the old root's draft.
-          await flushRecoveryDraft().catch(() => {});
-          await noteRecoveryDiscarded(source).catch(() => {});
+          // A failed flush must keep the old draft: those edits exist only in memory until the new draft is durable.
+          const persisted = await flushRecoveryDraft().catch(() => false);
+          if (persisted) await noteRecoveryDiscarded(source).catch(() => {});
+          else set({ error: "恢复草稿写入失败：新工程的未保存内容尚未写入恢复草稿，原工程草稿已保留。请保存工程或稍后重试。" });
         } else await noteRecoverySavedRevision(source, revision).catch(() => {});
       }
     } finally { set({ busy: false }); }

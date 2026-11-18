@@ -139,7 +139,16 @@ export class WorkspaceService {
     const temporary = target + ".aether-saving";
     if (await fs.lstat(temporary).catch(() => null)) throw new Error("临时保存文件已存在：" + temporary);
     await fs.writeFile(temporary, text, { flag: "wx" });
-    await fs.rename(temporary, target);
+    // Windows briefly returns EPERM/EBUSY when a virus scanner or another handle holds the destination open.
+    // Retrying keeps the write atomic instead of failing the whole project save on a transient lock.
+    for (let attempt = 0; ; attempt++) {
+      try { await fs.rename(temporary, target); return; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (attempt >= 4 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50 * 2 ** attempt));
+      }
+    }
   }
   async listing(): Promise<DiskListing> { return this.scan(this.requireRoot()); }
   async createFile(name: string) {

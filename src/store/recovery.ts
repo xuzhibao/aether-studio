@@ -131,14 +131,14 @@ let started = false;
 const cleared = new Map<string, number>();
 let inMemoryRestoredRoot: string | null = null;
 
-async function writeDraft() {
+async function writeDraft(): Promise<boolean> {
   const [{ useDisk }, { useStudio }] = await Promise.all([import("./disk"), import("./studio")]);
   // A draft restored while its project directory was gone has no disk root yet; keep saving it in memory-only form.
   const root = useDisk.getState().root ?? inMemoryRestoredRoot;
   const state = useStudio.getState();
-  if (!root || !isDesktop() || !state.dirty) return;
+  if (!root || !isDesktop() || !state.dirty) return true;
   const revision = contentRevision;
-  if (revision <= (cleared.get(root) ?? 0)) return;
+  if (revision <= (cleared.get(root) ?? 0)) return true;
   const disk = useDisk.getState();
   const draft: RecoveryDraft = {
     version: 1, root, revision, updatedAt: new Date().toISOString(), context: state.getProjectContext(),
@@ -151,7 +151,12 @@ async function writeDraft() {
     await api().save(draft); useRecovery.setState({ error: "" });
     // The save cleared the draft while this write was in flight; remove only that exact revision again.
     if (revision <= (cleared.get(root) ?? 0)) await api().clear(root, revision);
-  } catch (error) { useRecovery.setState({ error: "恢复草稿写入失败：" + (error instanceof Error ? error.message : String(error)) }); }
+    return true;
+  } catch (error) {
+    useRecovery.setState({ error: "恢复草稿写入失败：" + (error instanceof Error ? error.message : String(error)) });
+    // Callers must be able to tell that the draft was not persisted (for example before retiring an older draft).
+    return false;
+  }
 }
 
 function schedule(delay = 700, root: string | null = null) {
@@ -176,9 +181,9 @@ export async function refreshRecoveryDrafts() {
 }
 
 /** Persist the current buffer as a draft right now; used before an old root's draft is superseded. */
-export async function flushRecoveryDraft() {
-  if (!isDesktop()) return;
-  await writeDraft();
+export async function flushRecoveryDraft(): Promise<boolean> {
+  if (!isDesktop()) return true;
+  return writeDraft();
 }
 
 /** After a successful whole-project save, clear the draft only when no newer edit happened during the save. */

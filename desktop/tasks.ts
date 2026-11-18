@@ -45,8 +45,7 @@ export class TaskService {
     const args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
     const toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
     const inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "
-", inputHash, toolVersion, options: { ...options }, artifacts: [] };
+    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: "$ " + executable + " " + args.join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [] };
     const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
     let cancelled = false;
     let processClosed = false;

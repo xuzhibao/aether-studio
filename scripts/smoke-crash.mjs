@@ -101,16 +101,21 @@ const waitExit = async (child, ms) => {
 // Hard kill of this tested instance only. Windows has no POSIX SIGKILL: taskkill /F is TerminateProcess
 // with no shutdown handlers, applied to this app's PID tree, so the abnormal-exit semantics are preserved.
 const hardKillTree = (child) => {
-  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  // stdio is ignored so the helper cannot inherit the runner's pipes on Windows.
+  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
   else child.kill("SIGKILL");
 };
 const crash = async () => {
   const child = app.process();
-  hardKillTree(child);
-  await waitExit(child, 5000);
-  // Descendants of a killed browser process can outlive it; the PID tree was already included in the hard kill.
-  if (child.exitCode === null && child.signalCode === null) hardKillTree(child);
+  // Descendants of a killed browser process can outlive it; the kill covers this app's PID tree, retried a few
+  // times so a stranded renderer/GPU helper cannot keep running after the test moves on.
+  for (let attempt = 0; attempt < 3 && child.exitCode === null && child.signalCode === null; attempt++) {
+    hardKillTree(child);
+    await waitExit(child, 5000);
+  }
   app = undefined; page = undefined;
+  // Fail loudly instead of leaving a killed Electron tree behind on the host.
+  assert.ok(child.exitCode !== null || child.signalCode !== null, "crashed Electron process tree exited");
 };
 const recoveryDialog = () => page.getByRole("dialog").filter({ hasText: "恢复未保存内容" });
 const openEditorFile = async () => {
@@ -126,8 +131,11 @@ const stopTestedApp = async () => {
   // Bound every wait: Playwright can wait forever for a reply from an app that is already exiting.
   await Promise.race([app.evaluate(({ app }) => app.exit(0)).catch(() => {}), sleep(5000)]);
   await waitExit(child, 5000);
-  // Own process tree only; no process-name-wide kill.
-  if (child.exitCode === null && child.signalCode === null) hardKillTree(child);
+  // Own process tree only; no process-name-wide kill. Retry briefly so a slow helper does not outlive the run.
+  for (let attempt = 0; attempt < 3 && child.exitCode === null && child.signalCode === null; attempt++) {
+    hardKillTree(child);
+    await waitExit(child, 3000);
+  }
   app = undefined; page = undefined;
 };
 // A hung runner previously leaked the whole Electron tree; fail instead of waiting forever.
