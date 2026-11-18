@@ -18,6 +18,7 @@ import { preflightEspUpload } from "./esp/preflight";
 import { createEspUploadProvider } from "./esp/upload";
 import { FlashService } from "./flash";
 import { createEsptoolRunner } from "./plugins/esptool";
+import { createMicropythonRunProvider } from "./plugins/micropython";
 import { DeviceLease } from "./deviceLock";
 import type { ProjectContext } from "../src/plugins/api";
 
@@ -67,6 +68,8 @@ const platformio = createPlatformioPlugins(tools);
 tasks.register(platformio.platformioBuild); tasks.register(platformio.platformioUpload); tasks.register(platformio.platformioCompileDatabase);
 // ESP uploads are verified and journaled inside the task, while the port lease is held.
 tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => path.join(app.getPath("userData"), "esp-journal") }));
+// mpremote runs one saved project script; it shares the same port lease and task log/cancel path.
+tasks.register(createMicropythonRunProvider(tools, workspace));
 language.register(createClangdProvider(tools));
 // Flash backup/restore shares the single COM port with the monitor and upload tasks.
 const esptool = createEsptoolRunner(tools);

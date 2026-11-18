@@ -29,7 +29,9 @@ export interface TaskProvider {
   afterRun?: () => Promise<void>;
   // Providers that build one selected environment at a time expose what the project currently declares.
   environments?: (root: string, executable: string) => Promise<TaskEnvironment[]>;
-  artifacts: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
+  // Build-like providers declare artifacts and get a recorded result. A device-run task has no artifact:
+  // its only result is the real process exit code, so it neither fails on an empty list nor writes a record.
+  artifacts?: (root: string, executable: string, options: Record<string, string>) => Promise<string[]>;
 }
 export class TaskService {
   private providers = new Map<string, TaskProvider>();
@@ -111,7 +113,7 @@ export class TaskService {
       task.endedAt = new Date().toISOString();
       let result: TaskSnapshot["status"] = cancelled ? "cancelled" : code === 0 && !task.error ? "succeeded" : "failed";
       try {
-        if (result === "succeeded") {
+        if (result === "succeeded" && provider.artifacts) {
           if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
           let metadataError = "";
           if (provider.verify) {
@@ -150,6 +152,9 @@ export class TaskService {
               await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadataError ? { metadataError } : {}) }, null, 2));
             }
           }
+        } else if (result === "succeeded") {
+          // A run task has no build product to hash or journal. The real exit code is the result.
+          task.log = (task.log + "\n[aether] 此任务不声明构建产物，结果以进程退出码为准；未写入构建记录。").slice(-250000);
         }
       } catch (error) { result = "failed"; task.error = String(error); }
       try { await provider.afterRun?.(); }

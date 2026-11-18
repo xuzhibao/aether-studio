@@ -105,7 +105,7 @@ AETHER_ESP_PROJECT=examples/platformio-esp32c3 \
 npm run smoke:esp:preflight
 ```
 
-本机结果：`ok=false`，阻止项为 `partition-rewrite`（默认 4MB 分区表与设备 16MB 厂商布局不同）和 `bootapp0-overlap`（boot_app0 0xE000–0x10000 跨过 otadata/phy_init），并给出 `security-unknown` 警告。整个过程只执行 `flash_id`、`read_flash` 和 `summary`，日志中没有任何 `write_flash`/`erase_flash` 命令。这就是“危险布局拒绝时零写入”的证据。
+本机结果：`ok=false`；硬性阻止项是 `app-over-device-data`（默认 4MB 构建把 app 写到 0x10000，而设备 16MB 厂商布局在该地址是 `model` 数据分区）。`partition-rewrite`（默认 4MB 分区表与设备 16MB 厂商布局不同）和 `bootapp0-overlap`（boot_app0 0xE000–0x10000 跨过 otadata/phy_init）在代码中是“注意”项，不是放行开关，也不是 `ok=false` 的原因；另给出 `security-unknown` 警告。整个过程只执行 `flash_id`、`read_flash` 和 `summary`，日志中没有任何 `write_flash`/`erase_flash` 命令。这就是“危险布局拒绝时零写入”的证据。
 
 真实设备上出现过一次需要修正的问题：分区表 magic 在 flash 上是字节 `AA 50`，按小端读成整数是 `0x50AA`，最初按 `0xAA50` 比较导致真实分区表被误判为无效。修正后由本节的真实读取验证。
 
@@ -113,7 +113,7 @@ npm run smoke:esp:preflight
 
 | 命令 | 覆盖内容 | 不能证明 |
 | --- | --- | --- |
-| `npm run smoke:esp` | 镜像头/分区表/flash_id/efuse 解析；9 条阻止规则（C3/S3 错配、0x10000 model 覆盖、0xe000 跨区、分区表改写、对齐、容量、安全启动、无法预检的上传方式、设备不可读）；上传后写入段比对；真实 PlatformIO 元数据 + 记录型假 esptool 的完整预检，断言零写入命令、非 ESP 工程完全不碰端口 | 真实芯片、真实烧录 |
+| `npm run smoke:esp` | 镜像头/分区表/flash_id/efuse 解析；阻止规则（C3/S3 错配、0x10000 model 覆盖、对齐、容量、安全启动、无法预检的上传方式、设备不可读等）以及 `partition-rewrite`/`bootapp0-overlap` 注意项与写前快照；任务日志中启动 argv 的写入段比对（不是设备回读）；真实 PlatformIO 元数据 + 记录型假 esptool 的完整预检，断言零写入命令、非 ESP 工程完全不碰端口 | 真实芯片、真实烧录 |
 | `npm run smoke:esp:device` | 真实端口的只读检测（芯片/flash/分区表/eFuse），断言不返回 MAC | 写入与启动日志 |
 | `npm run smoke:esp:preflight` | 真实端口 + 真实构建产物的部署前核对，断言布局不同必须阻止 | 写入与启动日志 |
 

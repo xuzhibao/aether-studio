@@ -44,6 +44,10 @@ try {
   await dialog.getByRole("button", { name: /^ESP 设备检测/ }).click();
   await dialog.getByText("devices/esp32", { exact: true }).waitFor();
   assert.equal(await dialog.locator('[data-tool-id="esptool"]').getAttribute("data-tool-available"), "false");
+  // The MicroPython plugin contributes the device-run entry and the mpremote path setting.
+  await dialog.getByRole("button", { name: /^MicroPython/ }).click();
+  await dialog.getByText("toolchains/micropython", { exact: true }).waitFor();
+  assert.equal(await dialog.locator('[data-tool-id="mpremote"]').getAttribute("data-tool-available"), "false");
   // Browser preview cannot reach desktop tools; the plugin settings must say so instead of pretending.
   await dialog.getByRole("button", { name: /^PlatformIO/ }).click();
   const platformioTool = dialog.locator('[data-tool-id="platformio"]');
@@ -121,6 +125,9 @@ try {
   await dialog.getByRole("button", { name: "停用", exact: true }).click();
   await dialog.getByRole("button", { name: "Close dialog", exact: true }).click();
   await page.getByText("编辑器插件已停用，请在 Plugins 中启用。", { exact: true }).waitFor();
+  // The browser must say the device run needs the desktop app instead of faking a run.
+  await nav.getByRole("button", { name: "在设备运行 Python", exact: true }).click();
+  await page.getByText("在设备上运行 Python 需要 Electron 桌面端", { exact: false }).waitFor();
   await nav.getByRole("button", { name: "Plugins", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("button", { name: "启用", exact: true }).click();
