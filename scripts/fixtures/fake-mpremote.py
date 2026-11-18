@@ -2,6 +2,7 @@
 # File-backed fake of the mpremote CLI surface used by Aether.
 # It never opens a serial port: AETHER_FAKE_MPREMOTE_LOG records the exact argv, and the mode selects
 # success, failure or a long-running process for cancellation tests. Test fixture only.
+import hashlib
 import json
 import os
 import sys
@@ -40,7 +41,13 @@ port = args[1][len("port:"):]
 file = args[3]
 if not port or port.lower() in ("auto", "list"):
     fail("fake mpremote: port must be explicit: " + json.dumps(port))
-log({"argv": args, "port": port, "file": file, "mode": mode})
+try:
+    with open(file, "rb") as handle:
+        data = handle.read()
+except OSError as error:
+    fail("fake mpremote: cannot read script: " + str(error), 4)
+file_sha256 = hashlib.sha256(data).hexdigest()
+log({"argv": args, "port": port, "file": file, "fileSha256": file_sha256, "size": len(data), "mode": mode})
 say("[fake-mpremote] connect port:" + port)
 if mode == "fail":
     fail("could not open port " + port, 3)
@@ -50,10 +57,5 @@ if mode == "slow":
     say("[fake-mpremote] running " + file)
     time.sleep(300)
     sys.exit(0)
-try:
-    with open(file, "r", encoding="utf-8") as handle:
-        size = len(handle.read())
-except OSError as error:
-    fail("fake mpremote: cannot read script: " + str(error), 4)
-say("[fake-mpremote] ran " + file + " (" + str(size) + " bytes)")
+say("[fake-mpremote] ran " + file + " (" + str(len(data)) + " bytes, sha256 " + file_sha256[:12] + ")")
 sys.exit(0)

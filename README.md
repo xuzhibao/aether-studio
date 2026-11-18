@@ -185,9 +185,9 @@ PlatformIO 的增量构建可能沿用 `.pio/build/<环境名>/partitions.bin`�
 
 在 **Plugins → MicroPython** 配置 **mpremote 可执行文件**（留空时依次使用 `AETHER_MPREMOTE` 和 PATH 中的 `mpremote`），然后打开侧栏的 **在设备运行 Python** 面板。面板只列出当前磁盘工程中已保存的 `.py`；文件有未保存修改时会明确要求先保存，运行的是磁盘文件，不是编辑器缓冲区。端口必须手动选择或输入，留空不会开始，也不会使用 `auto` 或 `list`。
 
-运行命令固定为 `mpremote connect port:<明确端口> run <本地 .py>`，每个参数单独传给进程，`shell: false`，没有自动选端口、自动识别板型或裸命令注入路径。运行会中断设备上正在执行的程序，并可能触发软重启；脚本可以修改 GPIO、板上文件、网络等设备状态。Aether 不安装固件，也不向板上持久上传文件。任务卡片显示真实退出码和 mpremote 日志，可取消；退出码 0 只表示命令结束，不代表设备状态符合预期。
+运行命令固定为 `mpremote connect port:<明确端口> run <本地 .py>`，每个参数单独传给进程，`shell: false`，没有自动选端口、自动识别板型或裸命令注入路径。宿主在端口租约内再次核对预期工程目录和已审阅文件的 SHA-256；工程切换、文件删除或外部修改都会在调用 mpremote 前取消。核对通过的字节会写入工程外的独立临时 `.py`，任务成功、失败或取消后删除，避免运行期间文件被替换。运行会中断设备上正在执行的程序，并可能触发软重启；脚本可以修改 GPIO、板上文件、网络等设备状态。Aether 不安装固件，也不向板上持久上传文件。任务卡片显示真实退出码和 mpremote 日志，可取消；退出码 0 只表示命令结束，不代表设备状态符合预期。
 
-浏览器没有磁盘工程和本机 mpremote，面板会明确说明需要 Electron 桌面端，不会伪装运行成功。`npm run smoke:micropython` 覆盖固定 argv、端口/文件校验、并发占用、取消和非零退出；`npm run smoke:micropython:desktop` 用桌面应用和本地假 CLI 验证入口与真实任务输出，不连接硬件。
+浏览器没有磁盘工程和本机 mpremote，面板会明确说明需要 Electron 桌面端，不会伪装运行成功。`npm run smoke:micropython` 覆盖固定 argv、端口/文件校验、工程切换与外部修改零调用、独立临时副本清理、并发占用、取消和非零退出；`npm run smoke:micropython:desktop` 用桌面应用和本地假 CLI 验证入口、真实 `--version` 重检与真实任务输出，不连接硬件。
 
 ESP32-S3 上传验收步骤见 [docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md)；beta.4 的 ESP32-C3 只读检测与部署前核对记录在同一文档第 7 节，它不是 ESP32-S3 的实测。上方部署前核对、只读检测与限制见本文的 [ESP 设备检测与部署前核对](#esp-设备检测与部署前核对)。
 
