@@ -190,7 +190,7 @@ export function Sidebar() {
           </div>
         </div>
 
-        <nav className="flex-none px-2">
+        <nav className="min-h-0 max-h-[42%] flex-none overflow-y-auto px-2">
           {navigation.map((item) => {
             const Icon = item.icon;
             const active = activeNav === item.id;
@@ -221,7 +221,7 @@ export function Sidebar() {
 
         <div className="mx-3 my-2.5 h-px flex-none bg-[#E9EBEE]" />
 
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-[150px] flex-1 flex-col">
           <div className="flex flex-none items-center justify-between px-3.5 pb-1.5">
             <SectionLabel>Project files</SectionLabel>
             <span className="text-[9px] text-[#AEB2B9]">{Object.keys(files).filter((f) => f !== "circuit.json").length + 1} files</span>

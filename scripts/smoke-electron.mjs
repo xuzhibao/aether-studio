@@ -56,6 +56,8 @@ const launch = async () => {
     // Only the OS picker result is stubbed. All project and bundle I/O uses the real host.
     dialog.showOpenDialog = async (_window, options) => ({ canceled: false, filePaths: [options.properties.includes('openDirectory') ? root : portable] });
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: portable });
+    // Closing the app must not block on the native unsaved-changes prompt; the smoke already reloaded/discarded.
+    dialog.showMessageBoxSync = () => 1;
   }, { root, portable });
 };
 const command = async (text) => {
@@ -70,6 +72,19 @@ try {
   assert.equal(await page.evaluate(() => typeof window.require), 'undefined');
   await command('Open project folder');
   await page.getByText(root, { exact: true }).first().waitFor();
+  // The packaged 1280x720 matrix found the sidebar footer covering the Project files header. Exercise
+  // the same viewport here: the header's New file button must be inside the viewport and directly
+  // clickable; a footer that intercepts the click is a layout bug, not something to force-click past.
+  const layoutViewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const layoutNewFile = page.getByRole('button', { name: 'New file', exact: true });
+  const layoutBox = await layoutNewFile.boundingBox();
+  assert.ok(layoutBox && layoutBox.y >= 0 && layoutBox.y + layoutBox.height <= 720, 'New file must stay inside the 1280x720 viewport: ' + JSON.stringify(layoutBox));
+  await layoutNewFile.click({ timeout: 5000 });
+  const layoutDialog = page.getByRole('dialog');
+  await layoutDialog.waitFor();
+  await layoutDialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.setViewportSize(layoutViewport);
   // Real disk create/rename/trash through the project-files plugin explorer.
   await page.getByRole('button', { name: 'New folder', exact: true }).click();
   let filesDialog = page.getByRole('dialog');
@@ -382,7 +397,7 @@ try {
   }
   // Actual interactive PTY terminal, rendered by the terminal plugin.
   const terminalText = async () => await page.locator('.xterm-accessibility-tree').textContent() ?? '';
-  const terminalCommand = async (text) => { const input = page.getByRole('textbox', { name: 'Terminal input', exact: true }); await input.focus(); await page.waitForTimeout(50); await input.evaluate((element, value) => { const data = new DataTransfer(); data.setData('text/plain', value); element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true })); }, text); await page.keyboard.press('Enter'); };
+  const terminalCommand = async (text) => { const input = page.getByRole('textbox', { name: 'Terminal input', exact: true }); await input.focus(); await page.waitForTimeout(50); await input.evaluate((element, value) => { const data = new DataTransfer(); data.setData('text/plain', value); element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true })); }, process.platform === 'win32' ? ' ' + text : text); await page.keyboard.press('Enter'); };
   const processGone = (pid) => { try { process.kill(pid, 0); return false; } catch (error) { if (error.code === 'ESRCH') return true; throw error; } };
   await page.locator('nav').getByRole('button', { name: 'Terminal', exact: true }).click();
   await page.getByRole('button', { name: 'Start terminal', exact: true }).click();
@@ -469,7 +484,7 @@ try {
   await page.getByRole('treeitem', { name: '重命名 目录', exact: true }).waitFor();
   assert.equal(await page.getByRole('treeitem', { name: '重命名 目录/新 名字.txt', exact: true }).count(), 0, 'trashed file stays deleted after reopening');
   await app.close(); app = undefined;
-  console.log('PASS Electron: isolated preload, real disk folder open/edit/save/reopen, portable files, external edit refusal, new file, real clangd unsaved diagnostics/completion/F12 and plugin restart, PlatformIO compilation database and build/failure/cancel, Deploy dialog upload cancel and ESP preflight write block from a real build, 1280x720 Devices/Flash dialogs with visible clickable Close, Flash panel navigation/detect/backup cancel and port-ownership guard through the esptool CLI fixture, WebSocket UI round trip, real interactive shell keyboard/UTF-8/resize/Ctrl+C, panel persistence and process cleanup on disable/reload/exit' + (process.platform === 'win32' ? ' (native PTY serial fixture and POSIX process-liveness assertions skipped on Windows)' : ', OS PTY round trip') + '; OS picker and port-list fixtures only, no hardware');
+  console.log('PASS Electron: isolated preload, real disk folder open/edit/save/reopen, portable files, external edit refusal, new file, real clangd unsaved diagnostics/completion/F12 and plugin restart, PlatformIO compilation database and build/failure/cancel, Deploy dialog upload cancel and ESP preflight write block from a real build, 1280x720 Devices/Flash dialogs with visible clickable Close, Flash panel navigation/detect/backup cancel and port-ownership guard through the esptool CLI fixture, WebSocket UI round trip, real interactive shell keyboard/UTF-8/resize' + (process.platform === 'win32' ? ' (Ctrl+C/job-control, native PTY serial fixture and POSIX process-liveness assertions skipped on Windows)' : '/Ctrl+C, OS PTY round trip') + ', panel persistence and lifecycle teardown; OS picker and port-list fixtures only, no hardware');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'smoke-results/electron-failure.png', fullPage: true }); await fs.writeFile('smoke-results/electron-failure.txt', error.stack + '\n' + errors.join('\n') + '\n' + await page.locator('body').innerText()); }
   throw error;
