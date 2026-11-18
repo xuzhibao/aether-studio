@@ -32,7 +32,6 @@ export function resolveMicropythonCommand(tools: ToolService) {
 }
 
 const digestPattern = /^[0-9a-f]{64}$/i;
-const sameRoot = (a: string, b: string) => process.platform === "win32" || process.platform === "darwin" ? a.toLowerCase() === b.toLowerCase() : a === b;
 function expectedRoot(value: string | undefined) {
   const root = value?.trim() ?? "";
   if (!root) throw new Error("缺少预期工程目录；已取消运行，未调用 mpremote");
@@ -70,7 +69,7 @@ export function createMicropythonRunProvider(tools: ToolService, workspace: Work
 
       // Every await below happens while this task owns the port. Root and digest bind the run to what
       // the UI reviewed, not to whatever file currently has the same name.
-      if (!workspace.root || !sameRoot(path.resolve(root), reviewedRoot) || !sameRoot(path.resolve(workspace.root), reviewedRoot)) {
+      if (!workspace.root || path.resolve(root) !== reviewedRoot || path.resolve(workspace.root) !== reviewedRoot) {
         throw new Error("工程目录在运行前发生变化；已取消，未调用 mpremote。请重新打开工程并选择文件。");
       }
       // Reuse the loaded disk listing: it excludes cache directories, symlinks, binary and oversized
