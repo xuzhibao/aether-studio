@@ -44,8 +44,10 @@ export interface SimulatorSnapshot {
   app: { path: string; sha256: string; size: number };
   /** QEMU-private flash image. Its layout is not a physical-board deploy layout. */
   flash: { sha256: string; size: number; bootloaderOffset: number; partitionTableOffset: number; partitions: SimulatorPartition[] };
-  /** Raw UART0 text (stdout). */
+  /** Raw UART0 text (stdout), truncated to the retained window. */
   uart: string;
+  /** Monotonic count of UART characters received; not truncated, used as a read cursor. */
+  uartChars: number;
   /** QEMU's own diagnostics (stderr), kept separate from the emulated board's UART. */
   diagnostics: string;
   /** Bounded combined view for display. */
@@ -219,11 +221,31 @@ const qemuArgs = (flashPath: string) => [
 ];
 
 export class QemuSimulatorService {
-  private job: { snapshot: SimulatorSnapshot; child: ChildProcess; done: Promise<void>; stop: (reason: SimulatorStopReason) => void } | null = null;
+  private job: { snapshot: SimulatorSnapshot; child: ChildProcess; done: Promise<void>; stop: (reason: SimulatorStopReason) => void; write: (text: string) => void } | null = null;
   private last: SimulatorSnapshot | null = null;
   constructor(private options: QemuSimulatorOptions) {}
 
   snapshot() { return this.last ? clone(this.last) : null; }
+
+  /**
+   * Sends bounded printable bytes to the guest UART0 RX. Framing and any challenge protocol belong
+   * to the caller (B/D); this host only exposes the real serial seam and never interprets it.
+   */
+  writeUart(text: string) {
+    const job = this.job;
+    if (!job) throw new Error("模拟器未运行");
+    job.write(text);
+  }
+
+  /** Returns UART text received after `since` (a previous snapshot.uartChars). Bounded to the retained window. */
+  readUart(since: number): { offset: number; text: string } {
+    const snapshot = this.last;
+    if (!snapshot) throw new Error("模拟器尚未启动");
+    if (!Number.isInteger(since) || since < 0) throw new Error("UART 读取位置必须是非负整数");
+    const retainedFrom = snapshot.uartChars - snapshot.uart.length;
+    if (since < retainedFrom) throw new Error("请求的 UART 位置已滚出保留窗口，最早可用 " + retainedFrom);
+    return { offset: snapshot.uartChars, text: snapshot.uart.slice(Math.max(0, since - retainedFrom)) };
+  }
 
   private emit(snapshot: SimulatorSnapshot) {
     this.last = clone(snapshot);
@@ -262,7 +284,7 @@ export class QemuSimulatorService {
         build: { recordSha256: images.recordSha256, inputHash: images.inputHash, builtAt: images.builtAt },
         app: images.app,
         flash: { sha256: images.sha256, size: images.flashSize, bootloaderOffset: BOOTLOADER_OFFSET, partitionTableOffset: PARTITION_TABLE_OFFSET, partitions: images.partitions },
-        uart: "", diagnostics: "", log: "",
+        uart: "", uartChars: 0, diagnostics: "", log: "",
       };
       // The process is spawned only after the exact flash bytes and the fixed argv exist.
       const child = spawn(executable, argv, { cwd: tempDir, shell: false, windowsHide: true, detached: process.platform !== "win32", env: { ...process.env } });
@@ -290,7 +312,7 @@ export class QemuSimulatorService {
       };
       const append = (channel: "uart" | "diagnostics", chunk: Buffer) => {
         const text = chunk.toString("utf8");
-        if (channel === "uart") snapshot.uart = (snapshot.uart + text).slice(-MAX_LOG);
+        if (channel === "uart") { snapshot.uartChars += text.length; snapshot.uart = (snapshot.uart + text).slice(-MAX_LOG); }
         else snapshot.diagnostics = (snapshot.diagnostics + text).slice(-MAX_LOG);
         snapshot.log = (snapshot.log + text).slice(-MAX_LOG);
         emit();
@@ -336,7 +358,15 @@ export class QemuSimulatorService {
         }
         void settle();
       });
-      this.job = { snapshot, child, done, stop };
+      const write = (text: string) => {
+        if (settled || snapshot.status !== "running") throw new Error("模拟器未运行");
+        if (typeof text !== "string" || text.length < 1 || text.length > 128) throw new Error("UART 写入必须是 1–128 个字符");
+        if (!/^[\x20-\x7e\r\n\t]+$/.test(text)) throw new Error("UART 写入只接受可打印 ASCII 与换行/制表符");
+        const stdin = child.stdin;
+        if (!stdin || stdin.destroyed || !stdin.writable) throw new Error("QEMU 标准输入不可用");
+        stdin.write(text);
+      };
+      this.job = { snapshot, child, done, stop, write };
       emit();
       return clone(snapshot);
     } catch (error) {
@@ -352,7 +382,7 @@ export class QemuSimulatorService {
         startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), exitCode: null, pid: null,
         qemu: { executable, version }, argv: [], build: { recordSha256: "", inputHash: "", builtAt: "" },
         app: { path: "", sha256: "", size: 0 }, flash: { sha256: "", size: 0, bootloaderOffset: BOOTLOADER_OFFSET, partitionTableOffset: PARTITION_TABLE_OFFSET, partitions: [] },
-        uart: "", diagnostics: "", log: "", error: error instanceof Error ? error.message : String(error),
+        uart: "", uartChars: 0, diagnostics: "", log: "", error: error instanceof Error ? error.message : String(error),
       };
       this.emit(failed);
       throw error;
@@ -390,7 +420,9 @@ export interface SimulatorEvidence {
   source: {
     kind: "qemu.esp32c3"; qemuExecutable: string; qemuVersion: string;
     buildRecordSha256: string; qemuFlashSha256: string; qemuFlashBytes: number; appBytes: number;
-    status: SimulatorStatus; stopReason?: SimulatorStopReason; pid: number | null;
+    status: SimulatorStatus; stopReason?: SimulatorStopReason; pid: number | null; uartChars: number;
+    /** This record proves the app booted in QEMU, never a deployment authorization by itself. */
+    scope: "boot-only"; challengeVerified: false;
   };
 }
 
@@ -409,7 +441,8 @@ export function simulatorEvidence(snapshot: SimulatorSnapshot): SimulatorEvidenc
     source: {
       kind: "qemu.esp32c3", qemuExecutable: snapshot.qemu.executable, qemuVersion: snapshot.qemu.version,
       buildRecordSha256: snapshot.build.recordSha256, qemuFlashSha256: snapshot.flash.sha256, qemuFlashBytes: snapshot.flash.size, appBytes: snapshot.app.size,
-      status: snapshot.status, ...(snapshot.stopReason ? { stopReason: snapshot.stopReason } : {}), pid: snapshot.pid,
+      status: snapshot.status, ...(snapshot.stopReason ? { stopReason: snapshot.stopReason } : {}), pid: snapshot.pid, uartChars: snapshot.uartChars,
+      scope: "boot-only", challengeVerified: false,
     },
   };
 }

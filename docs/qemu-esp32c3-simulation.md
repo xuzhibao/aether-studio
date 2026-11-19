@@ -45,16 +45,16 @@ QEMU 源码 `hw/riscv/esp32c3.c` 只接受 2/4/8/16MB 的 `-drive if=mtd` 镜像
 最近一次完整验收的实际值（每次构建的应用 SHA 会因镜像内嵌时间戳而不同，记录值是当次真实值）：
 
 - 生产 app `firmware.bin`：256,112 字节，SHA-256
-  `3e0eca067510e3678b0ed5e2b836231eafc4d44bf75d023f36d2b65be8856a89`
+  `934359c8475e200ad67081ec0c76fb9c46b111d22711d16396293049a46f11ca`
 - QEMU 私有 flash：4,194,304 字节，SHA-256
-  `a223026e9b5e1352a79fbfa286711789292c07821accb7e9f19eb4b1e2abc1cd`
+  `9f81dd0030c84133e109e33d1de11c65c2100e9cef178c46c3dc8cece754bb45`
 - UART0（stdout）关键行：
   `ESP-ROM:esp32c3-api1-20210207`、`load:0x403cc710,len:0x90c`、`entry 0x403cc710`
 
 UART0 探针（验收专用、与生产固件不同的另一份二进制）：
 
 - app `firmware.bin`：258,896 字节，SHA-256
-  `f75d75737cf2e9c699895d9b53f739cfebe6b8c39e5a4ea61222ddf49add526d`
+  `77387305c9c50fe59b77c75dc8c686efc6e9d61eb3423ac8a51045f5f615bf92`
 - 真实 UART 行：`AETHER-QEMU-UART-PROBE`（约 1 秒一行）
 - 探针源码在验收脚本运行时临时生成，构建完成后连同临时目录移到回收站，不进入仓库。
 
@@ -106,6 +106,8 @@ const simulator = createQemuSimulator({
 await simulator.start({ environment: "esp32-c3", timeoutMs: 30000 });
 await simulator.cancel();   // 等待 QEMU 真正退出并完成私有文件清理
 simulator.snapshot();       // 最近一次快照（含真实错误）
+simulator.writeUart(challenge + "\n"); // D 发送 B 的挑战；1–128 个可打印 ASCII/换行/制表符
+const { offset, text } = simulator.readUart(cursor); // cursor 来自 snapshot().uartChars
 await simulator.dispose();  // 工程切换与退出时等待进程收束；建议加入 beforeSwitch 与 before-quit
 ```
 
@@ -148,6 +150,7 @@ await simulator.dispose();  // 工程切换与退出时等待进程收束；建�
 ```
 
 - `passed` 只有同时满足“UART0 出现真实 `ESP-ROM:esp32c3`”与“进程干净停止”才为 true；提前取消或校验失败为 false。
+- `source.scope = "boot-only"` 与 `source.challengeVerified = false` 是固定值：A 不声明挑战已验证；D 必须在同一真实 UART 接缝上完成 B 的随机挑战后再生成部署批准证据。
 - 跨端唯一绑定字段是 `appSha256`；QEMU 版本、构建记录 SHA、flash SHA 只放在 `source` 审计字段，不能替代 `appSha256`，也不应与 `deploymentPlanDigest` 相等。
 - `inputHash` 对 `passed = true` 是**硬要求**：缺失时 `simulatorEvidence` 直接抛错，最终产品门槛不会省略它。它由宿主 `WorkspaceService.fingerprint()` 对磁盘工程计算，与 `TaskService` 写入构建记录时使用的算法完全一致。
 - `recordedAt` 取真实运行结束时间（未结束则启动时间）。
@@ -163,6 +166,8 @@ await simulator.dispose();  // 工程切换与退出时等待进程收束；建�
 - `cancel()` / `dispose()` 在 `close` 事件后才返回；Windows 使用 `taskkill /PID <pid> /T /F` 收束进程树，POSIX 先 SIGTERM 后 SIGKILL。
 - 私有临时目录只在 `close` 之后移到回收站；清理失败会在 `diagnostics` 里报告路径，绝不永久删除。
 - 不监听端口、不联网、不复用 Demo simulator 的 `tick`。
+- `writeUart(text)` 只接受 1–128 个可打印 ASCII（含换行/制表符），直接写入 QEMU 的 guest UART0 RX；`readUart(since)` 按 `snapshot().uartChars` 游标读取真实回包，位置滚出 250k 保留窗口时明确报错。A 不解释挑战协议，D/B 自行定帧与判定。
+- A 的 `passed` 只证明 QEMU 启动；`simulatorEvidence` 固定带 `source.scope = "boot-only"` 与 `source.challengeVerified = false`。D 必须通过上述 UART 接缝让 B 的新随机挑战拿到真实回包，另行生成部署批准，不能把 A 的记录直接当作可写授权。
 
 ## 5. 构建记录与 TOCTOU 校验
 
@@ -192,6 +197,7 @@ node --import tsx scripts/smoke-qemu-simulator.ts
 - 独立重算 QEMU 合并镜像 SHA，与模块快照比对；
 - `simulatorEvidence` 证据记录：`passed=true`、`appSha256`、`environment`、`inputHash`、`recordedAt`、`source` 审计字段全部核对；
 - UART0 探针输出真实应用行；
+- UART 写/读接缝：D 用随机挑战写入 guest UART0 RX，B 的探针回显，A 从真实 stdout 读回同一挑战（本轮实测 `8ca791068983e37c → ECHO:8ca791068983e37c`）；
 - 16MB 同族布局：app `@0x100000`、`ota_1 @0x700000` 保留、私有 flash 16MB；
 - 超时停止、取消、运行中二次启动拒绝；
 - 篡改构建记录中的 app SHA → 拒绝且 `pid = null`；
@@ -204,10 +210,11 @@ node --import tsx scripts/smoke-qemu-simulator.ts
 
 ```text
 [QEMU] QEMU emulator version 9.2.2 (esp_develop_9.2.2_20261109)
-[通过] 证据记录：passed=true，appSha256=3e0eca06...be8856a9，environment=esp32-c3
-[通过] 生产示例启动：app 3e0eca06...be8856a9，UART0 行 ... entry 0x403cc710
-[通过] UART0 探针：app f75d7573...9add526d，UART 行 AETHER-QEMU-UART-PROBE
-[通过] 16MB 物理同族布局：app @0x100000，ota_1 @0x700000 保留，QEMU 从 ota_0 启动，app 9f21e858...e44b58103
+[通过] 证据记录：passed=true，appSha256=934359c8...a46f11ca，environment=esp32-c3
+[通过] 生产示例启动：app 934359c8...a46f11ca，UART0 行 ... entry 0x403cc710
+[通过] UART 挑战 8ca791068983e37c → ECHO:8ca791068983e37c
+[通过] UART0 探针：app 77387305...f615bf92，UART 行 AETHER-QEMU-UART-PROBE
+[通过] 16MB 物理同族布局：app @0x100000，ota_1 @0x700000 保留，QEMU 从 ota_0 启动，app fd825519...a0544af75
 [通过] 超时停止并收束真实进程
 [通过] 篡改构建产物 SHA 被拒绝，未启动进程
 [通过] 构建后修改源码被拒绝，未启动进程
@@ -215,7 +222,7 @@ node --import tsx scripts/smoke-qemu-simulator.ts
 PASS qemu simulator: real PlatformIO builds, real QEMU boots, verified app bytes, UART0, timeout/cancel, refusal paths; no hardware serial
 ```
 
-其中生产示例当次 QEMU 私有 flash SHA-256 为 `a223026e...e2abc1cd`；生产 app 为 256,112 字节，探针 app 为 258,896 字节。
+其中生产示例当次 QEMU 私有 flash SHA-256 为 `9f81dd00...e754bb45`；生产 app 为 256,112 字节，UART0 探针 app 为 261,056 字节。
 
 ## 7. 未实测与待集成
 

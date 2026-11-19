@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -192,6 +192,8 @@ try {
   assert.equal(evidence.source.buildRecordSha256, prodRun!.build.recordSha256);
   assert.equal(evidence.source.qemuFlashSha256, prodRun!.flash.sha256);
   assert.notEqual(evidence.appSha256, evidence.source.qemuFlashSha256, "app SHA 与 QEMU flash SHA 不能混用");
+  assert.equal(evidence.source.scope, "boot-only", "A 的证据只证明启动");
+  assert.equal(evidence.source.challengeVerified, false, "A 不声明挑战已由本模块验证");
   note("[通过] 证据记录：passed=" + evidence.passed + "，appSha256=" + evidence.appSha256 + "，environment=" + evidence.environment);
   note("[通过] 生产示例启动：app " + prodRun!.app.sha256 + "，UART0 行 " + prodRun!.uart.trim().split(/\r?\n/).slice(-2).join(" / "));
 
@@ -204,7 +206,11 @@ try {
   await fs.writeFile(path.join(probeSource, "src", "main.cpp"), [
     "#include <Arduino.h>",
     "void setup() { Serial.begin(115200); delay(300); }",
-    "void loop() { Serial.println(\"AETHER-QEMU-UART-PROBE\"); delay(1000); }", "",
+    "void loop() {",
+    "  Serial.println(\"AETHER-QEMU-UART-PROBE\");",
+    "  if (Serial.available()) { String line = Serial.readStringUntil(10); line.trim(); Serial.print(\"ECHO:\"); Serial.println(line); }",
+    "  delay(200);",
+    "}", "",
   ].join("\n"));
   const probe = path.join(base, "probe");
   await fs.cp(probeSource, probe, { recursive: true });
@@ -216,7 +222,22 @@ try {
 
   await probeSimulator.start({ environment, timeoutMs: 8000 });
   await until(() => probeSimulator.snapshot()?.uart.includes("AETHER-QEMU-UART-PROBE") ?? false, "UART0 探针输出", 12000);
+  // Real UART write/read seam: D/B owns the protocol; this probe only echoes what it receives.
+  const cursor = probeSimulator.snapshot()!.uartChars;
+  const challenge = randomBytes(8).toString("hex");
+  probeSimulator.writeUart(challenge + "\n");
+  await until(() => probeSimulator.readUart(cursor).text.includes("ECHO:" + challenge), "UART 挑战回包", 10000);
+  const reply = probeSimulator.readUart(cursor);
+  const echoLine = reply.text.split(/\r?\n/).find((line) => line.includes("ECHO:" + challenge));
+  assert.ok(echoLine, "必须从真实 UART 读回挑战回包");
+  assert.throws(() => probeSimulator.writeUart(""), /1–128/);
+  assert.throws(() => probeSimulator.writeUart("x".repeat(129)), /1–128/);
+  assert.throws(() => probeSimulator.writeUart("\u0000"), /ASCII/);
+  assert.throws(() => probeSimulator.readUart(-1), /非负整数/);
+  note("[通过] UART 挑战 " + challenge + " → " + echoLine);
   await probeSimulator.cancel();
+  assert.throws(() => probeSimulator.writeUart("x\n"), /未运行/);
+
   const probeRun = probeSimulator.snapshot();
   assertStopped(probeRun, "cancel");
   assert.equal(probeRun!.app.sha256, probeExpected.appSha256);
