@@ -16,7 +16,10 @@ const foldCase = process.platform === "win32" || process.platform === "darwin";
 const fold = (value: string) => foldCase ? value.toLowerCase() : value;
 const ignoredNames = new Set([...ignored].map(fold));
 const reservedNames = new Set([...reserved].map(fold));
-const isIgnoredPart = (part: string) => ignoredNames.has(fold(part));
+// PlatformIO ESP-IDF writes sdkconfig.<env> and sdkconfig.old into the project root during a build.
+// They are generated artifacts, not inputs; user-provided sdkconfig.defaults* stay tracked.
+const generatedSdkconfig = /^sdkconfig\.(?!defaults(?:\.|$)).+$/i;
+const isIgnoredPart = (part: string) => ignoredNames.has(fold(part)) || generatedSdkconfig.test(part);
 const isReservedPath = (name: string) => {
   const parts = name.split("/");
   for (let index = 1; index <= parts.length; index++) if (reservedNames.has(fold(parts.slice(0, index).join("/")))) return true;

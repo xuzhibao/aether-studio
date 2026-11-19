@@ -1,10 +1,13 @@
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { assertEnvironmentName } from "../buildInputs";
 import { deviceLease, normalizePort, type DeviceLeaseToken } from "../deviceLock";
 import type { TaskSnapshot } from "../../shared/desktop";
+import { evaluatePreflight } from "../../shared/esp";
 import { FwValSession, type FwValRecord, type FwValTransport } from "../../shared/firmwareValidation";
+import { verifyAppOnlyTarget } from "../esp/appOnly";
 import {
   verifyMonitorEvidence,
   verifySimulationEvidence,
@@ -13,7 +16,13 @@ import {
   type EspMonitorEvidence,
   type EspSimulationEvidence,
   type EspSimulationVerdict,
+  type VerifiedDeployIntent,
 } from "../esp/deployGate";
+import { findEsptool } from "../esp/esptool";
+import { readDeviceFacts } from "../esp/inspect";
+import { applyBuildRecord, buildPreflightInput } from "../esp/preflight";
+import { readEspProject } from "../esp/project";
+import { writeRanges } from "../esp/upload";
 import type { SerialService } from "../plugins/serial";
 import type { ToolService } from "../tools";
 import type { WorkspaceService } from "../workspace";
@@ -23,9 +32,12 @@ import { createQemuSimulator, type QemuSimulatorService, type SimulatorSnapshot 
 //
 // One QEMU run proves the app boots and answers a challenge the host generated for this run. The
 // record it produces is host-owned and binds the exact app SHA-256, the PlatformIO environment and
-// the project input fingerprint. The app-only deploy gate reads this record; the renderer has no
-// parameter that can forge or relax it. The physical-board challenge always opens a NEW serial
-// session on the port that was just written and is bound to the real deploy plan digest.
+// the project input fingerprint. An explicit preview re-proves the same target on the live device
+// and issues a one-time write token; the commit starts the existing esp.upload provider without a
+// build or a save, and the provider re-proves device, active slot, build record and artifacts while
+// it holds the port lease. The renderer cannot widen or reuse that authorization. The physical-board
+// challenge always opens a NEW serial session on the port that was just written and is bound to the
+// real deploy plan digest.
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const BOOT_BANNER = "ESP-ROM:esp32c3";
@@ -33,6 +45,10 @@ const DEVICE_BAUD = 115200;
 const DEFAULT_BOOTS = 2;
 const POLL_MS = 50;
 const MAX_TIMEOUT = 300_000;
+const PREVIEW_TTL_MS = 120_000;
+
+/** Internal task option that only the explicit commit writes; the generic tasks IPC strips it. */
+export const VERIFIED_WRITE_OPTION = "__aetherVerifiedWrite";
 
 export interface VirtualBoot {
   record: FwValRecord;
@@ -66,14 +82,21 @@ export interface QemuEvidence {
   error?: string;
 }
 
-export interface ArmedDeploy {
+/** Host-only one-time preview. The renderer receives every field except the internal evidence checks. */
+export interface VerifiedDeployPreview {
+  token: string;
   evidenceId: string;
   root: string;
   environment: string;
+  port: string;
   appSha256: string;
   inputHash: string;
-  port: string;
-  armedAt: string;
+  device: { chipName: string; revision: string; flashSize: number | null };
+  slot: { label: string; offset: number; size: number };
+  erase: { offset: number; size: number };
+  app: { offset: number; size: number };
+  previewedAt: string;
+  expiresAt: string;
 }
 
 export interface HardwareEvidence {
@@ -97,7 +120,7 @@ export interface VerificationStatus {
   running: boolean;
   live: SimulatorSnapshot | null;
   evidence: QemuEvidence | null;
-  armed: ArmedDeploy | null;
+  preview: VerifiedDeployPreview | null;
   hardware: HardwareEvidence | null;
   error: string;
 }
@@ -109,6 +132,8 @@ export interface VerificationOptions {
   tasks: { list: () => TaskSnapshot[] };
   directory: () => string;
   trashItem?: (target: string) => Promise<void>;
+  /** True while the editor has unsaved buffers; a preview or write must not use a stale disk state. */
+  unsaved?: () => boolean;
   emit?: (status: VerificationStatus) => void;
 }
 
@@ -127,7 +152,9 @@ export class FirmwareVerificationService {
   private cancelled = false;
   private live: SimulatorSnapshot | null = null;
   private evidence: QemuEvidence | null = null;
-  private armed: ArmedDeploy | null = null;
+  private preview: VerifiedDeployPreview | null = null;
+  private writeIntent: VerifiedDeployIntent | null = null;
+  private activeIntent: VerifiedDeployIntent | null = null;
   private hardware: HardwareEvidence | null = null;
   private error = "";
   private hardwareLease: DeviceLeaseToken | null = null;
@@ -162,7 +189,7 @@ export class FirmwareVerificationService {
       running: this.running,
       live: this.live ? clone(this.live) : null,
       evidence: this.evidence ? clone(this.evidence) : null,
-      armed: this.armed ? clone(this.armed) : null,
+      preview: this.preview ? clone(this.preview) : null,
       hardware: this.hardware ? clone(this.hardware) : null,
       error: this.error,
     };
@@ -172,32 +199,26 @@ export class FirmwareVerificationService {
     return this.evidence ? clone(this.evidence) : null;
   }
 
-  armedDeploy() {
-    return this.armed ? clone(this.armed) : null;
-  }
-
-  isArmed() {
-    return this.armed !== null;
-  }
-
   disarm() {
-    this.armed = null;
-    void this.persistArmed();
+    this.preview = null;
+    this.writeIntent = null;
+    this.activeIntent = null;
     this.notify();
   }
 
   /**
-   * Project switch or workspace close: an old project's evidence, authorization and hardware
-   * verdict must not remain visible for the next project.
+   * Project switch or workspace close: an old project's evidence, preview and hardware verdict must
+   * not remain visible for the next project.
    */
   clear() {
     this.evidence = null;
-    this.armed = null;
+    this.preview = null;
+    this.writeIntent = null;
+    this.activeIntent = null;
     this.hardware = null;
     this.live = null;
     this.error = "";
     this.priorSessions = [];
-    void this.persistArmed();
     this.notify();
   }
 
@@ -217,43 +238,156 @@ export class FirmwareVerificationService {
   }
 
   /**
-   * Runs in addition to C's strict comparison. The record must belong to the armed port/environment
-   * and to the same workspace, so a pass for one target cannot authorize another port.
+   * Runs in addition to the gate's strict comparison. The intent must be the one issued by the
+   * explicit commit and still belong to the current record, project, environment, port and private
+   * app bytes. A generic deploy never carries the marker, so it cannot reach this path at all.
    */
-  verifyGate(evidence: EspSimulationEvidence | null, expected: EspDeployExpectation): EspSimulationVerdict {
-    const armed = this.armed;
-    if (!armed) return { allowed: false, reason: "没有为本次写入启用固件验证（app-only）" };
-    if (!this.evidence || this.evidence.id !== armed.evidenceId) return { allowed: false, reason: "固件验证证据已变化，请重新验证" };
-    if (!this.options.workspace.root || path.resolve(this.options.workspace.root) !== path.resolve(armed.root)) return { allowed: false, reason: "证据属于另一个工程目录" };
-    if (expected.environment !== armed.environment) return { allowed: false, reason: "写入环境 " + expected.environment + " 与已验证环境 " + armed.environment + " 不一致" };
-    if (normalizePort(expected.port) !== normalizePort(armed.port)) return { allowed: false, reason: "写入端口 " + expected.port + " 与已启用验证的端口 " + armed.port + " 不一致" };
+  verifyGate(evidence: EspSimulationEvidence | null, expected: EspDeployExpectation, options?: Record<string, string>): EspSimulationVerdict {
+    const intent = this.activeIntent;
+    if (!intent || !options || options[VERIFIED_WRITE_OPTION] !== intent.id) return { allowed: false, reason: "没有显式验证写入意图" };
+    if (!this.evidence || this.evidence.id !== intent.evidenceId) return { allowed: false, reason: "固件验证证据已变化，请重新验证" };
+    if (!this.options.workspace.root || path.resolve(this.options.workspace.root) !== path.resolve(intent.root)) return { allowed: false, reason: "写入工程目录与验证时不一致" };
+    if (expected.environment !== intent.environment) return { allowed: false, reason: "写入环境 " + expected.environment + " 与已验证环境 " + intent.environment + " 不一致" };
+    if (normalizePort(expected.port) !== normalizePort(intent.port)) return { allowed: false, reason: "写入端口 " + expected.port + " 与已核对端口 " + intent.port + " 不一致" };
+    if (expected.appSha256.toLowerCase() !== intent.appSha256.toLowerCase()) return { allowed: false, reason: "私有快照中的 app 与已验证 app 不一致" };
+    if (expected.inputHash !== intent.inputHash) return { allowed: false, reason: "核对写入之后工程文件又发生了变化" };
     return verifySimulationEvidence(evidence, expected);
   }
 
-  /** Arms the next esp.upload task for app-only. Only a passed, current record can arm. */
-  async armDeploy(options: { port: string }): Promise<ArmedDeploy> {
-    const evidence = this.evidence;
-    if (!evidence || !evidence.passed) throw new Error("没有可用的固件验证通过记录；请先完成真实 QEMU 验证");
-    const root = this.options.workspace.root;
-    if (!root) throw new Error("请先打开工程目录");
-    if (path.resolve(root) !== path.resolve(evidence.root)) throw new Error("最近的验证记录属于另一个工程目录");
-    const fingerprint = await this.options.workspace.fingerprint().catch(() => "");
-    if (fingerprint !== evidence.inputHash) throw new Error("验证之后工程文件已变化，请重新构建并验证");
-    const port = options.port?.trim();
-    if (!port) throw new Error("请先选择实机串口");
-    this.armed = {
-      evidenceId: evidence.id, root, environment: evidence.environment, appSha256: evidence.appSha256,
-      inputHash: evidence.inputHash, port, armedAt: new Date().toISOString(),
-    };
-    await this.persistArmed();
-    this.notify();
-    return clone(this.armed);
+  /**
+   * The upload provider's only route to app-only. It consumes the intent created by commitDeploy;
+   * the marker is never accepted by the generic tasks IPC. No intent means the full existing plan.
+   */
+  takeWriteIntent(options: Record<string, string>): VerifiedDeployIntent | null {
+    const id = options[VERIFIED_WRITE_OPTION];
+    if (!id || !this.writeIntent || this.writeIntent.id !== id) return null;
+    const intent = this.writeIntent;
+    this.writeIntent = null;
+    this.activeIntent = intent;
+    return clone(intent);
   }
 
-  consumeArmed() {
-    this.armed = null;
-    void this.persistArmed();
+  abortWrite(id: string) {
+    if (this.writeIntent?.id === id) this.writeIntent = null;
+    if (this.activeIntent?.id === id) this.activeIntent = null;
+  }
+
+  /**
+   * Read-only preview of one app-only write. It re-proves the passed QEMU record, the successful
+   * build record and artifacts, the live device and the active OTA slot, then issues a one-time
+   * token that expires. It does not arm the generic deploy dialog or any ambient permission.
+   */
+  async previewDeploy(options: { environment: string; port: string }): Promise<VerifiedDeployPreview> {
+    if (this.running) throw new Error("固件验证正在运行，请先等待或取消");
+    // A new check invalidates the previous token even when this one fails: never leave an older
+    // preview that the UI could still display as current. A new target also invalidates any prior
+    // hardware conclusion, which belonged to a different write.
+    this.preview = null;
+    this.writeIntent = null;
+    this.activeIntent = null;
+    this.hardware = null;
     this.notify();
+    if (this.options.unsaved?.()) throw new Error("工程有未保存的编辑，请先保存再核对写入");
+    const root = this.options.workspace.root;
+    if (!root) throw new Error("请先打开工程目录");
+    const environment = typeof options.environment === "string" ? options.environment.trim() : "";
+    if (!environment) throw new Error("请先选择 PlatformIO 环境");
+    const port = typeof options.port === "string" ? options.port.trim() : "";
+    if (!port) throw new Error("请先选择实机串口");
+    const evidence = this.evidence;
+    if (!evidence || !evidence.passed) throw new Error("没有通过的 QEMU 验证记录；请先完成两次真实启动");
+    if (path.resolve(root) !== path.resolve(evidence.root)) throw new Error("QEMU 记录属于另一个工程目录");
+    if (environment !== evidence.environment) throw new Error("QEMU 记录属于环境 " + evidence.environment + "，不是 " + environment);
+    const fingerprint = await this.options.workspace.fingerprint().catch(() => "");
+    if (!fingerprint || fingerprint !== evidence.inputHash) throw new Error("QEMU 验证之后工程文件已变化，请重新验证");
+
+    const found = await findEsptool(this.options.tools);
+    if (!found.tool) throw new Error(found.reason || "找不到 esptool");
+    const tool = found.tool;
+    const facts = await readEspProject(root, environment, this.options.tools.executable("platformio"), this.options.tools, this.options.workspace);
+    if (!facts.supported) throw new Error(facts.skipped || "该工程不是 ESP 目标");
+    if (facts.recordProblem) throw new Error(facts.recordProblem + "；请重新构建后再核对");
+    if (facts.app.sha256.toLowerCase() !== evidence.appSha256.toLowerCase()) throw new Error("构建的 app 与 QEMU 记录不一致，请重新构建并验证");
+
+    let lease: DeviceLeaseToken | null = null;
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "aether-verified-preview-"));
+    try {
+      lease = deviceLease.claim("verification", port);
+      const device = await readDeviceFacts(tool, port);
+      if (!device.ok) throw new Error("无法读取设备：" + device.error);
+      const result = applyBuildRecord(evaluatePreflight(buildPreflightInput(facts, port, device)), facts);
+      const blocks = result.findings.filter((finding) => finding.severity === "block");
+      if (blocks.length) throw new Error("写入前核对未通过：" + blocks.map((finding) => finding.title + "（" + finding.next + "）").join("；"));
+      const appSegments = result.segments.filter((segment) => segment.name === "app");
+      if (appSegments.length !== 1) throw new Error("写入计划必须恰好包含一个 app 段（" + appSegments.length + "）");
+      const target = await verifyAppOnlyTarget({ tool, port, directory: scratch, device, project: facts, appOffset: appSegments[0].offset, appSize: appSegments[0].size, appSha256: appSegments[0].sha256 });
+      if (target.appSha256 !== evidence.appSha256.toLowerCase()) throw new Error("活动槽中的目标 app 与 QEMU 记录不一致");
+      if (this.options.workspace.root !== root) throw new Error("核对期间工程目录已切换");
+      const ranges = writeRanges([appSegments[0]]);
+      if (ranges.length !== 1 || ranges[0].offset !== target.erase.offset || ranges[0].size !== target.erase.size) throw new Error("app-only 擦除范围与已核对目标不一致");
+      const now = Date.now();
+      const preview: VerifiedDeployPreview = {
+        token: randomBytes(24).toString("hex"),
+        evidenceId: evidence.id,
+        root,
+        environment,
+        port,
+        appSha256: target.appSha256,
+        inputHash: evidence.inputHash,
+        device: { chipName: device.chipName, revision: device.revision, flashSize: device.flashSize },
+        slot: { label: target.partition.label, offset: target.partition.offset, size: target.partition.size },
+        erase: { offset: target.erase.offset, size: target.erase.size },
+        app: { offset: target.appOffset, size: target.appSize },
+        previewedAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + PREVIEW_TTL_MS).toISOString(),
+      };
+      this.preview = preview;
+      this.writeIntent = null;
+      this.activeIntent = null;
+      this.notify();
+      return clone(preview);
+    } finally {
+      deviceLease.release(lease);
+      await fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /**
+   * Consumes the preview token and creates the one-shot intent the upload provider will bind to.
+   * The provider re-proves device, active slot, build record and private app bytes under the task's
+   * own port lease, so a change after this point refuses the write instead of widening it.
+   */
+  async commitDeploy(options: { token: string; environment: string; port: string }): Promise<VerifiedDeployIntent> {
+    const preview = this.preview;
+    if (!preview || preview.token !== options.token) throw new Error("写入预览已失效，请重新核对写入目标");
+    // One-shot immediately: a second click, a retry or another task has nothing to reuse.
+    this.preview = null;
+    this.writeIntent = null;
+    this.activeIntent = null;
+    // A hardware verdict belongs to the previous write; a new write starts without one.
+    this.hardware = null;
+    this.notify();
+    if (this.running) throw new Error("固件验证正在运行，请先等待或取消");
+    if (Date.parse(preview.expiresAt) <= Date.now()) throw new Error("写入预览已过期，请重新核对");
+    if (this.options.unsaved?.()) throw new Error("工程有未保存的编辑，请先保存再烧录");
+    const root = this.options.workspace.root;
+    if (!root || path.resolve(root) !== path.resolve(preview.root)) throw new Error("工程目录已切换，请重新核对");
+    const environment = typeof options.environment === "string" ? options.environment.trim() : "";
+    if (environment !== preview.environment) throw new Error("构建环境已变化，请重新核对");
+    const port = typeof options.port === "string" ? options.port.trim() : "";
+    if (normalizePort(port) !== normalizePort(preview.port)) throw new Error("串口已变化，请重新核对");
+    const evidence = this.evidence;
+    if (!evidence || !evidence.passed || evidence.id !== preview.evidenceId) throw new Error("QEMU 证据已变化，请重新验证");
+    if (evidence.appSha256 !== preview.appSha256 || evidence.environment !== preview.environment) throw new Error("QEMU 证据与预览不一致，请重新验证");
+    const fingerprint = await this.options.workspace.fingerprint().catch(() => "");
+    if (!fingerprint || fingerprint !== preview.inputHash) throw new Error("核对之后工程文件已变化，请重新验证");
+    const intent: VerifiedDeployIntent = {
+      id: randomUUID(), evidenceId: preview.evidenceId, root, environment, port,
+      appSha256: preview.appSha256, inputHash: preview.inputHash, slot: preview.slot, erase: preview.erase,
+    };
+    this.writeIntent = intent;
+    this.notify();
+    return clone(intent);
   }
 
   cancel(): Promise<void> {
@@ -285,8 +419,10 @@ export class FirmwareVerificationService {
     this.cancelled = false;
     this.error = "";
     this.hardware = null;
-    // A new run invalidates any deploy authorization; the old record also stops authorizing writes.
-    this.armed = null;
+    // A new run invalidates the deploy preview and any old record: both stop authorizing writes.
+    this.preview = null;
+    this.writeIntent = null;
+    this.activeIntent = null;
     this.evidence = null;
     this.live = null;
     this.notify();
@@ -571,15 +707,6 @@ export class FirmwareVerificationService {
     const file = path.join(directory, "qemu-evidence.json");
     const temporary = file + ".tmp";
     await fs.writeFile(temporary, JSON.stringify(this.evidence, null, 2));
-    await fs.rename(temporary, file);
-  }
-
-  private async persistArmed() {
-    const directory = this.directory();
-    await fs.mkdir(directory, { recursive: true });
-    const file = path.join(directory, "armed-deploy.json");
-    const temporary = file + ".tmp";
-    await fs.writeFile(temporary, JSON.stringify(this.armed));
     await fs.rename(temporary, file);
   }
 }

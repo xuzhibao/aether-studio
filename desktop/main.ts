@@ -20,7 +20,7 @@ import { createEspUploadProvider } from "./esp/upload";
 import { FlashService } from "./flash";
 import { createEsptoolRunner } from "./plugins/esptool";
 import { qemuEsp32c3Tool } from "./simulator/qemu";
-import { FirmwareVerificationService } from "./simulator/verification";
+import { FirmwareVerificationService, VERIFIED_WRITE_OPTION } from "./simulator/verification";
 import { createMicropythonRunProvider } from "./plugins/micropython";
 import { MicropythonFilesService } from "./plugins/micropythonFiles";
 import { deviceLease, type DeviceLeaseToken } from "./deviceLock";
@@ -82,19 +82,21 @@ const verification = new FirmwareVerificationService({
   tools, workspace, serial, tasks,
   directory: () => path.join(app.getPath("userData"), "firmware-verification"),
   trashItem: (target) => shell.trashItem(target),
+  unsaved: () => dirty,
   emit: (status) => emit("firmwareVerification:changed", status),
 });
 // ESP uploads are verified and journaled inside the task, while the port lease is held.
 tasks.register(createEspUploadProvider(tools, workspace, {
   journalRoot: () => path.join(app.getPath("userData"), "esp-journal"),
-  // The gate is host-owned: `required` is true only after the panel armed a verified target.
+  // The host-only intent is created by commitDeploy and reachable only through the internal task
+  // option; the generic tasks IPC strips that key, so a normal deploy keeps its full plan.
+  writeIntent: (options) => verification.takeWriteIntent(options),
+  // The gate is required only for a task started by the explicit verified-deploy commit.
   simulation: {
-    required: () => verification.isArmed(),
+    required: (options) => !!options?.[VERIFIED_WRITE_OPTION],
     evidence: async () => verification.gateEvidence(),
-    verify: (evidence, expected) => verification.verifyGate(evidence, expected),
+    verify: (evidence, expected, options) => verification.verifyGate(evidence, expected, options),
   },
-  // app-only is selected by host state only; a renderer task option cannot choose it.
-  writeMode: () => (verification.isArmed() ? "app-only" : "full"),
 }));
 // mpremote runs one saved project script; it shares the same port lease and task log/cancel path.
 tasks.register(createMicropythonRunProvider(tools, workspace));
@@ -195,11 +197,32 @@ function routes() {
     if (!root) throw new Error("请先打开工程目录");
     return preflightEspUpload({ root, environment: options.environment, port: options.port, workspace, tools, platformio: tools.executable("platformio") });
   });
-  // Firmware verification: QEMU run, host evidence, arming and the independent device challenge.
+  // Firmware verification: QEMU run, host evidence, explicit verified-deploy preview/commit and the
+  // independent device challenge. The preview never arms the generic deploy dialog.
   handle("firmwareVerification:status", () => verification.status());
   handle("firmwareVerification:startSimulation", (options: { environment: string; boots?: number; timeoutMs?: number }) => enqueue(() => verification.runSimulation(options)));
   handle("firmwareVerification:cancel", () => verification.cancel());
-  handle("firmwareVerification:armDeploy", (options: { port: string }) => enqueue(() => verification.armDeploy(options)));
+  handle("firmwareVerification:previewDeploy", (options: { environment: string; port: string }) => enqueue(() => verification.previewDeploy(options)));
+  handle("firmwareVerification:commitDeploy", async (options: { token: string; environment: string; port: string }) => {
+    // A pending Flash restore plan was diffed against the pre-write device; this write invalidates it,
+    // exactly like the generic task and serial entries do.
+    flash.invalidatePlan();
+    // Claim before any await so a monitor opening the port cannot slip between the check and the write.
+    const token = deviceLease.claim("task");
+    try {
+      return await enqueue(async () => {
+        const intent = await verification.commitDeploy(options);
+        try {
+          const task = await tasks.start("esp.upload", { port: intent.port, environment: intent.environment, [VERIFIED_WRITE_OPTION]: intent.id }, token);
+          return { taskId: task.id };
+        } catch (error) {
+          // A refusal before a process exists has no write to settle; the one-shot intent is dropped.
+          verification.abortWrite(intent.id);
+          throw error;
+        }
+      });
+    } catch (error) { deviceLease.release(token); throw error; }
+  });
   handle("firmwareVerification:disarm", () => enqueue(async () => verification.disarm()));
   handle("firmwareVerification:runDevice", (options: { port: string; transport?: "uart0" | "usb-serial-jtag"; timeoutMs?: number }) => enqueue(() => verification.runDevice(options)));
   handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
@@ -207,14 +230,12 @@ function routes() {
     flash.invalidatePlan();
     // Claim synchronously at the IPC entry: the task's own await-heavy start cannot slip past a monitor.
     const token = deviceLease.claim("task");
-    // Snapshot the authorization before the task enters the serial queue. An arm that arrives while
-    // this upload is preparing must target the NEXT upload, never change this one mid-flight.
-    const armedBeforeStart = provider === "esp.upload" ? verification.armedDeploy() : null;
+    // The verified-write marker is host-only. A renderer task (generic deploy or anything else) cannot
+    // smuggle it in, so the dedicated intent is never reachable from this path.
+    const safeOptions = { ...options };
+    delete safeOptions[VERIFIED_WRITE_OPTION];
     try {
-      const started = await enqueue(() => tasks.start(provider, options, token));
-      // The app-only authorization is one-shot: consume only the arm this task actually used.
-      if (provider === "esp.upload" && armedBeforeStart) verification.consumeArmed();
-      return started;
+      return await enqueue(() => tasks.start(provider, safeOptions, token));
     }
     // The task releases this token when its process really exits; a refusal before spawn frees it here.
     catch (error) { deviceLease.release(token); throw error; }

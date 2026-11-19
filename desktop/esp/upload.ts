@@ -4,7 +4,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { checkUploadAgainstPlan, evaluatePreflight, type EspPlannedSegment, type EspPreflightResult } from "../../shared/esp";
 import { findEsptool, runEsptool, type EsptoolTool } from "./esptool";
-import { bindDeployExpectation, deploymentPlanDigest, enforceSimulationGate, type EspSimulationGate } from "./deployGate";
+import { bindDeployExpectation, deploymentPlanDigest, enforceSimulationGate, type EspSimulationGate, type VerifiedDeployIntent } from "./deployGate";
 import { reverifyAppOnlyTarget, verifyAppOnlyTarget, type EspAppOnlyTarget } from "./appOnly";
 import { readDeviceFacts } from "./inspect";
 import { readEspProject, type EspProjectFacts } from "./project";
@@ -138,11 +138,11 @@ export interface EspUploadProviderOptions {
    */
   simulation?: EspSimulationGate;
   /**
-   * Host-only write-mode selector. "app-only" is the Firmware Verification path: exactly one app
-   * segment into the proven active OTA slot. Any other value keeps the existing full plan, and the
-   * renderer has no option that can select it.
+   * Host-only write intent. Only a task started by the explicit verified-deploy commit carries the
+   * opaque task option this callback looks up; a generic deploy gets null and keeps the full plan.
+   * The lookup consumes the one-shot intent, so a retry or a second task has nothing to reuse.
    */
-  writeMode?: () => "full" | "app-only" | Promise<"full" | "app-only">;
+  writeIntent?: (options: Record<string, string>) => VerifiedDeployIntent | null;
 }
 
 export function createEspUploadProvider(tools: ToolService, workspace: WorkspaceService, options: EspUploadProviderOptions): TaskProvider {
@@ -183,12 +183,11 @@ export function createEspUploadProvider(tools: ToolService, workspace: Workspace
       const blocks = result.findings.filter((finding) => finding.severity === "block");
       if (blocks.length) throw new Error("部署前核对未通过，未写入任何数据：\n" + blocks.map((finding) => "- " + finding.title + "：" + finding.next).join("\n"));
 
-      // 2b. Host-selected write mode. app-only writes exactly one app segment into the OTA slot the
-      // on-device bootloader will really boot. The full preflight above already passed without any
-      // bypass; this step adds live identity checks and narrows what is written.
-      const writeMode = options.writeMode ? await options.writeMode() : "full";
-      if (writeMode !== "full" && writeMode !== "app-only") throw new Error("未知写入模式：" + String(writeMode));
-      const appOnly = writeMode === "app-only";
+      // 2b. Host-selected write intent. Only the explicit verified-deploy commit can supply it; it
+      // narrows the plan to the single app segment in the OTA slot the bootloader will really boot.
+      // The full preflight above already passed without any bypass.
+      const intent = options.writeIntent ? options.writeIntent(opts) : null;
+      const appOnly = intent !== null;
       let planSegments = result.segments;
       let appOnlyTarget: EspAppOnlyTarget | null = null;
 
@@ -206,6 +205,17 @@ export function createEspUploadProvider(tools: ToolService, workspace: Workspace
         appOnlyTarget = await verifyAppOnlyTarget({ tool, port, directory, signal, device, project: facts, appOffset: appSegments[0].offset, appSize: appSegments[0].size, appSha256: appSegments[0].sha256 });
         planSegments = [appSegments[0]];
         log("[aether] app-only 计划：槽 " + appOnlyTarget.partition.label + "@" + hex(appOnlyTarget.partition.offset) + "，擦除 " + hex(appOnlyTarget.erase.offset) + "+" + hex(appOnlyTarget.erase.size) + "，OTA seq=" + appOnlyTarget.otadata.activeSeq + "，bootloader IDF " + appOnlyTarget.bootloaderVersion.raw + "，app IDF " + appOnlyTarget.appIdfVersion.raw);
+        // The preview is the only write authorization. Re-prove that the target the live device just
+        // showed is still the one the user previewed before the private snapshot or gate is accepted.
+        const wanted = options.writeIntent ? intent : null;
+        if (!wanted) throw new Error("缺少已验证写入目标。未写入任何数据。");
+        const same = (label: string, actual: string, expected: string) => { if (actual !== expected) throw new Error("已验证写入预览已失效：" + label + " 已变化。未写入任何数据。"); };
+        same("工程目录", path.resolve(root), path.resolve(wanted.root));
+        same("端口", String(port).trim().toUpperCase(), String(wanted.port).trim().toUpperCase());
+        same("环境", environment, wanted.environment);
+        same("app SHA-256", appSegments[0].sha256.toLowerCase(), wanted.appSha256.toLowerCase());
+        same("活动槽", appOnlyTarget.partition.label + "@" + hex(appOnlyTarget.partition.offset) + "/" + hex(appOnlyTarget.partition.size), wanted.slot.label + "@" + hex(wanted.slot.offset) + "/" + hex(wanted.slot.size));
+        same("擦除范围", hex(appOnlyTarget.erase.offset) + "+" + hex(appOnlyTarget.erase.size), hex(wanted.erase.offset) + "+" + hex(wanted.erase.size));
       }
       const ranges = appOnly ? writeRanges(planSegments) : writeRanges(result.segments.filter((segment) => segment.name !== "app"));
       if (appOnlyTarget && (ranges.length !== 1 || ranges[0].offset !== appOnlyTarget.erase.offset || ranges[0].size !== appOnlyTarget.erase.size)) throw new Error("app-only 擦除范围与已核对目标不一致。未写入任何数据。");
@@ -232,7 +242,7 @@ export function createEspUploadProvider(tools: ToolService, workspace: Workspace
           const accepted = await enforceSimulationGate(options.simulation, async () => {
             const inputHash = await workspace.fingerprint().catch(() => "");
             return bindDeployExpectation({ port, environment, inputHash, segments: planSegments, snapshots: inputFiles });
-          }, log);
+          }, log, opts);
           if (accepted) simulation = {
             appSha256: accepted.appSha256.toLowerCase(),
             planSha256: deploymentPlanDigest(port, environment, planSegments),
