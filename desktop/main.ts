@@ -11,6 +11,7 @@ import { createClangdProvider } from "./plugins/clangd";
 import { TerminalService } from "./terminal";
 import { shellProvider } from "./plugins/shell";
 import { SerialService } from "./plugins/serial";
+import { SerialLogExportService } from "./serialLog";
 import { ToolService } from "./tools";
 import { ESPTOOL_TOOL } from "./esp/esptool";
 import { inspectEspDevice } from "./esp/inspect";
@@ -51,8 +52,11 @@ const tasks = new TaskService(workspace, (task) => {
   }
 });
 const serial = new SerialService();
+const serialLogExport = new SerialLogExportService();
 // An unexpected unplug/close must release the port for flash, not leave it reserved forever.
-serial.setOnSessionEnd(() => lease.release("monitor"));
+// It also makes a save picker that is already open target a session that no longer exists.
+// Only an attempt that actually opened the port changes the retained session; a failed open leaves it intact.
+serial.setOnSessionEnd((opened) => { if (opened) serialLogExport.invalidate(); lease.release("monitor"); });
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
 terminal.register(shellProvider);
 const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
@@ -95,7 +99,7 @@ const flash = new FlashService(esptool, {
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
+const beforeSwitch = async () => { serialLogExport.invalidate(); await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -190,11 +194,22 @@ function routes() {
     lease.claim("monitor");
     flash.invalidatePlan();
     try { return await serial.open(port, baud); }
-    catch (error) { lease.release("monitor"); throw error; }
+    // A failed open of an already-open port must not free the session that still owns the lease.
+    catch (error) { if (!serial.isOpen()) lease.release("monitor"); throw error; }
   });
   handle("serial:read", (id: number) => serial.read(id));
   handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes));
-  handle("serial:close", async (id: number) => { try { return await serial.close(id); } finally { lease.release("monitor"); } });
+  handle("serial:close", async (id: number) => {
+    const closed = await serial.close(id);
+    // A stale id, or a close that threw, must not free a newer monitor session's lease.
+    if (closed) lease.release("monitor");
+  });
+  // Bounded native serial diagnostic export: one picker-issued new file, never an overwrite.
+  handle("serialLog:save", (request) => serialLogExport.save(request, async (suggestedName: string) => {
+    const result = await dialog.showSaveDialog(window, { title: "保存串口诊断日志", defaultPath: path.join(app.getPath("documents"), suggestedName), filters: [{ name: "文本文件", extensions: ["txt"] }], properties: ["createDirectory"] });
+    return result.canceled || !result.filePath ? null : result.filePath;
+  }));
+  handle("serialLog:invalidate", () => serialLogExport.invalidate());
   // Flash operations acquire the same lease synchronously inside the service.
   handle("flash:snapshot", () => flash.snapshot());
   handle("flash:toolStatus", () => tools.status("esptool"));
@@ -217,6 +232,7 @@ app.on("before-quit", (event) => {
   void enqueue(async () => {
     // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
     if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
+    serialLogExport.invalidate();
     await Promise.all([tasks.stopAll(), micropythonFiles.dispose(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
   }).finally(() => app.quit());
 });

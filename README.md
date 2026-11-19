@@ -20,6 +20,7 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 - MicroPython 设备运行插件：在已安装 MicroPython 的板上，用官方 `mpremote` 运行当前磁盘工程中已保存的 `.py`；固定 argv、手动端口、真实日志/退出码/取消，不安装固件，也不向板上持久上传文件。
 - 交互式 PTY 终端：在磁盘工程目录启动本机 shell，支持输入、中断、尺寸调整和会话清理。
 - 原生串口与 WebSocket 字节通信；设备输出与 Demo Simulation 分开显示。
+- 原生串口会话日志：只保留当前或最近结束的一次原生串口会话，暂停/筛选/清空显示都不会丢历史；在 Serial Monitor 导出有界 UTF-8 诊断文本（RX、写入成功的 TX、连接/断开/错误标记、丢弃记录与后端溢出提示），桌面端用系统保存对话框写入用户选择的新文件，不覆盖已有文件。
 - `.aether` 工程导入导出、面板布局和编辑设置保存。
 - 可配置的 Chat Completions API、工程读取工具、文件修改建议预览、应用、拒绝和请求取消。
 
@@ -318,6 +319,8 @@ ESP32-S3 工程请使用 clangd 20+。数据库中的命令使用 `xtensa-esp32s
 
 **Serial Monitor** 的 **Device transport** 显示实际接收数据，支持筛选、暂停显示、清空及换行选择。暂停显示不暂停接收。串口 TX 表示本地写入完成；WebSocket TX 表示进入发送队列，均不代表设备已执行命令。当前一次只连接一个设备或服务。
 
+**Serial Monitor** 的导出按钮（桌面端）只针对原生串口会话：保留当前或最近一次已结束的会话，断开后仍可导出；成功重连会替换旧会话，切换工程会丢弃日志并让已打开的保存对话框失效。记录内容是有界的 UTF-8 文本（单条 16 KiB、总计 256 KiB、最多 4000 条），超过上限时明确写出丢弃的条数和字节；RX、写入成功的 TX、连接/断开/错误各有标记，桌面串口后端接收缓存溢出会单独注明。导出只写入保存对话框返回的新文件：已有文件不会被覆盖；取消、会话变化、超出上限或写入失败都会在界面给出结果。Demo Simulation 与 WebSocket 会话不进入此日志，日志也不包含凭证或设备 MAC。
+
 停用插件、切换工程或执行构建会断开通信。打开端口不识别开发板或固件；部分开发板可能因打开端口时控制线变化而复位。Linux 用户需要端口访问权限。
 
 ## AI
@@ -364,6 +367,7 @@ npm run typecheck
 npm run smoke
 npm run smoke:network
 npm run smoke:terminal
+npm run smoke:serial-log
 npm run build
 npm run build:desktop
 npm run smoke:recovery
@@ -372,7 +376,7 @@ npm run smoke:build-review
 npm run smoke:provider
 ```
 
-`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、PlatformIO 展开后的环境段、内置表优先级、`extends`/`[common]`、`extra_configs` 合并配置、`build_dir`/`workspace_dir`、无记录旧缓存、按环境隔离、quarantine 只保留最近一份、`.pio`/`.aether`/`.aether-stale` 链接与路径边界，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
+`npm run smoke` 还会用本地编译的临时 CLI 与 LSP fixture 检查工具路径的保存、恢复、优先级和进程接入；fixture 不是 PlatformIO 或 clangd 本身。`smoke:recovery` 直接检查恢复草稿的按工程隔离、原子写入、版本化清理、损坏草稿隔离和大小限制。`smoke:build-inputs` 用固定 fixture 覆盖 platformio.ini/分区 CSV 内容变化（包括文件名不变）、PlatformIO 展开后的环境段、内置表优先级、`extends`/`[common]`、`extra_configs` 合并配置、`build_dir`/`workspace_dir`、无记录旧缓存、按环境隔离、quarantine 只保留最近一份、`.pio`/`.aether`/`.aether-stale` 链接与路径边界，以及旧分区表不会进入上传步骤；`smoke:build-review` 用宿主 fixture 覆盖构建前取消、纯外部修改一键继续、冲突逐文件选择和环境/端口固定；`smoke:provider` 用本机 HTTP fixture 检查“测试连接”的真实适配器请求、错误状态、取消和不持久化 Key。`smoke:serial-log` 直接驱动会话日志与宿主导出服务，覆盖跨块 UTF-8、条数与字节上限、丢弃计数、后端溢出标记、过期回调、成功重连替换、工程切换丢弃、取消、已有文件不覆盖，以及保存对话框打开期间会话变化导致的失效。桌面 smoke 在 POSIX PTY 上验证真实串口字节导出、取消、不覆盖，以及显示已暂停/筛选/清空后仍能导出完整会话。`smoke:terminal` 在 POSIX 系统使用 bash、stty 和 Python 检查真实 PTY。真实文件、构建和语言检查需要 PlatformIO；语言检查还需要 clangd：
 
 ```bash
 AETHER_PLATFORMIO_CLI="$PWD/.venv/bin/platformio" npm run smoke:host

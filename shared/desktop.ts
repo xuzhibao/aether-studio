@@ -41,6 +41,17 @@ export interface WorkspaceFileOptions {
   write: (path: string, text: string, expected: string | null) => Promise<void>;
   accept: (path: string, expected?: string | null) => Promise<void>;
 }
+/** Bounded native serial session log export. Only a new file chosen in the native picker is written. */
+export interface SerialLogSaveRequest { suggestedName: string; text: string; sessionId: string }
+export type SerialLogSaveResult =
+  | { status: "saved"; path: string }
+  | { status: "cancelled"; reason: "picker" | "invalidated" }
+  | { status: "failed"; error: string };
+export interface SerialLogAPI {
+  save: (request: SerialLogSaveRequest) => Promise<SerialLogSaveResult>;
+  /** Called when the native session is replaced, ends, or the project context changes. */
+  invalidate: () => Promise<void>;
+}
 export interface BuildArtifact { path: string; sha256: string; size: number }
 export interface TaskEnvironment { name: string; default: boolean }
 export interface TaskSnapshot {
@@ -78,6 +89,7 @@ export interface DesktopAPI {
     environments: (provider: string) => Promise<TaskEnvironment[]>;
     list: () => Promise<TaskSnapshot[]>; onChanged: (listener: (task: TaskSnapshot) => void) => () => void;
   };
+  serialLog: SerialLogAPI;
   serial: {
     list: () => Promise<{ path: string; label: string; detail?: string }[]>; open: (path: string, baudRate: number) => Promise<number>;
     read: (id: number) => Promise<number[]>; write: (id: number, bytes: number[]) => Promise<void>; close: (id: number) => Promise<void>;

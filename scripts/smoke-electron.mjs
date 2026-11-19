@@ -335,9 +335,79 @@ try {
     await dialog.getByText(new RegExp('已连接 ' + port)).waitFor(); await dialog.getByRole('button', { name: '打开 Serial Monitor', exact: true }).click();
     await page.getByRole('textbox', { name: 'Serial text', exact: true }).fill('smoke-native-serial'); await page.getByRole('textbox', { name: 'Serial text', exact: true }).press('Enter');
     await page.getByText('RX · PTY fixture RX: acknowledgement', { exact: true }).waitFor();
+    const exportButton = page.locator('[data-serial-log-export]');
+    await until(async () => !(await exportButton.isDisabled()));
+    // Pause, filter and display Clear never alter the retained session log.
+    await page.getByRole('button', { name: 'Warnings', exact: true }).click();
+    await page.getByRole('button', { name: 'Pause display', exact: true }).click();
+    await page.getByRole('button', { name: 'Clear serial output', exact: true }).click();
+    await until(async () => (await page.getByText('RX · PTY fixture RX: acknowledgement', { exact: true }).count()) === 0);
+    const saveTo = (file) => app.evaluate(({ dialog }, target) => {
+      dialog.showSaveDialog = async () => target ? ({ canceled: false, filePath: target }) : ({ canceled: true });
+    }, file);
+    const exists = (file) => fs.stat(file).then(() => true, () => false);
+    const readWhen = async (file, predicate) => {
+      for (let n = 0; n < 300; n++) {
+        const current = await fs.readFile(file, 'utf8').catch(() => '');
+        if (predicate(current)) return current;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error('export did not settle: ' + file);
+    };
+    const logPath = path.join(temp, 'serial-session-log.txt');
+    await saveTo(logPath);
+    await exportButton.click();
+    const logText = await readWhen(logPath, (current) => current.includes('] TX smoke-native-serial') && current.includes('] RX PTY fixture RX: acknowledgement'));
+    assert.match(logText, /Aether Studio 串口诊断日志/);
+    assert.ok(logText.includes('端口：' + port), 'the log names the exact port');
+    assert.match(logText, /波特率：115200/);
+    assert.match(logText, /\] -- 已连接 /);
+    assert.match(logText, /\] RX PTY fixture RX: acknowledgement/);
+    assert.match(logText, /\] TX smoke-native-serial/);
+    assert.match(logText, /不包含固件、凭证或设备 MAC/);
+    console.log('PASS Electron serial log: paused/filtered/cleared display still exports the full retained session');
     await page.screenshot({ path: 'smoke-results/electron-serial.png', fullPage: true });
-    await page.getByRole('button', { name: 'Manage connection', exact: true }).click(); await dialog.getByRole('button', { name: '断开连接', exact: true }).click();
+    await page.getByRole('button', { name: 'All', exact: true }).click();
+
+    // Cancel: the native picker returns nothing; no file appears.
+    await saveTo(null);
+    await exportButton.click();
+    await page.getByText('已取消导出串口诊断日志', { exact: true }).waitFor({ timeout: 30000 });
+
+    // No overwrite: an existing file stays byte-for-byte intact.
+    const keepPath = path.join(temp, 'serial-keep.txt');
+    await fs.writeFile(keepPath, 'KEEP');
+    await saveTo(keepPath);
+    await exportButton.click();
+    await page.getByText('串口诊断日志导出失败', { exact: true }).waitFor({ timeout: 30000 });
+    await page.getByText('目标文件已存在，未覆盖', { exact: true }).waitFor();
+    assert.equal(await fs.readFile(keepPath, 'utf8'), 'KEEP');
+
+    // A session change while the picker is open invalidates it; the pending path is never written.
+    const invalidatedPath = path.join(temp, 'serial-invalidated.txt');
+    await app.evaluate(({ dialog }, target) => {
+      dialog.showSaveDialog = () => new Promise((resolve) => { globalThis.__aetherPendingLogSave = () => resolve({ canceled: false, filePath: target }); });
+    }, invalidatedPath);
+    await exportButton.click();
+    await until(() => app.evaluate(() => typeof globalThis.__aetherPendingLogSave === 'function'));
+    await page.getByRole('button', { name: 'Manage connection', exact: true }).click();
+    await dialog.getByRole('button', { name: '断开连接', exact: true }).click();
     await dialog.getByText('未建立连接', { exact: true }).waitFor();
+    await app.evaluate(() => globalThis.__aetherPendingLogSave());
+    await page.getByText('串口会话已变化，未导出日志', { exact: true }).waitFor({ timeout: 30000 });
+    assert.equal(await exists(invalidatedPath), false);
+
+    // The most recently ended session stays exportable after the disconnect.
+    await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+    const endedPath = path.join(temp, 'serial-ended-log.txt');
+    await saveTo(endedPath);
+    await until(async () => !(await exportButton.isDisabled()));
+    await exportButton.click();
+    const endedText = await readWhen(endedPath, (current) => current.includes('状态：已断开') && current.includes('] -- 连接已断开'));
+    assert.match(endedText, /状态：已断开/);
+    assert.match(endedText, /\] -- 连接已断开/);
+    assert.match(endedText, /\] RX PTY fixture RX: acknowledgement/);
+    console.log('PASS Electron serial log: cancel, no overwrite, pending-picker invalidation and ended-session export');
   }
   peer = await startWebSocketPeer();
   await dialog.getByRole('combobox', { name: '通信插件', exact: true }).selectOption('websocket'); await dialog.getByRole('textbox', { name: 'WebSocket URL', exact: true }).fill(peer.url); await dialog.getByRole('button', { name: '建立连接', exact: true }).click(); await dialog.getByText(/^已连接 ws:/).waitFor();

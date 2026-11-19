@@ -3,6 +3,7 @@ import { isDesktop } from "../lib/desktop";
 import { useStudio } from "./studio";
 import { useTransport } from "./transport";
 import { flashBusy } from "./flash";
+import { trackProjectRoot } from "./serialLog";
 import type { DiskWorkspace, TaskSnapshot, TaskEnvironment } from "../../shared/desktop";
 import { plugins } from "../plugins/runtime";
 import type { EspPreflightResult } from "../../shared/esp";
@@ -376,6 +377,9 @@ export function connectDesktop() {
   void api.workspace.setDirty(dirty);
   const offDirty = useStudio.subscribe((state) => { if (state.dirty !== dirty) { dirty = state.dirty; void api.workspace.setDirty(dirty); } });
   const offWorkspace = api.workspace.onChanged((root) => { if (useDisk.getState().root === root) { useDisk.setState({ changed: true }); void useDisk.getState().refresh().catch(() => {}); } });
+  // The retained native serial log belongs to one project context; an actual root change discards it.
+  trackProjectRoot(useDisk.getState().root);
+  const offRoot = useDisk.subscribe((state, previous) => { if (state.root !== previous.root) trackProjectRoot(state.root); });
   const offTasks = api.tasks.onChanged((task) => {
     useDisk.setState((s) => ({ tasks: [...s.tasks.filter((old) => old.id !== task.id), task] }));
     if (task.environment) void useDisk.getState().adoptTaskEnvironment(task.environment).catch((error) => useDisk.setState({ error: String(error) }));
@@ -385,5 +389,5 @@ export function connectDesktop() {
     if (current) void startRecovery().catch((error) => useDisk.setState({ error: "恢复草稿初始化失败：" + String(error) }));
   });
   void api.tasks.list().then((tasks) => { if (current) useDisk.setState((s) => ({ tasks: [...tasks.filter((task) => !s.tasks.some((old) => old.id === task.id)), ...s.tasks] })); });
-  return () => { current = false; offDirty(); offWorkspace(); offTasks(); };
+  return () => { current = false; offDirty(); offWorkspace(); offTasks(); offRoot(); };
 }
