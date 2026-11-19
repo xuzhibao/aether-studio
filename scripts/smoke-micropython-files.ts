@@ -166,18 +166,18 @@ try {
   await sleep(1300);
   assert.equal(await fs.stat(cancelledTarget).catch(() => null), null, "a cancelled transfer never writes its target later");
   assert.deepEqual(await downloads(), startDownloads, "a cancelled transfer creates no temp directory later");
-  assert.doesNotThrow(() => { acquirePort("COM_TEST", "monitor"); releasePort("COM_TEST"); }, "cancellation releases the shared port lease");
+  assert.doesNotThrow(() => { releasePort(acquirePort("COM_TEST", "monitor")); }, "cancellation releases the shared port lease");
   assert.ok((await service.list("COM_TEST", "/")).entries.length > 0, "the port can be used again immediately after a cancel");
   console.log("PASS micropython files: cancellation kills mpremote, settles after exit, cleans temp and releases the port lease");
 
   // ---- the shared port lease blocks a second reader and is held through the operation ----
-  acquirePort("COM_TEST", "task");
+  const busyLease = acquirePort("COM_TEST", "task");
   await assert.rejects(() => service.list("COM_TEST", "/"), /占用/);
   const busyTarget = path.join(root, "busy.bin");
   const busyToken = await chooseTarget(busyTarget);
   await assert.rejects(() => service.download(busyToken), /占用/, "a busy port refuses the download before any file is touched");
   assert.equal(await fs.stat(busyTarget).catch(() => null), null);
-  releasePort("COM_TEST");
+  releasePort(busyLease);
   const first = service.list("COM_TEST", "/");
   await assert.rejects(() => service.list("COM_TEST", "/lib"), /已有正在读取设备文件的操作/);
   await first;
@@ -270,7 +270,7 @@ try {
   assert.equal(await fs.stat(timeoutTarget).catch(() => null), null, "a timed-out transfer never writes its target later");
   assert.deepEqual(await downloads(), startDownloads, "a timed-out transfer creates no temp directory later");
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
-  assert.doesNotThrow(() => { acquirePort("COM_TEST", "monitor"); releasePort("COM_TEST"); }, "a timeout releases the shared port lease");
+  assert.doesNotThrow(() => { releasePort(acquirePort("COM_TEST", "monitor")); }, "a timeout releases the shared port lease");
   assert.ok((await shortService.list("COM_TEST", "/")).entries.length > 0, "the port can be used again right after a timeout");
   await shortService.dispose();
   console.log("PASS micropython files: a timeout settles after the process exits, leaves no late write and releases the port");

@@ -1,38 +1,26 @@
-import { deviceLease } from "./deviceLock";
+import { deviceLease, normalizePort, type DeviceLeaseToken } from "./deviceLock";
 
-// Per-port bookkeeping on top of the single DeviceLease: gives readable port-level errors and lets the
-// upload provider hold the device from the final detection through the write.
-const owners = new Map<string, string>();
-const key = (port: string) => port.trim().toUpperCase();
-
-export function acquirePort(port: string, owner: string) {
-  const name = key(port);
-  if (!name) throw new Error("请先选择端口");
-  const held = owners.get(name);
-  if (held) throw new Error("端口 " + port.toUpperCase() + " 正被 " + held + " 占用，请先结束该操作");
-  // The global lease also covers consumers that do not name a port (flash backup, monitor).
-  deviceLease.claim(owner);
-  owners.set(name, owner);
+// Per-port convenience on top of the single device lease: callers that already know the port get a
+// readable port-level error and a lease that is held for the whole operation.
+export function acquirePort(port: string, owner: string): DeviceLeaseToken {
+  if (typeof port !== "string" || !port.trim()) throw new Error("请先选择端口");
+  return deviceLease.claim(owner, port);
 }
 
-export function releasePort(port: string) {
-  const name = key(port);
-  const owner = owners.get(name);
-  if (owner === undefined) return;
-  owners.delete(name);
-  deviceLease.release(owner);
-}
+/** Releases the caller's own token; a stale token from a finished operation frees nothing. */
+export function releasePort(token: DeviceLeaseToken | null | undefined) { deviceLease.release(token); }
 
 export function portOwner(port: string): string | null {
-  return owners.get(key(port)) ?? null;
+  const holder = deviceLease.current();
+  return holder && holder.port === normalizePort(port) ? holder.owner : null;
 }
 
 export function isPortBusy(port: string): boolean {
-  return owners.has(key(port));
+  return portOwner(port) !== null;
 }
 
 /** Runs `fn` while holding the port; the lease is released even when `fn` throws. */
 export async function withPort<T>(port: string, owner: string, fn: () => Promise<T>): Promise<T> {
-  acquirePort(port, owner);
-  try { return await fn(); } finally { releasePort(port); }
+  const token = acquirePort(port, owner);
+  try { return await fn(); } finally { releasePort(token); }
 }

@@ -95,17 +95,27 @@ assert.equal(deviceIdentityMatches(identity, { ...identity, mac: "60:55:f9:99:88
 // ---- shared port lease: monitor, task and flash cannot overlap ----
 {
   const lease = new DeviceLease();
-  lease.claim("flash");
+  const flash = lease.claim("flash", "COM4");
   assert.throws(() => lease.claim("monitor"), /Flash/);
-  assert.throws(() => lease.claim("task"), /Flash/);
-  lease.release("monitor");
+  assert.throws(() => lease.claim("task", "COM4"), /Flash/);
+  assert.equal(lease.release({ id: flash.id + 1000, owner: "flash", port: "COM4" }), false, "a stale token must not free the lease");
   assert.equal(lease.holder(), "flash", "a non-owner release must not free the lease");
-  lease.release("flash");
-  lease.claim("task");
-  assert.throws(() => lease.claim("flash"), /构建\/上传任务/);
-  lease.release("task");
+  lease.release(flash);
   assert.equal(lease.holder(), null);
-  console.log("PASS flash: shared port lease is mutually exclusive");
+  const task = lease.claim("task", "COM4");
+  assert.throws(() => lease.claim("flash", "COM4"), /构建\/上传任务/);
+  assert.equal(lease.holds(task), true);
+  assert.equal(lease.release(task), true);
+  assert.equal(lease.release(task), false, "a second release of the same token is harmless");
+  assert.equal(lease.holder(), null);
+  // A late close from an operation that already ended must not free the owner that came after it.
+  const older = lease.claim("task", "COM4");
+  lease.release(older);
+  const monitor = lease.claim("monitor", "COM4");
+  assert.equal(lease.release(older), false, "an old close must not free a newer monitor session");
+  assert.equal(lease.holder(), "monitor");
+  lease.release(monitor);
+  console.log("PASS flash: one device lease is mutually exclusive and release is token-scoped");
 }
 
 // ---- tool discovery: a .py entry resolves to an absolute script plus its interpreter ----

@@ -17,17 +17,16 @@ module.exports = async ({ github, context }) => {
     checksums.push(hash + '  ' + file);
   }
   await fs.writeFile(path.join(directory, 'SHA256SUMS'), checksums.join('\n') + '\n');
-  const body = `Aether Studio ${version}，供桌面测试使用。\n\n` +
-    '下载对应系统和架构的文件：\n\n' +
+  const body = `Aether Studio ${version}，供桌面测试使用。` + '\n\n' +
+    '下载对应系统和架构的文件：\n' +
     '- Windows x64：`.exe` 安装包，或 `.zip` 解压运行 `AetherStudio.exe`。\n' +
     '- macOS Apple Silicon / Intel：选择 `arm64` / `x64` 的 `.dmg` 或 `.zip`，运行 Aether Studio.app。\n' +
-    '- Linux x64：`.AppImage` 或 `.tar.gz`。AppImage 需添加执行权限；无 FUSE 时可用 `--appimage-extract-and-run`。\n\n' +
+    '- Linux x64：`.AppImage` 或 `.tar.gz`。AppImage 需添加执行权限；无 FUSE 时可用 `--appimage-extract-and-run`。\n' +
     'macOS 使用 ad-hoc 临时签名，未经 Apple 公证；Windows 未做发布者签名，系统可能要求手动允许运行。\n\n' +
-    '本版新增三项桌面能力。PlatformIO 构建任务结束后，任务卡片会在原始日志上方列出**编译器诊断**：只显示日志中能证明属于当前已加载工程源码的 GCC/Clang 行列，点击在编辑器打开该文件并定位，走现有编辑器跳转；诊断来自该任务结束时的日志快照，不是当前缓冲区状态，工程外、UNC、URI、含 `..` 的路径、非源码文件和未加载的文件只保留在原始日志中，原始日志、退出码与取消状态不变。\n\n' +
-    '板载文件保存改为宿主签发的不透明单次授权：对话框结果不再把本地路径交给界面，授权在宿主内部绑定端口、设备文件绝对路径、当前工程与选择代次；对话框返回前后以及复制提交前都会复核，面板卸载、切换工程或关闭窗口会作废在途选择、取消运行中的下载并清理临时目录，绝不启动 mpremote 或发布成功。已有本地文件不会被覆盖，只会报错。\n\n' +
-    '串口监视器默认跟随最新行：500 条有界缓冲长度不再增长时仍按行身份贴底；向上滚动停止跟随以便查看旧输出，可滚回底部或点击 **Jump to latest**，且只滚动列表自身；暂停、筛选、清空互不影响，原生串口会话日志与导出不受影响。\n\n' +
-    '内含 16 个插件、磁盘工作区、Monaco、C/C++ clangd 接口、真实 PlatformIO 任务、交互终端、串口、WebSocket 和可配置的 AI。PlatformIO 与 clangd 需自行安装；AI 非必选。可在应用内为 PlatformIO 与 clangd 保存可执行文件路径（应用数据目录 tools.json），重启后仍生效，构建、上传、编译数据库与语言服务使用该路径。磁盘工程支持新建文件与目录、重命名、移入系统回收站，并可按文件审阅外部修改、新增或删除；处理一个文件不会丢弃其他未保存缓冲区。Demo Simulation 仅生成数据；真实开发板烧录、串口设备与硬件行为未在本次构建中验证。\n\n' +
-    '各目标已通过打包后启动、插件、原生终端与文件写入冒烟；完整工作流主要在 Linux 检查。编译器诊断的点击跳转在 Linux 桌面冒烟中用真实 PlatformIO 编译失败日志验证；MicroPython 下载用不打开串口的假 CLI 与真实 Electron 验证（本机没有 mpremote 与开发板）；串口跟随由 WebSocket fixture 的 500 行环缓冲验证。本版未连接任何开发板、未打开真实串口，也未向硬件发送 TX；开发板烧录、真实串口设备和平台细节请自行测试。\n\n' +
+    '本版把桌面端的串口所有权收敛为宿主内唯一的仲裁器。串口监视器、构建/上传任务、Flash 备份/恢复、ESP 只读检测、部署前核对和 MicroPython 板载文件操作现在共用同一个单持有人租约，并按每次操作签发所有权令牌。任何一方占用端口期间，其他入口在打开端口或启动 esptool/mpremote 之前就被拒绝，错误信息写明端口与当前持有者；迟到的任务退出、过期的 `serial.close` 和已取消的操作只释放自己的令牌，不会释放后来者的所有权，任务的释放点仍是板载进程真实退出。ESP 只读检测把“宿主忙”“工具只读失败”“用户取消”区分开，不再把操作系统层的端口占用当作检测结果。\n\n' +
+    '实板验收范围（beta.9，Windows，真实 Electron 应用 + 真实 preload API + 真实 SerialPort + 真实 esptool 4.9.0）：在一台 COM4 的 ESP32-C3（16MB，原生 USB-Serial/JTAG）上，无人占用时只读检测读到芯片、Flash 容量与 6 个厂商分区；真实原生监视器会话打开期间发起只读检测被宿主租约拒绝，原会话保持可读，关闭监视器后同一检测成功；反向场景中真实 esptool 检测进行时打开监视器被拒绝（以快照状态和检测结束为可观测边界，不使用固定延时），检测结束后重试成功；真实检测进行中取消会报告取消，并且只在 esptool 进程退出后释放端口。全程只执行 `flash_id`、0x8000 起始 4 KiB 的 `read_flash` 和 `get_security_info` 三类只读命令，没有任何写入、擦除、Flash 备份/恢复实机运行或 mpremote 操作。\n\n' +
+    '未验证：固件/分区/数据的写入、擦除与恢复（含 Flash 备份/恢复面板）没有在真机上运行；MicroPython 板载文件与实际板载运行没有实机证据；ESP32-S3 没有实板证据。类型检查、软件 smoke 回归与四个平台的打包检查属于软件与构建证据，不接触硬件，不能当作实板通过。\n\n' +
+    '内含 16 个插件、磁盘工作区、Monaco、C/C++ clangd 接口、真实 PlatformIO 任务、交互终端、串口、WebSocket 和可配置的 AI。PlatformIO 与 clangd 需自行安装；AI 非必选。可在应用内为 PlatformIO 与 clangd 保存可执行文件路径（应用数据目录 tools.json），重启后仍生效，构建、上传、编译数据库与语言服务使用该路径。磁盘工程支持新建文件与目录、重命名、移入系统回收站，并可按文件审阅外部修改、新增或删除；处理一个文件不会丢弃其他未保存缓冲区。Demo Simulation 仅生成数据。\n\n' +
     'SHA256SUMS 提供全部下载文件的 SHA-256。\n\n' +
     `源码提交：${context.sha}\n构建校验：https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n`;
   const repository = context.repo;
