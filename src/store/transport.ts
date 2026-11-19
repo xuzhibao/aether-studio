@@ -4,6 +4,7 @@ import type { TransportConnection, TransportOptions } from "../plugins/api";
 import type { SerialLine } from "../types";
 import { uid } from "../lib/utils";
 import { flashBusy } from "./flash";
+import { serialSessionLog } from "./serialLog";
 
 type Status = "disconnected" | "connecting" | "connected" | "disconnecting" | "error";
 interface TransportState {
@@ -28,6 +29,8 @@ interface TransportState {
 }
 let connection: TransportConnection | undefined;
 let generation = 0;
+// Token of the native log session this connection belongs to; -1 for non-native transports.
+let logToken = -1;
 let pendingController: AbortController | undefined;
 let pendingConnection: Promise<TransportConnection> | undefined;
 // Resolves when the in-flight close finishes, so a caller cannot start a new session while the old one still owns the port.
@@ -45,8 +48,11 @@ export const useTransport = create<TransportState>((set, get) => ({
     pendingController = controller;
     const decoder = new TextDecoder();
     set({ status: "connecting", transportId: id, address: options.address, label: options.address, error: "", receivedBytes: 0, sentBytes: 0 });
+    let token = -1;
     try {
       if (!options.address.trim()) throw new Error("请输入连接地址");
+      // A native attempt is only a candidate: it replaces the retained log after the port opens.
+      token = serialSessionLog.prepare({ transportId: id, address: options.address.trim(), baudRate: options.parameters?.baudRate ?? "" });
       const transport = plugins.require("transports", id);
       if (transport.unavailable) throw new Error(transport.unavailable);
       set({ sendHint: transport.sendHint });
@@ -54,29 +60,40 @@ export const useTransport = create<TransportState>((set, get) => ({
         data: (bytes) => {
           if (attempt !== generation) return;
           const text = decoder.decode(bytes, { stream: true });
+          serialSessionLog.addRx(token, text, bytes.length);
           set((s) => ({ receivedBytes: s.receivedBytes + bytes.length, lines: text ? [...s.lines, line("RX · " + text, "data")].slice(-500) : s.lines }));
           plugins.emit("transport:received", { id, address: options.address, bytes });
         },
         closed: () => {
           if (attempt !== generation) return;
           generation++; connection = undefined;
+          serialSessionLog.addLifecycle(token, "远端正常关闭连接");
+          serialSessionLog.ended(token, "disconnected");
+          if (logToken === token) logToken = -1;
           set((s) => ({ status: "disconnected", error: "", lines: [...s.lines, line("远端正常关闭连接")].slice(-500) }));
           plugins.emit("transport:disconnected", { id });
         },
         error: (message) => {
           if (attempt !== generation) return;
           generation++; connection = undefined;
+          serialSessionLog.fail(token, "连接中断：" + message);
+          if (logToken === token) logToken = -1;
           set((s) => ({ status: "error", error: message, lines: [...s.lines, line("连接中断：" + message, "warn")].slice(-500) }));
           plugins.emit("transport:disconnected", { id, error: message });
         },
       }, controller.signal);
       pendingConnection = opening;
       const opened = await opening;
-      if (attempt !== generation) { await opened.close(); return; }
+      if (attempt !== generation) { serialSessionLog.abort(token); await opened.close(); return; }
       connection = opened;
+      // Keep the committed token for send/disconnect; a failed attempt must not steal it from a
+      // still-open session whose close failed and may still be retried.
+      if (serialSessionLog.commit(token)) logToken = token;
+      serialSessionLog.addLifecycle(token, "已连接 " + opened.label);
       set((s) => ({ status: "connected", label: opened.label, preferredAddresses: { ...s.preferredAddresses, [id]: options.address.trim() }, lines: [...s.lines, line("已连接 " + opened.label, "success")].slice(-500) }));
       plugins.emit("transport:connected", { id, ...options });
     } catch (error) {
+      serialSessionLog.abort(token);
       if (attempt === generation) set({ status: "error", error: String(error) });
     } finally { if (pendingController === controller) { pendingController = undefined; pendingConnection = undefined; } }
   },
@@ -114,9 +131,16 @@ export const useTransport = create<TransportState>((set, get) => ({
       // A cancelled handshake must release its resource before another connection starts.
       await opening?.then((opened) => opened.close(), () => {});
       if (connection === connectionClosing) connection = undefined;
+      serialSessionLog.addLifecycle(logToken, "连接已断开");
+      serialSessionLog.ended(logToken, "disconnected");
+      logToken = -1;
       set((s) => ({ status: "disconnected", error: "", lines: [...s.lines, line("连接已断开")].slice(-500) }));
       plugins.emit("transport:disconnected", { id });
-    } catch (error) { set({ status: "error", error: "关闭连接失败：" + String(error) }); }
+    } catch (error) {
+      // The native handle is still open; keep the session and its token so a retried close can settle it.
+      serialSessionLog.addError(logToken, "关闭连接失败：" + String(error));
+      set({ status: "error", error: "关闭连接失败：" + String(error) });
+    }
     finally { closeInFlight = undefined; release(); }
   },
   send: async (text) => {
@@ -127,6 +151,8 @@ export const useTransport = create<TransportState>((set, get) => ({
     try {
       await current.write(bytes);
       if (attempt !== generation) return;
+      // Only a write that actually resolved reaches the log; a failed TX is not recorded as sent.
+      serialSessionLog.addTx(logToken, text, bytes.length);
       set((s) => ({ sentBytes: s.sentBytes + bytes.length, lines: [...s.lines, line("TX · " + text, "info")].slice(-500) }));
       plugins.emit("transport:sent", { id: get().transportId, bytes });
     } catch (error) {

@@ -30,6 +30,8 @@ jobs:
       # MicroPython run: exact argv, shared port lease, cancellation and abnormal exit with a fake CLI.
       - run: npm run smoke:micropython
       - run: npm run smoke:micropython:files
+      # Bounded native serial session log and its narrow host export (no serial port).
+      - run: npm run smoke:serial-log
       # Build input cache invalidation, pre-build diff review and the AI connection test.
       - run: npm run smoke:build-inputs
       - run: npm run smoke:build-review

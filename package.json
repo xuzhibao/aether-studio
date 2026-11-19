@@ -1,7 +1,7 @@
 {
   "name": "aether-studio",
   "private": true,
-  "version": "0.1.0-beta.6",
+  "version": "0.1.0-beta.7",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
@@ -33,6 +33,7 @@
     "smoke:micropython": "node --import tsx scripts/smoke-micropython.ts",
     "smoke:micropython:desktop": "node scripts/smoke-micropython-desktop.mjs",
     "smoke:micropython:files": "node --import tsx scripts/smoke-micropython-files.ts",
+    "smoke:serial-log": "node --import tsx scripts/smoke-serial-log.ts",
     "smoke:micropython:files:desktop": "node scripts/smoke-micropython-files-desktop.mjs",
     "smoke:build-inputs": "node --import tsx scripts/smoke-build-inputs.ts",
     "smoke:build-review": "node --import tsx scripts/smoke-build-review.ts",
