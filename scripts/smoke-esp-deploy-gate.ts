@@ -109,10 +109,17 @@ console.log("PASS deploy gate unit checks (pure functions, no device)");
   assert.equal(idfVersionsCompatible(boot!, parseIdfVersion("v5.4.2")!), true);
   assert.equal(idfVersionsCompatible(boot!, parseIdfVersion("v4.4.7")!), false);
 
-  const { readFileSync } = await import("node:fs");
-  const image = new Uint8Array(readFileSync("examples/platformio-esp32c3/.pio/build/esp32-c3/firmware.bin"));
-  const desc = parseAppDescriptor(image);
-  assert.equal(desc.magicOk, true, "the real build carries an ESP-IDF app descriptor");
-  console.log("real build app descriptor:", desc.projectName, desc.version, desc.idfVersion);
+  const { existsSync, readFileSync } = await import("node:fs");
+  // Use a real local build when one exists; a clean checkout has no .pio directory and the
+  // parser checks above already cover the capture vectors. Never fabricate a passing image.
+  const built = ["examples/platformio-esp32c3/.pio/build/esp32-c3/firmware.bin", "examples/esp32c3-firmware-validation/.pio/build/esp32c3-qemu-uart0/firmware.bin"].find((file) => existsSync(file));
+  if (built) {
+    const image = new Uint8Array(readFileSync(built));
+    const desc = parseAppDescriptor(image);
+    assert.equal(desc.magicOk, true, "the real build carries an ESP-IDF app descriptor");
+    console.log("real build app descriptor:", built, desc.projectName, desc.version, desc.idfVersion);
+  } else {
+    console.log("SKIP app descriptor check: no local PlatformIO build in this checkout (no substitute image used)");
+  }
   console.log("PASS app-only helper checks (real capture vectors, no device)");
 }

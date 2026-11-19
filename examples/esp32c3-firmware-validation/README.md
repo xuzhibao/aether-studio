@@ -34,13 +34,19 @@ shared/firmwareValidation.ts     共享纯模块：行流式解析、有界匹�
 
 行式、可打印 ASCII、`\n` 或 `\r\n` 结尾，单条协议行 ≤ 128 字节。设备与宿主都必须能处理任意分片（一次读取里可能只有半个 token，也可能一次收到多行）。
 
-设备 → 宿主（启动后立即发送，一次启动仅一次）：
+设备 → 宿主（启动后立即发送；USB 主机在启动后才连接时，在连接建立时为该次连接再发送一次。每次连接只发送一次）：
 
 ```
 AETHER-VAL/1 READY fw=aether-c3-fwval-1 proto=1 soc=esp32c3 console=uart0
 ```
 
 `console` 的值取决于回包通道：UART0 为 `uart0`，USB-Serial/JTAG 为 `usb-serial-jtag`。
+
+宿主 → 设备（可选，要求当前通道重新发送 READY；用于宿主在启动后才连接串口的场景）：
+
+```
+HELLO
+```
 
 宿主 → 设备（每轮新随机 token，16 位小写十六进制）：
 
@@ -205,7 +211,7 @@ C/TS 纯计算交叉验证（宿主 gcc 15.1.0 vs TS 实现）：
 | `fedcba9876543210` | `eed378b8` |
 | `a1b2c3d4e5f60718` | `66a05072` |
 
-共享纯模块单元测试：12/12 通过（分片、CRLF、陈旧 token、错误 value、超时、断连、二次 READY、超长行、身份不匹配、设备 ERROR、硬件 evidence 标记）。
+共享纯模块单元测试：14/14 通过（分片、CRLF、陈旧 token、错误 value、超时、断连、重复 READY、挑战中同标识 READY、身份变化、超长行、身份不匹配、设备 ERROR、硬件 evidence 标记）。
 
 未验证（如实记录）：
 

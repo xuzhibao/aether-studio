@@ -88,7 +88,7 @@ qemu-system-riscv32
 
 ## 4. 宿主模块接口（`desktop/simulator/qemu.ts`）
 
-只新增模块，未改 `desktop/main.ts`、`preload.ts`、`shared/`、版本号与现有 UI。集成方按下述接口接入：
+A 线只新增模块；集成线（D）已按 beta.10 需要修改 `desktop/main.ts`、`preload.ts`、`shared/` 与版本号，并按下列接口接线：
 
 ```ts
 import { createQemuSimulator, qemuEsp32c3Tool } from "./simulator/qemu";
@@ -111,7 +111,7 @@ const { offset, text } = simulator.readUart(cursor); // cursor 来自 snapshot()
 await simulator.dispose();  // 工程切换与退出时等待进程收束；建议加入 beforeSwitch 与 before-quit
 ```
 
-建议的 IPC 名称（preload 由集成线统一添加）：`simulator:start`、`simulator:cancel`、`simulator:snapshot`、事件 `simulator:changed`。
+集成线实际使用的 IPC：`firmwareVerification:startSimulation`、`firmwareVerification:cancel`、`firmwareVerification:status`、`firmwareVerification:armDeploy`、`firmwareVerification:disarm`、`firmwareVerification:runDevice`，事件 `firmwareVerification:changed`。
 
 为什么不注册成 `TaskProvider`：`TaskService.start()` 会同步占用宿主唯一的串口令牌，而模拟器不碰 COM 口，也不应与串口监视器互斥；因此模块只消费 `TaskService` 写出的构建记录，把进程、日志、取消和清理留在自己的单槽生命周期里。
 
@@ -224,10 +224,11 @@ PASS qemu simulator: real PlatformIO builds, real QEMU boots, verified app bytes
 
 其中生产示例当次 QEMU 私有 flash SHA-256 为 `9f81dd00...e754bb45`；生产 app 为 256,112 字节，UART0 探针 app 为 261,056 字节。
 
-## 7. 未实测与待集成
+## 7. 集成后状态（beta.10）
 
 - 非 Windows 平台（Linux/macOS）未实测；脚本的回收站清理目前只实现 Windows。
 - USB Serial/JTAG 模拟未实现/未验证；原生 USB CDC 示例在 QEMU 中只有 UART0。
-- B 分支 `examples/esp32c3-firmware-validation` 在本 worktree 中不存在；其真实的 IDF 5.4.x 构建尚未在本机运行。同族 16MB 布局（`ota_0 @0x100000`、`ota_1 @0x700000`）已用独立探针验证；拿到 B 的构建记录后可直接用同一模块复核 app SHA。
-- 实体板、COM4、串口、烧录均未在本轮操作。
+- B 的 `examples/esp32c3-firmware-validation` 与 C 的 app-only 写入已合入；产品内真实构建（ESP-IDF 5.4.1）与 QEMU 双次挑战通过，随后在同一实体板 COM4 完成 app-only 写入与新的实机串口挑战。详见 `docs/firmware-verification.md`。
+- 实体板只写入了活动 OTA 槽 `ota_1 @0x700000` 内的单一 app 段；bootloader、分区表、otadata、phy_init、model、ota_0 未改动。
+- 版本字符串说明：本文件第 2、6 节的 `esp_develop_9.2.2_20261109` 是 A 线当次使用的构建；集成验收使用的是本机 `esp_develop_9.2.2_20260417`。两者不是同一个二进制，真实验收记录按各自的 `--version` 保留。
 - `typecheck`：`tsc -p tsconfig.desktop.json` 与脚本单独类型检查通过。

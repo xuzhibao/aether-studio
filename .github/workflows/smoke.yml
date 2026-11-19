@@ -97,6 +97,10 @@ jobs:
       - run: npm run smoke:micropython:files
       # The ESP32-C3 template must compile with the native USB CDC flags.
       - run: platformio run -d examples/platformio-esp32c3
+      # Pure host deploy-gate checks plus the real ESP-IDF app descriptor from the build above.
+      - run: npm run smoke:esp:deploy-gate
+      # Shared firmware-validation protocol state machine (no serial port, no QEMU).
+      - run: node --import tsx --test examples/esp32c3-firmware-validation/tools/matcher.test.ts
       - run: npm run desktop:package
       - run: xvfb-run -a npm run smoke:crash
       - run: xvfb-run -a npm run smoke:desktop

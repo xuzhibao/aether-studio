@@ -94,6 +94,12 @@ static void handle_line(src_id_t src, fwval_line_t *line) {
         send_error(src, "bad-command");
         return;
     }
+    /* A host that attaches after boot asks for the identity explicitly; the reply is the
+     * same READY line, so a challenge never depends on having caught the boot line. */
+    if (strcmp(line->text, "HELLO") == 0) {
+        send_ready(src);
+        return;
+    }
     const char *token = parse_challenge(line->text);
     if (token == NULL) {
         send_error(src, "bad-command");
@@ -144,9 +150,20 @@ void app_main(void) {
     send_ready(SRC_UART0);
     start_usb_channel();
 
+    // A host may attach after boot (for example the product opens the port after flashing).
+    // Emit READY again on a USB connection transition so the challenge does not require a
+    // manual reset; the app still sends exactly one READY per attachment.
+    bool usb_connected = false;
     char byte;
     for (;;) {
         bool idle = true;
+        if (s_sources[SRC_USB].ready) {
+            bool connected = usb_serial_jtag_is_connected();
+            if (connected && !usb_connected) {
+                send_ready(SRC_USB);
+            }
+            usb_connected = connected;
+        }
         int n = read(STDIN_FILENO, &byte, 1);
         if (n == 1) {
             service_source(SRC_UART0, &byte, 1);

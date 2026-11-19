@@ -186,6 +186,8 @@ async function runSerialSession(options: Options, portPath: string): Promise<Run
   await new Promise<void>((resolve, reject) => {
     port.open((error) => (error ? reject(error) : resolve()));
   });
+  // The app may have booted before this session opened; ask for its identity once.
+  port.write("HELLO\n");
   const result = drive(
     session,
     (text) => port.write(text),

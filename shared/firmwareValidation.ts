@@ -303,6 +303,17 @@ export class FwValSession {
       soc: fields.soc ?? "",
       console: fields.console ?? "",
     };
+    if ((this.phase === "ready" || this.phase === "challenge-issued") && this.device !== null) {
+      // The host may ask for the identity again (HELLO) and the answer can cross the challenge in
+      // flight. An identical READY is not a second boot; a changed identity still fails closed.
+      // A real reboot loses the fresh token, so it cannot produce a matching RESPONSE anyway.
+      if (identity.fwid === this.device.fwid && identity.proto === this.device.proto && identity.soc === this.device.soc && identity.console === this.device.console) {
+        this.ignoredLines += 1;
+        return;
+      }
+      this.fail("reboot-detected", `READY identity changed after ${this.phase}: ${raw}`);
+      return;
+    }
     if (this.phase !== "awaiting-ready") {
       this.fail("reboot-detected", `second READY after ${this.phase}: ${raw}`);
       return;

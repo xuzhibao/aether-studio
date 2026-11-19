@@ -97,13 +97,33 @@ test("a disconnect before the verdict is never a pass", () => {
   assert.equal(record.failure?.code, "disconnected");
 });
 
-test("a second READY during the challenge means the device rebooted", () => {
+test("an identical READY before the challenge is a repeated identity, not a reboot", () => {
+  const { session, feed } = makeSession();
+  feed(READY);
+  feed(READY);
+  assert.equal(session.currentPhase, "ready");
+  session.issueChallenge(TOKEN);
+  feed(`AETHER-VAL/1 RESPONSE token=${TOKEN} value=${fwvalAnswer(TOKEN, FWID)} fw=${FWID}\r\n`);
+  assert.equal(session.finish().verdict, "pass");
+});
+
+test("a READY with a different identity during the challenge means the device rebooted", () => {
+  const { session, feed } = makeSession();
+  feed(READY);
+  session.issueChallenge(TOKEN);
+  feed(READY.replace(FWID, "another-image"));
+  const record = session.finish();
+  assert.equal(record.failure?.code, "reboot-detected");
+});
+
+test("an identical READY that crosses the challenge does not fail the run", () => {
   const { session, feed } = makeSession();
   feed(READY);
   session.issueChallenge(TOKEN);
   feed(READY);
-  const record = session.finish();
-  assert.equal(record.failure?.code, "reboot-detected");
+  feed(`AETHER-VAL/1 RESPONSE token=${TOKEN} value=${fwvalAnswer(TOKEN, FWID)} fw=${FWID}
+`);
+  assert.equal(session.finish().verdict, "pass");
 });
 
 test("a response before READY cannot pass", () => {
