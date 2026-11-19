@@ -1,0 +1,14 @@
+# Reference layout of the vendor-partitioned 16 MB ESP32-C3 target, as observed by
+# the device owner. This file is documentation for the deploy preflight: it is NOT
+# written to the device and the example's QEMU image does not use it.
+#
+# The nvs / phy_init rows are derived from the gaps around otadata 0xD000 and must
+# be confirmed against a read-only partition dump before any deployment.
+#
+# Name,   Type,  SubType,  Offset,    Size,      Flags
+nvs,      data,  nvs,      0x9000,    0x4000,
+otadata,  data,  ota,      0xD000,    0x2000,
+phy_init, data,  phy,      0xF000,    0x1000,
+model,    data,  0x82,     0x10000,   0xF0000,
+ota_0,    app,   ota_0,    0x100000,  0x600000,
+ota_1,    app,   ota_1,    0x700000,  0x600000,

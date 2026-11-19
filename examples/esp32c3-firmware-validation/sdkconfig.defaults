@@ -1,0 +1,12 @@
+# ESP-IDF defaults for this example (PlatformIO's `custom_sdkconfig` only applies to
+# the Arduino framework, so ESP-IDF builds take their settings from this file).
+# UART0 console is what QEMU exposes; the same image also starts a best-effort
+# USB-Serial/JTAG side channel from the application.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+# 16 MB matches the vendor-partitioned device; the QEMU image is merged at 16 MB too.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# Keep the CMake-side partition table identical to the one the preflight checks.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.vendor.csv"
