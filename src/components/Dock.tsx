@@ -149,7 +149,7 @@ export function Dock() {
         )}
         {dockTab === "serial" && (
           <div className="min-h-0 flex-1">
-            <SerialList lines={serialSource === "demo" ? serial : io.lines} compact follow={follow} />
+            <SerialList key={serialSource} lines={serialSource === "demo" ? serial : io.lines} compact follow={follow} />
           </div>
         )}
         {dockTab === "console" && (

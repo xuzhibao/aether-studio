@@ -22,8 +22,14 @@ export async function startWebSocketPeer(port = 0, outputDirectory) {
       const text = data.toString();
       received.push({ text, binary });
       if (outputDirectory) writeFileSync(outputDirectory + "/websocket-received.json", JSON.stringify(received));
+      const burst = /^fixture-burst:(\d+)$/.exec(text.trim());
       if (text.trim() === "close-normal") socket.close(1000, "fixture done");
       else if (text.trim() === "close-error") socket.close(1011, "fixture fault");
+      else if (burst) {
+        // Generated fixture lines only: used to fill the monitor's bounded ring without hardware.
+        const count = Math.min(Number(burst[1]), 600);
+        for (let index = 1; index <= count; index++) socket.send(`WebSocket fixture burst ${index}/${count}`);
+      }
       else {
         socket.send("WebSocket fixture text: " + text);
         socket.send(Buffer.from("WebSocket fixture binary: " + text));
