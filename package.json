@@ -29,6 +29,7 @@
     "smoke:esp": "node --import tsx scripts/smoke-esp.ts",
     "smoke:esp:device": "node --import tsx scripts/smoke-esp-device.ts",
     "smoke:esp:preflight": "node --import tsx scripts/smoke-esp-device-preflight.ts",
+    "smoke:esp:deploy-gate": "node --import tsx scripts/smoke-esp-deploy-gate.ts",
     "smoke:flash": "node --import tsx scripts/smoke-flash.ts",
     "smoke:micropython": "node --import tsx scripts/smoke-micropython.ts",
     "smoke:micropython:desktop": "node scripts/smoke-micropython-desktop.mjs",
