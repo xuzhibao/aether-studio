@@ -145,7 +145,7 @@ try {
   assert.equal(isPortBusy("COM_TEST"), true);
   const secondOptions = await optionsFor("main.py", "COM_TEST2");
   await assert.rejects(() => tasks.start("micropython.run", secondOptions), /已有任务运行/);
-  await assert.rejects(() => withPort("COM_TEST", "monitor", async () => {}), /task/);
+  await assert.rejects(() => withPort("COM_TEST", "monitor", async () => {}), /构建\/上传任务占用/);
   await tasks.cancel(slow.id);
   const cancelled = tasks.list().find((task) => task.id === slow.id);
   assert.equal(cancelled?.status, "cancelled");

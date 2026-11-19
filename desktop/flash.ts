@@ -106,8 +106,8 @@ export interface FlashServiceOptions {
   appRoot?: () => string | null;
   /** The serial monitor owns the COM port while connected. */
   serialBusy?: () => boolean;
-  /** Shared port lease with the monitor and upload tasks; claim must be synchronous. */
-  claim?: () => void;
+  /** The single device lease shared with the monitor and the tasks; claim must be synchronous and names the port. */
+  claim?: (port: string) => void;
   release?: () => void;
 }
 
@@ -206,7 +206,7 @@ export class FlashService {
     }
     this.emit();
   }
-  private claim() { if (this.claimed) return; this.options.claim?.(); this.claimed = true; }
+  private claim(port: string) { if (this.claimed) return; this.options.claim?.(port); this.claimed = true; }
   private releaseLease() { if (!this.claimed) return; this.claimed = false; this.options.release?.(); }
   private finish() {
     this.controller = null;
@@ -262,11 +262,12 @@ export class FlashService {
   /** Port-exclusive device read used by the panel; it occupies the port like any other flash operation. */
   async describeExclusive(port: string): Promise<FlashDeviceInfo> {
     if (this.busy()) throw new Error("已有 Flash 操作正在进行");
-    this.claim();
+    this.claim(port);
     const controller = new AbortController();
     this.controller = controller;
-    this.reset("detecting", null);
     try {
+      // Inside the try: a failed snapshot emit must still reach finish(), which releases the lease.
+      this.reset("detecting", null);
       const info = await this.describeDevice(port, controller.signal);
       this.snapshotState.status = "idle"; this.snapshotState.operation = null;
       this.progress({ phase: "done", offset: 0, total: 0, chunkIndex: 0, chunkCount: 0, message: `已读取 ${info.chip} · ${info.flashSizeLabel}` });
@@ -364,13 +365,13 @@ export class FlashService {
     this.validateCommon(options.port, options.chunkSize, options.baudRate, options.retries);
     this.assertOutputPath(options.outputPath);
     // Reserve the port synchronously, before any await, so the monitor or an upload cannot slip in.
-    this.claim();
+    this.claim(options.port);
     const controller = new AbortController();
     this.controller = controller;
     this.lastReadOffset = 0;
-    this.reset("backing-up", "backup");
     const signal = controller.signal;
     try {
+      this.reset("backing-up", "backup");
       this.assertPortFree();
       if (await fs.access(options.outputPath).then(() => true, () => false)) throw new Error("目标备份文件已存在，请选择新的保存位置（不会覆盖已有文件）。");
       if (await fs.access(options.outputPath + ".meta.json").then(() => true, () => false)) throw new Error("同名元数据文件已存在，请选择新的保存位置（不会覆盖已有文件）。");
@@ -485,13 +486,13 @@ export class FlashService {
     this.validateCommon(options.port, options.chunkSize, options.baudRate, options.retries);
     if (!options.backupPath || !/\.bin$/i.test(options.backupPath)) throw new Error("备份文件必须是 .bin");
     this.assertPortFree();
-    this.claim();
+    this.claim(options.port);
     const controller = new AbortController();
     this.controller = controller;
     this.lastReadOffset = 0;
-    this.reset("restoring", "restore");
     const signal = controller.signal;
     try {
+      this.reset("restoring", "restore");
       this.progress({ phase: "detecting", offset: 0, total: 0, chunkIndex: 0, chunkCount: 0, message: "正在核实备份与设备…" });
       const metadata = await this.readMetadata(options.backupPath);
       const stat = await fs.stat(options.backupPath);
@@ -581,10 +582,9 @@ export class FlashService {
     if (plan.blocked) throw new Error("恢复被拒绝：" + plan.blocked);
     if (Date.now() - plan.createdAtMs > PLAN_TTL_MS) throw new Error("恢复计划已过期（超过 10 分钟），请重新执行准备步骤。");
     if (confirmation !== plan.confirmationPhrase) throw new Error("确认文字不匹配；未写入任何数据。");
-    this.claim();
+    this.claim(plan.port);
     const controller = new AbortController();
     this.controller = controller;
-    this.reset("restoring", "restore");
     const signal = controller.signal;
     let cacheDir = "";
     let currentRange: FlashRange | null = null;
@@ -592,6 +592,7 @@ export class FlashService {
     const attempted = (range: FlashRange) => written.some((entry) => sameRange(entry, range));
     const pending = () => plan.ranges.filter((range) => !attempted(range));
     try {
+      this.reset("restoring", "restore");
       cacheDir = await this.makeRunDir("restore-write");
       // Re-check identity right before writing: the plan may predate a board swap.
       this.progress({ phase: "detecting", offset: 0, total: plan.metadata.fileLength, chunkIndex: 0, chunkCount: 0, message: "写入前再次核实设备…" });

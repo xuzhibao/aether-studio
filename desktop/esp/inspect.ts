@@ -109,6 +109,7 @@ export async function inspectEspDevice(port: string, tools?: ToolService, signal
       };
     });
   } catch (error) {
-    return { ...empty(String(error)), usb, usbClass, tool: toolInfo };
+    // A busy host lease, a refused open and a tool failure all surface as the real message, not "Error: ...".
+    return { ...empty(error instanceof Error ? error.message : String(error)), usb, usbClass, tool: toolInfo };
   }
 }

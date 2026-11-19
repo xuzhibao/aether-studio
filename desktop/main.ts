@@ -21,7 +21,7 @@ import { FlashService } from "./flash";
 import { createEsptoolRunner } from "./plugins/esptool";
 import { createMicropythonRunProvider } from "./plugins/micropython";
 import { MicropythonFilesService } from "./plugins/micropythonFiles";
-import { DeviceLease } from "./deviceLock";
+import { deviceLease, type DeviceLeaseToken } from "./deviceLock";
 import type { ProjectContext } from "../src/plugins/api";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
@@ -38,14 +38,14 @@ const confirmClose = (detail = "选择放弃修改将关闭窗口。") => {
 let operations: Promise<unknown> = Promise.resolve();
 const enqueue = <T>(fn: () => Promise<T>): Promise<T> => { const result = operations.then(fn); operations = result.catch(() => {}); return result; };
 const emit = (channel: string, value: unknown) => { if (window && !window.isDestroyed()) window.webContents.send(channel, value); };
-// Shared ownership of the single COM port: monitor, upload/build task, flash operation.
-const lease = new DeviceLease();
+// One arbiter owns the single COM port for the whole host: monitor, task, flash and ESP reads.
+// Each entry holds its own token, so a late close or a cancelled operation frees nothing else.
+let monitorLease: DeviceLeaseToken | null = null;
+let flashLease: DeviceLeaseToken | null = null;
 const workspace = new WorkspaceService((root) => emit("workspace:changed", root), (target) => shell.trashItem(target));
 const recovery = new RecoveryService(() => path.join(app.getPath("userData"), "recovery"));
 const tasks = new TaskService(workspace, (task) => {
   emit("tasks:changed", task);
-  // A finished task no longer owns the port.
-  if (task.status !== "running") lease.release("task");
   // Providers declare what a successful task produced; the host only reacts to the generic kind.
   if (task.status === "succeeded" && task.kind === "compile-database") {
     void enqueue(() => language.refreshCompileDatabase(task.root, task.environment ?? "")).catch((error) => console.error("clangd compile database refresh failed", error));
@@ -56,7 +56,8 @@ const serialLogExport = new SerialLogExportService();
 // An unexpected unplug/close must release the port for flash, not leave it reserved forever.
 // It also makes a save picker that is already open target a session that no longer exists.
 // Only an attempt that actually opened the port changes the retained session; a failed open leaves it intact.
-serial.setOnSessionEnd((opened) => { if (opened) serialLogExport.invalidate(); lease.release("monitor"); });
+// Only the session's own token is released here; a failed open has no session and releases in the IPC handler.
+serial.setOnSessionEnd((opened) => { if (opened) { serialLogExport.invalidate(); deviceLease.release(monitorLease); monitorLease = null; } });
 const terminal = new TerminalService(workspace, (state) => emit("terminal:changed", state));
 terminal.register(shellProvider);
 const language = new LanguageService(workspace, (snapshot) => emit("language:changed", snapshot));
@@ -94,8 +95,8 @@ const flash = new FlashService(esptool, {
   workspaceRoot: () => workspace.root,
   appRoot: () => app.getAppPath(),
   serialBusy: () => serial.isOpen(),
-  claim: () => lease.claim("flash"),
-  release: () => lease.release("flash"),
+  claim: (port) => { flashLease = deviceLease.claim("flash", port); },
+  release: () => { deviceLease.release(flashLease); flashLease = null; },
 });
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
@@ -173,10 +174,13 @@ function routes() {
     return preflightEspUpload({ root, environment: options.environment, port: options.port, workspace, tools, platformio: tools.executable("platformio") });
   });
   handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
-    lease.claim("task");
+    // Invalidate first: a failed snapshot emit must not leave a claimed token with no owner to release it.
     flash.invalidatePlan();
-    try { return await enqueue(() => tasks.start(provider, options)); }
-    catch (error) { lease.release("task"); throw error; }
+    // Claim synchronously at the IPC entry: the task's own await-heavy start cannot slip past a monitor.
+    const token = deviceLease.claim("task");
+    try { return await enqueue(() => tasks.start(provider, options, token)); }
+    // The task releases this token when its process really exits; a refusal before spawn frees it here.
+    catch (error) { deviceLease.release(token); throw error; }
   });
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   // Read-only board files: list one directory, or download one file to a host-chosen new local file.
@@ -192,18 +196,23 @@ function routes() {
   handle("tasks:list", () => tasks.list());
   handle("serial:list", () => serial.list());
   handle("serial:open", async (port: string, baud: number) => {
-    lease.claim("monitor");
+    if (typeof port !== "string" || !port.trim()) throw new Error("无效的串口参数");
+    // Invalidate before claiming: a failed snapshot emit must not leave a token nobody releases.
     flash.invalidatePlan();
+    // Claimed before the first await, with the real port, so an esptool entry is refused by the lease
+    // instead of colliding with the OS handle. The token is stored before open: an unplug that ends
+    // the session while open() is still settling must release this same token, not a newer one.
+    const token = deviceLease.claim("monitor", port);
+    monitorLease = token;
     try { return await serial.open(port, baud); }
-    // A failed open of an already-open port must not free the session that still owns the lease.
-    catch (error) { if (!serial.isOpen()) lease.release("monitor"); throw error; }
+    catch (error) { deviceLease.release(token); if (monitorLease === token) monitorLease = null; throw error; }
   });
   handle("serial:read", (id: number) => serial.read(id));
   handle("serial:write", (id: number, bytes: number[]) => serial.write(id, bytes));
   handle("serial:close", async (id: number) => {
     const closed = await serial.close(id);
     // A stale id, or a close that threw, must not free a newer monitor session's lease.
-    if (closed) lease.release("monitor");
+    if (closed) { deviceLease.release(monitorLease); monitorLease = null; }
   });
   // Bounded native serial diagnostic export: one picker-issued new file, never an overwrite.
   handle("serialLog:save", (request) => serialLogExport.save(request, async (suggestedName: string) => {

@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { TaskSnapshot, BuildArtifact, TaskEnvironment } from "../shared/desktop";
 import type { WorkspaceService } from "./workspace";
-import { acquirePort, releasePort } from "./portLease";
+import { deviceLease, type DeviceLeaseToken } from "./deviceLock";
 
 /** Quotes an argument only for the human-readable log line; the process still receives the raw value. */
 const quoteForLog = (arg: string) => /[\s"]/.test(arg) ? '"' + arg.replace(/"/g, '\\"') + '"' : arg;
@@ -48,30 +48,40 @@ export class TaskService {
     const executable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
     return provider.environments(root, executable);
   }
-  async start(id: string, options: Record<string, string> = {}) {
-    const provider = this.providers.get(id);
-    if (!provider) throw new Error("未注册的任务：" + id);
-    const root = this.workspace.root;
-    if (!root) throw new Error("请先打开工程目录");
-    if (this.list().some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
-    // Resolve once so a settings change cannot swap the executable of a running task.
-    const baseExecutable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
-    // The environment is fixed before the process starts; a settings change or a later UI selection cannot swap it.
-    const environment = await this.resolveEnvironment(provider, root, baseExecutable, options.environment);
-    const resolved = environment ? { ...options, environment } : options;
-    // The port belongs to this task from the verification step through the actual write.
-    const leased = provider.portOption ? options[provider.portOption]?.trim() ?? "" : "";
-    // "task" is the same owner the IPC entry claims, so the lease is shared, not re-entered.
-    if (leased) acquirePort(leased, "task");
-    const abort = new AbortController();
-    const preparedLog: string[] = [];
-    let executable = baseExecutable;
-    let args: string[];
-    let metadata: unknown;
-    let preparation: string | null | undefined = "";
-    let toolVersion: string | undefined;
-    let inputHash = "";
+  /**
+   * Starts one provider. `reserved` is the token the IPC entry already claimed synchronously; when it
+   * is absent (direct use) this call claims the same single slot itself, before its first await.
+   * The token is released exactly when the spawned process has really exited, or on every path that
+   * refuses before a process exists.
+   */
+  async start(id: string, options: Record<string, string> = {}, reserved?: DeviceLeaseToken) {
+    let lease: DeviceLeaseToken | null = reserved ?? null;
+    // Set once the process exists: from then on only its close handler releases the token and the inputs.
+    let spawned = false;
     try {
+      const provider = this.providers.get(id);
+      if (!provider) throw new Error("未注册的任务：" + id);
+      const root = this.workspace.root;
+      if (!root) throw new Error("请先打开工程目录");
+      if (this.list().some((task) => task.status === "running")) throw new Error("已有任务运行，请等待或取消");
+      // The same single slot the IPC entry claimed; only the first caller creates the token.
+      lease ??= deviceLease.claim("task");
+      // Resolve once so a settings change cannot swap the executable of a running task.
+      const baseExecutable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
+      // The environment is fixed before the process starts; a settings change or a later UI selection cannot swap it.
+      const environment = await this.resolveEnvironment(provider, root, baseExecutable, options.environment);
+      const resolved = environment ? { ...options, environment } : options;
+      // The port belongs to this task from the verification step through the actual write.
+      const leased = provider.portOption ? options[provider.portOption]?.trim() ?? "" : "";
+      if (leased) deviceLease.bind(lease, leased);
+      const abort = new AbortController();
+      const preparedLog: string[] = [];
+      let executable = baseExecutable;
+      let args: string[];
+      let metadata: unknown;
+      let preparation: string | null | undefined = "";
+      let toolVersion: string | undefined;
+      let inputHash = "";
       // A changed build input may invalidate cached artifacts; this runs before the fingerprint and spawn.
       preparation = await provider.beforeStart?.(root, baseExecutable, resolved);
       if (provider.prepare) {
@@ -82,87 +92,94 @@ export class TaskService {
       } else args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
       toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
       inputHash = await this.workspace.fingerprint(provider.inputExcludes);
-    } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
-    const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
-    const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
-    let child: ChildProcess;
-    try {
-      child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
-    } catch (error) { if (leased) releasePort(leased); await provider.afterRun?.().catch(() => {}); throw error; }
-    let cancelled = false;
-    let processClosed = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-    let finish!: () => void;
-    const done = new Promise<void>((resolve) => { finish = resolve; });
-    const emit = () => this.changed(structuredClone(task));
-    const kill = (signal: NodeJS.Signals) => {
-      if (!child.pid) return;
-      if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }).on("error", (error) => { task.error = error.message; emit(); });
-      else { try { process.kill(-child.pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") { task.error = String(error); emit(); } } }
-    };
-    const cancel = () => { cancelled = true; abort.abort(); if (task.status !== "running" || processClosed) return; kill("SIGTERM"); killTimer = setTimeout(() => kill("SIGKILL"), 1500); };
-    this.jobs.set(task.id, { task, child, done, cancel, abort });
-    const append = (chunk: Buffer) => { task.log = (task.log + chunk.toString()).slice(-250000); emit(); };
-    child.stdout?.on("data", append); child.stderr?.on("data", append);
-    child.on("error", (error) => { task.error = error.message; });
-    child.on("close", async (code) => {
-      processClosed = true;
-      if (leased) releasePort(leased);
-      clearTimeout(killTimer);
-      task.exitCode = code;
-      task.endedAt = new Date().toISOString();
-      let result: TaskSnapshot["status"] = cancelled ? "cancelled" : code === 0 && !task.error ? "succeeded" : "failed";
-      try {
-        if (result === "succeeded" && provider.artifacts) {
-          if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
-          let metadataError = "";
-          if (provider.verify) {
-            try {
-              const verified = await provider.verify(task, root, resolved);
-              const base = task.metadata && typeof task.metadata === "object" ? task.metadata as Record<string, unknown> : {};
-              task.metadata = verified && typeof verified === "object" ? { ...base, ...(verified as Record<string, unknown>) } : (verified ?? base);
-            } catch (error) { metadataError = String(error); task.log = (task.log + "\n[aether] 结果核对失败：" + metadataError).slice(-250000); }
-          }
-          if (provider.afterSuccess) {
-            try {
-              const extra = await provider.afterSuccess(root, executable, resolved, abort.signal);
-              if (extra !== undefined) task.metadata = { ...(task.metadata && typeof task.metadata === "object" ? task.metadata as Record<string, unknown> : {}), ...(extra as Record<string, unknown>) };
-            } catch (error) {
-              // The hook is part of the task: a cancellation stops here without writing a cache or a success record.
-              if (cancelled) result = "cancelled";
-              else {
-                metadataError = String(error);
-                task.log = (task.log + "\n[aether] 任务成功，但附加步骤失败：" + metadataError).slice(-250000);
+      const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
+      const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
+      const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });
+      spawned = true;
+      let cancelled = false;
+      let processClosed = false;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let finish!: () => void;
+      const done = new Promise<void>((resolve) => { finish = resolve; });
+      const emit = () => this.changed(structuredClone(task));
+      const kill = (signal: NodeJS.Signals) => {
+        if (!child.pid) return;
+        if (process.platform === "win32") spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }).on("error", (error) => { task.error = error.message; emit(); });
+        else { try { process.kill(-child.pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") { task.error = String(error); emit(); } } }
+      };
+      const cancel = () => { cancelled = true; abort.abort(); if (task.status !== "running" || processClosed) return; kill("SIGTERM"); killTimer = setTimeout(() => kill("SIGKILL"), 1500); };
+      this.jobs.set(task.id, { task, child, done, cancel, abort });
+      const append = (chunk: Buffer) => { task.log = (task.log + chunk.toString()).slice(-250000); emit(); };
+      child.stdout?.on("data", append); child.stderr?.on("data", append);
+      child.on("error", (error) => { task.error = error.message; });
+      child.on("close", async (code) => {
+        processClosed = true;
+        // The port is freed only after the board process has really exited.
+        deviceLease.release(lease);
+        clearTimeout(killTimer);
+        task.exitCode = code;
+        task.endedAt = new Date().toISOString();
+        let result: TaskSnapshot["status"] = cancelled ? "cancelled" : code === 0 && !task.error ? "succeeded" : "failed";
+        try {
+          if (result === "succeeded" && provider.artifacts) {
+            if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("构建期间源文件发生变化，未登记产物，请重新构建");
+            let metadataError = "";
+            if (provider.verify) {
+              try {
+                const verified = await provider.verify(task, root, resolved);
+                const base = task.metadata && typeof task.metadata === "object" ? task.metadata as Record<string, unknown> : {};
+                task.metadata = verified && typeof verified === "object" ? { ...base, ...(verified as Record<string, unknown>) } : (verified ?? base);
+              } catch (error) { metadataError = String(error); task.log = (task.log + "\n[aether] 结果核对失败：" + metadataError).slice(-250000); }
+            }
+            if (provider.afterSuccess) {
+              try {
+                const extra = await provider.afterSuccess(root, executable, resolved, abort.signal);
+                if (extra !== undefined) task.metadata = { ...(task.metadata && typeof task.metadata === "object" ? task.metadata as Record<string, unknown> : {}), ...(extra as Record<string, unknown>) };
+              } catch (error) {
+                // The hook is part of the task: a cancellation stops here without writing a cache or a success record.
+                if (cancelled) result = "cancelled";
+                else {
+                  metadataError = String(error);
+                  task.log = (task.log + "\n[aether] 任务成功，但附加步骤失败：" + metadataError).slice(-250000);
+                }
               }
             }
-          }
-          if (result !== "cancelled") {
-            // The hook can touch the project: verify inputs again and hash the final artifacts after it finished.
-            if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("任务附加步骤期间源文件发生变化，未登记产物，请重新构建");
-            const artifacts: BuildArtifact[] = [];
-            for (const relative of await provider.artifacts(root, executable, resolved)) {
-              const bytes = await fs.readFile(path.join(root, relative));
-              artifacts.push({ path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+            if (result !== "cancelled") {
+              // The hook can touch the project: verify inputs again and hash the final artifacts after it finished.
+              if (inputHash !== await this.workspace.fingerprint(provider.inputExcludes)) throw new Error("任务附加步骤期间源文件发生变化，未登记产物，请重新构建");
+              const artifacts: BuildArtifact[] = [];
+              for (const relative of await provider.artifacts(root, executable, resolved)) {
+                const bytes = await fs.readFile(path.join(root, relative));
+                artifacts.push({ path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+              }
+              if (!artifacts.length) throw new Error("进程已退出，但未找到构建产物");
+              if (cancelled) result = "cancelled";
+              else {
+                task.artifacts = artifacts;
+                await fs.mkdir(path.join(root, ".aether"), { recursive: true });
+                await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadataError ? { metadataError } : {}) }, null, 2));
+              }
             }
-            if (!artifacts.length) throw new Error("进程已退出，但未找到构建产物");
-            if (cancelled) result = "cancelled";
-            else {
-              task.artifacts = artifacts;
-              await fs.mkdir(path.join(root, ".aether"), { recursive: true });
-              await fs.writeFile(path.join(root, ".aether", provider.recordName ?? "build.json"), JSON.stringify({ ...task, status: result, ...(metadataError ? { metadataError } : {}) }, null, 2));
-            }
+          } else if (result === "succeeded") {
+            // A run task has no build product to hash or journal. The real exit code is the result.
+            task.log = (task.log + "\n[aether] 此任务不声明构建产物，结果以进程退出码为准；未写入构建记录。").slice(-250000);
           }
-        } else if (result === "succeeded") {
-          // A run task has no build product to hash or journal. The real exit code is the result.
-          task.log = (task.log + "\n[aether] 此任务不声明构建产物，结果以进程退出码为准；未写入构建记录。").slice(-250000);
-        }
-      } catch (error) { result = "failed"; task.error = String(error); }
-      try { await provider.afterRun?.(); }
-      catch (error) { task.log = (task.log + "\n[aether] 清理临时写入快照失败：" + String(error)).slice(-250000); }
-      task.status = result;
-      emit(); finish();
-    });
-    emit(); return structuredClone(task);
+        } catch (error) { result = "failed"; task.error = String(error); }
+        try { await provider.afterRun?.(); }
+        catch (error) { task.log = (task.log + "\n[aether] 清理临时写入快照失败：" + String(error)).slice(-250000); }
+        task.status = result;
+        emit(); finish();
+      });
+      emit(); return structuredClone(task);
+    } catch (error) {
+      // A refusal before a process exists frees exactly this operation's token; once the board process
+      // exists, its close handler owns both the token and afterRun (a late snapshot emit cannot free it early).
+      if (!spawned) {
+        deviceLease.release(lease);
+        await this.providers.get(id)?.afterRun?.().catch(() => {});
+      }
+      throw error;
+    }
   }
   private async resolveEnvironment(provider: TaskProvider, root: string, executable: string, requested?: string): Promise<string | undefined> {
     if (!provider.environments) return undefined;
