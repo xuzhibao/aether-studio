@@ -35,6 +35,8 @@ jobs:
       # Build input cache invalidation, pre-build diff review and the AI connection test.
       - run: npm run smoke:build-inputs
       - run: npm run smoke:build-review
+      # Finished PlatformIO logs expose only provable loaded-source compiler positions; no disk or hardware.
+      - run: npm run smoke:build-diagnostics
       - run: npm run smoke:provider
       - run: npm run build
       - run: npx playwright install --with-deps chromium

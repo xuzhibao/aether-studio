@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowUp, Download, Folder, FileText, RefreshCw, Usb, X } from "lucide-react";
-import type { MicropythonFileEntry, MicropythonListing } from "../../../shared/micropython";
+import type { MicropythonDownloadChoice, MicropythonFileEntry, MicropythonListing } from "../../../shared/micropython";
 import { isDesktop } from "../../lib/desktop";
+import { useDisk } from "../../store/disk";
 import { useStudio } from "../../store/studio";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -11,6 +12,8 @@ const parentOf = (path: string) => path === "/" ? "/" : path.slice(0, path.lastI
 /**
  * Read-only board files. The port, directory and entry of one operation are captured when it starts,
  * so a late reply for an old directory can never overwrite the directory the user is looking at now.
+ * A save-dialog reply is only usable while this panel instance and this project context are current;
+ * unmounting or switching project retires the picker and cancels a running transfer in the host.
  */
 export function MicropythonFilesPanel() {
   const [port, setPort] = useState("");
@@ -26,8 +29,16 @@ export function MicropythonFilesPanel() {
   const [busy, setBusy] = useState(false);
   const [choosing, setChoosing] = useState(false);
   const sequence = useRef(0);
+  // Synchronous guard: React state updates are asynchronous, so a double click must not open a second dialog.
+  const attempt = useRef(false);
+  const mounted = useRef(false);
   const api = typeof window === "undefined" ? undefined : window.aether?.micropython;
   const busyNow = loading || busy || choosing;
+  const projectId = useStudio((state) => state.activeProjectId);
+  const root = useDisk((state) => state.root);
+  // The listing and any picker authorization belong to one project context, on-disk or virtual.
+  const context = projectId + "\u0000" + (root ?? "");
+  const contextRef = useRef(context);
 
   const loadPorts = useCallback(async () => {
     const serial = typeof window === "undefined" ? undefined : window.aether?.serial;
@@ -39,6 +50,27 @@ export function MicropythonFilesPanel() {
   }, []);
 
   useEffect(() => { if (isDesktop()) void loadPorts(); }, [loadPorts]);
+
+  // Nothing this panel started may outlive it: a dialog reply that arrives after unmount is discarded
+  // by the host, and an active transfer is aborted and cleaned (temp file removed after the child exits).
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      sequence.current++;
+      void api?.invalidate().catch(() => {});
+    };
+  }, [api]);
+
+  useEffect(() => {
+    if (contextRef.current === context) return;
+    contextRef.current = context;
+    sequence.current++;
+    setChoosing(false); setBusy(false); setLoading(false); setDownloading("");
+    setPath("/"); setListing(null); setError(""); setNote("");
+    // The host also checks its own generation, so a dialog that resolves later cannot authorize anything.
+    void api?.invalidate().catch((reason) => { if (mounted.current) setError(errorText(reason)); });
+  }, [context, api]);
 
   const open = useCallback(async (nextPort: string, nextPath: string) => {
     if (!api || !nextPort.trim()) return;
@@ -70,20 +102,42 @@ export function MicropythonFilesPanel() {
   };
 
   const download = async (entry: MicropythonFileEntry) => {
-    if (!api || !listing || entry.type !== "file" || busyNow) return;
-    // Capture the operation's port and path now; later navigation does not change what is downloaded.
+    if (!api || !listing || entry.type !== "file" || busyNow || attempt.current) return;
+    // Capture the operation's port, path and entry now; later navigation does not change what is downloaded.
     const origin = { port: listing.port, path: entry.path, name: entry.name };
-    setError(""); setNote("");
-    let target: string | null;
-    try { target = await api.chooseDownloadPath(origin.name); }
-    catch (reason) { setError(errorText(reason)); return; }
-    if (!target) return;
-    setBusy(true); setDownloading(origin.path);
+    const token = sequence.current;
+    attempt.current = true;
+    setChoosing(true); setError(""); setNote("");
     try {
-      const result = await api.download(origin.port, origin.path, target);
-      setNote("已保存 " + origin.name + " → " + result.target + "（" + formatSize(result.size) + "）");
-    } catch (reason) { setError(errorText(reason)); }
-    finally { setBusy(false); setDownloading(""); }
+      let choice: MicropythonDownloadChoice;
+      try { choice = await api.chooseDownloadPath(origin.port, origin.path, origin.name); }
+      catch (reason) {
+        if (mounted.current && token === sequence.current) { setChoosing(false); setError(errorText(reason)); }
+        return;
+      }
+      // The panel went away or the project changed while the dialog was open: never start mpremote.
+      if (!mounted.current || token !== sequence.current) {
+        if (mounted.current) setChoosing(false);
+        return;
+      }
+      setChoosing(false);
+      if (choice.status === "failed") { setError(choice.error); return; }
+      if (choice.status === "cancelled") {
+        setNote(choice.reason === "picker" ? "已取消保存，未下载任何内容。" : "工程或面板已变化，本次保存已取消，未写入任何文件。");
+        return;
+      }
+      setBusy(true); setDownloading(origin.path);
+      try {
+        const result = await api.download(choice.token);
+        if (mounted.current && token === sequence.current) setNote("已保存 " + origin.name + " → " + result.target + "（" + formatSize(result.size) + "）");
+      } catch (reason) {
+        if (mounted.current && token === sequence.current) setError(errorText(reason));
+      } finally {
+        if (mounted.current) { setBusy(false); setDownloading(""); }
+      }
+    } finally {
+      attempt.current = false;
+    }
   };
 
   const cancel = async () => {
@@ -129,7 +183,8 @@ export function MicropythonFilesPanel() {
         {busyNow && !choosing && <button type="button" data-micropython-files-cancel className="btn px-2 py-1 text-[10px]" onClick={() => void cancel()}><X size={10} /> {busy ? "取消下载" : "取消读取"}</button>}
       </div>
       {loading && <p role="status" className="mt-2 text-[10px] text-[#90969E]">正在读取 {path} …</p>}
-      {choosing && <p role="status" data-micropython-files-choosing className="mt-2 text-[10px] text-[#90969E]">请在系统保存对话框中选择位置或取消；在对话框关闭前不会写入任何本地文件。</p>}
+      {choosing && <p role="status" data-micropython-files-choosing className="mt-2 text-[10px] text-[#9A702C]">请在系统保存对话框中选择位置或取消；在对话框关闭前不会启动 mpremote，也不会写入任何本地文件。</p>}
+      {busy && downloading && <p role="status" data-micropython-files-active className="mt-2 text-[10px] text-[#90969E]">正在从设备下载 <span className="font-mono">{downloading}</span> …（可在上方取消）</p>}
       {!listing && !loading && !error && <p className="mt-2 text-[10px] text-[#90969E]">输入端口后按 Enter 或点“打开根目录”开始；不会自动挑选端口。</p>}
       {listing && !loading && entries.length === 0 && <p data-micropython-files-empty role="status" className="mt-2 rounded bg-[#F8F9FB] p-2 text-[10px] text-[#90969E]">该目录为空。</p>}
       {entries.length > 0 && <ul className="mt-2 divide-y divide-[#F0F2F5] rounded-md border border-[#E9EBEE]">

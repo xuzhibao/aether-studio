@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  MICROPYTHON_FILES_OWNER, micropythonChildPath, micropythonDownloadArgs, micropythonEntryName, micropythonListArgs, micropythonRemotePath,
-  type MicropythonDownloadResult, type MicropythonFileEntry, type MicropythonListing,
+  MICROPYTHON_FILES_OWNER, explicitMicropythonPort, micropythonChildPath, micropythonDownloadArgs, micropythonEntryName, micropythonListArgs,
+  micropythonRemotePath, type MicropythonDownloadChoice, type MicropythonDownloadResult, type MicropythonFileEntry, type MicropythonListing,
 } from "../../shared/micropython";
 import { withPort } from "../portLease";
 import type { ToolService } from "../tools";
@@ -16,8 +17,19 @@ import { resolveMicropythonCommand } from "./micropython";
 const LIST_TIMEOUT_MS = 25_000;
 const DOWNLOAD_TIMEOUT_MS = 300_000;
 const MAX_CAPTURE = 1024 * 1024;
+// Outstanding picker authorizations are held in memory only; a bounded number keeps that set small.
+const MAX_AUTHORIZATIONS = 4;
 
 export const cancelled = () => Object.assign(new Error("操作已取消"), { name: "AbortError" });
+
+const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** A save-dialog file name is only a suggestion: separators and control characters are refused. */
+export function micropythonSuggestedName(value: unknown): string {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name || /[\\/\x00-\x1f]/.test(name)) return "device-file.bin";
+  return name.slice(0, 120) || "device-file.bin";
+}
 
 /**
  * mpremote 1.29.0 prints one entry as `"{:12} {}{}".format(size, name, "/" if directory)`.
@@ -110,24 +122,40 @@ const failureText = (result: CommandResult) => {
   return detail ? "退出码 " + result.code + "：" + detail : "退出码 " + result.code;
 };
 
+/** Opens the host save dialog and returns only its new absolute file, or null when the user cancels. */
+export type MicropythonPathPick = (suggestedName: string) => Promise<string | null>;
+
+/** What one save dialog authorizes; never exposed to the renderer. */
+interface DownloadAuthorization {
+  port: string;
+  remote: string;
+  target: string;
+  generation: number;
+  workspace: string | null;
+}
+
 /**
  * The single owner of the read-only file operations. Only one runs at a time, it holds the shared port
- * lease for its whole duration, and cancel() aborts it. A download target is written only when the
- * host save dialog issued that exact path in this session, and only once.
+ * lease for its whole duration, and cancel() aborts it.
+ *
+ * A download target is never supplied by the renderer. choose() opens one save dialog and binds an
+ * opaque, single-use token to the exact port, remote file, local target, workspace and generation.
+ * A panel unmount, project switch, window close or dispose() bumps the generation, so a dialog reply
+ * that arrives afterwards cannot start mpremote or publish a success.
  */
 export class MicropythonFilesService {
   private active: AbortController | null = null;
   private running = new Set<Promise<unknown>>();
-  private issued = new Set<string>();
+  private authorizations = new Map<string, DownloadAuthorization>();
   private temporary = new Set<string>();
-  constructor(private tools: ToolService, private options: { listTimeoutMs?: number; downloadTimeoutMs?: number } = {}) {}
+  private generation = 0;
+  private picking = false;
+  constructor(
+    private tools: ToolService,
+    private options: { listTimeoutMs?: number; downloadTimeoutMs?: number; workspaceRoot?: () => string | null } = {},
+  ) {}
 
-  /** Records a path returned by the host save dialog; a download may write only one of these. */
-  issueTarget(file: string) {
-    if (typeof file !== "string" || !file || !path.isAbsolute(file)) throw new Error("保存路径无效");
-    this.issued.add(path.resolve(file));
-    return file;
-  }
+  private workspaceRoot() { return this.options.workspaceRoot?.() ?? null; }
 
   private begin() {
     if (this.active) throw new Error("已有正在读取设备文件的操作，请等待或取消");
@@ -163,14 +191,56 @@ export class MicropythonFilesService {
     } finally { this.end(controller); }
   }
 
-  download(port: string, remotePath: string, target: string): Promise<MicropythonDownloadResult> {
-    return this.track(this.downloadInner(port, remotePath, target));
+  /**
+   * One save dialog at a time. The captured generation and workspace are re-checked after the dialog
+   * resolves; a reply for a panel, project or window that is already gone is discarded without a token.
+   */
+  async choose(portValue: unknown, remoteValue: unknown, suggestedName: unknown, pick: MicropythonPathPick): Promise<MicropythonDownloadChoice> {
+    if (this.picking) return { status: "failed", error: "已有保存对话框正在打开，请先完成或取消它" };
+    let port: string; let remote: string;
+    try {
+      port = explicitMicropythonPort(portValue);
+      remote = micropythonRemotePath(remoteValue);
+    } catch (error) { return { status: "failed", error: errorText(error) }; }
+    const generation = this.generation;
+    const workspace = this.workspaceRoot();
+    this.picking = true;
+    let target: string | null;
+    try { target = await pick(micropythonSuggestedName(suggestedName)); }
+    catch (error) { return { status: "failed", error: "无法打开保存对话框：" + errorText(error) }; }
+    finally { this.picking = false; }
+    // Both sides of the await: a stale panel/project/window must not receive an authorization.
+    if (this.generation !== generation || this.workspaceRoot() !== workspace) return { status: "cancelled", reason: "invalidated" };
+    if (!target) return { status: "cancelled", reason: "picker" };
+    if (typeof target !== "string" || !path.isAbsolute(target)) return { status: "failed", error: "保存路径无效" };
+    const token = randomBytes(32).toString("hex");
+    this.authorizations.set(token, { port, remote, target: path.resolve(target), generation, workspace });
+    // Bounded: the oldest outstanding authorization is dropped when the cap is reached.
+    while (this.authorizations.size > MAX_AUTHORIZATIONS) {
+      const oldest = this.authorizations.keys().next().value;
+      if (oldest === undefined) break;
+      this.authorizations.delete(oldest);
+    }
+    return { status: "chosen", token };
   }
 
-  private async downloadInner(port: string, remotePath: string, target: string): Promise<MicropythonDownloadResult> {
-    const remote = micropythonRemotePath(remotePath);
-    const resolved = typeof target === "string" ? path.resolve(target) : "";
-    if (!resolved || !this.issued.has(resolved)) throw new Error("下载目标必须由保存对话框选择；请重新点击下载");
+  /** Downloads with a token from choose(); it is single-use and scoped to the context that issued it. */
+  download(tokenValue: unknown): Promise<MicropythonDownloadResult> {
+    return this.track(this.downloadInner(tokenValue));
+  }
+
+  private async downloadInner(tokenValue: unknown): Promise<MicropythonDownloadResult> {
+    const token = typeof tokenValue === "string" ? tokenValue.trim() : "";
+    const authorization = token ? this.authorizations.get(token) : undefined;
+    if (!authorization) throw new Error("保存授权无效或已使用，请重新点击下载并选择保存位置");
+    // A stale authorization is discarded rather than being allowed to run in the new context.
+    if (authorization.generation !== this.generation || authorization.workspace !== this.workspaceRoot()) {
+      this.authorizations.delete(token);
+      throw new Error("工程或面板已变化，保存授权已失效；请重新点击下载并选择保存位置");
+    }
+    // Single use: consumed before spawning, so the same token cannot start a second mpremote.
+    this.authorizations.delete(token);
+    const { port, remote, target } = authorization;
     const controller = this.begin();
     let directory = "";
     try {
@@ -183,20 +253,19 @@ export class MicropythonFilesService {
         if (result.code !== 0) throw new Error("从设备下载失败（" + remote + "）· " + failureText(result));
         const stat = await fs.stat(temporary).catch(() => null);
         if (!stat?.isFile()) throw new Error("mpremote 报告成功，但没有生成本地文件；未写入目标位置");
-        // A cancel that arrives before delivery starts leaves no target at all.
-        if (controller.signal.aborted) throw cancelled();
+        // Handoff check after the child exited and before the user's file is touched: a cancel or a
+        // context change that happened while mpremote ran must leave the destination untouched.
+        if (controller.signal.aborted || this.generation !== authorization.generation || this.workspaceRoot() !== authorization.workspace) throw cancelled();
         // Delivered by an exclusive copy so an existing local file is never overwritten.
-        try { await fs.copyFile(temporary, resolved, fs.constants.COPYFILE_EXCL); }
+        try { await fs.copyFile(temporary, target, fs.constants.COPYFILE_EXCL); }
         catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("目标文件已存在，未覆盖：" + resolved + "。请选择新的文件名。");
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("目标文件已存在，未覆盖：" + target + "。请选择新的文件名。");
           throw error;
         }
-        // The issued path is consumed only after a successful delivery, so a failed retry can reuse it.
-        this.issued.delete(resolved);
         // The copy is the commit point and cannot be rolled back reliably: report the real outcome
         // instead of letting a late cancel look like a success or like nothing was written.
-        if (controller.signal.aborted) throw new Error("已取消，但复制已提交，文件已写入：" + resolved + "（未回滚）。");
-        return { target: resolved, size: stat.size };
+        if (controller.signal.aborted) throw new Error("已取消，但复制已提交，文件已写入：" + target + "（未回滚）。");
+        return { target, size: stat.size };
       });
     } finally {
       this.end(controller);
@@ -213,15 +282,25 @@ export class MicropythonFilesService {
     return true;
   }
 
+  /**
+   * Retires every reply that belongs to the previous panel/project/window and cancels the running
+   * operation. The abort settles on the child's exit, which is also when its temp directory is removed.
+   */
+  async invalidate(): Promise<void> {
+    this.generation++;
+    this.authorizations.clear();
+    this.cancel();
+  }
+
   /** Kills any in-flight mpremote process and removes every temp directory this service created. */
   async dispose() {
-    this.cancel();
+    await this.invalidate();
     // Wait for a killed transfer to release its files before the temp directories are removed.
     await Promise.allSettled([...this.running]);
     for (const directory of [...this.temporary]) {
       this.temporary.delete(directory);
       await fs.rm(directory, { recursive: true, force: true }).catch(() => {});
     }
-    this.issued.clear();
+    this.authorizations.clear();
   }
 }

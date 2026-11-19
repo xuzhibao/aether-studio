@@ -22,9 +22,10 @@ const api: DesktopAPI = {
   },
   micropython: {
     list: (port, path) => ipcRenderer.invoke("micropython:files:list", port, path),
-    chooseDownloadPath: (suggestedName) => ipcRenderer.invoke("micropython:files:chooseDownloadPath", suggestedName),
-    download: (port, path, target) => ipcRenderer.invoke("micropython:files:download", port, path, target),
+    chooseDownloadPath: (port, path, suggestedName) => ipcRenderer.invoke("micropython:files:chooseDownloadPath", port, path, suggestedName),
+    download: (token) => ipcRenderer.invoke("micropython:files:download", token),
     cancel: () => ipcRenderer.invoke("micropython:files:cancel"),
+    invalidate: () => ipcRenderer.invoke("micropython:files:invalidate"),
   },
   runtime: "electron", window: (action) => ipcRenderer.invoke("window:action", action),
   files: { export: (name, content) => ipcRenderer.invoke("files:export", name, content), import: () => ipcRenderer.invoke("files:import") },

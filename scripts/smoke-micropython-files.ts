@@ -6,22 +6,32 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { ToolService } from "../desktop/tools";
 import { acquirePort, releasePort } from "../desktop/portLease";
-import { MicropythonFilesService, parseMicropythonListing } from "../desktop/plugins/micropythonFiles";
+import { MicropythonFilesService, micropythonSuggestedName, parseMicropythonListing } from "../desktop/plugins/micropythonFiles";
 import { micropythonTool } from "../desktop/plugins/micropython";
 import {
   micropythonDownloadArgs, micropythonListArgs, micropythonRemotePath, micropythonChildPath, micropythonEntryName,
 } from "../shared/micropython";
 
 // Read-only board file browsing: parser boundaries (spaces, Chinese, empty directory, junk output),
-// exact argv, shared port lease, cancellation and cleanup. The fake CLI never opens a serial port.
+// exact argv, host-issued single-use picker authorizations, scope/generation checks, the shared port
+// lease, cancellation and cleanup. The fake CLI never opens a serial port.
 const root = await fs.mkdtemp(path.join(os.tmpdir(), "aether-micropython-files-"));
 const fake = path.resolve("scripts/fixtures/fake-mpremote.py");
 const logPath = path.join(root, "fake-mpremote-calls.log");
 const tools = new ToolService(() => path.join(root, "tools.json"));
 const service = new MicropythonFilesService(tools);
+let scoped: MicropythonFilesService | undefined;
 const downloads = () => fs.readdir(os.tmpdir()).then((names) => names.filter((name) => name.startsWith("aether-micropython-download-"))) ;
 const calls = async () => (await fs.readFile(logPath, "utf8").catch(() => "")).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+const cpCalls = async () => (await calls()).filter((entry) => !entry.version && entry.fs === "cp").length;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const clearEnv = () => { for (const key of ["AETHER_FAKE_MPREMOTE_LOG", "AETHER_FAKE_MPREMOTE_FS_MODE", "AETHER_FAKE_MPREMOTE_FS_MODE_FILE"]) delete process.env[key]; };
+/** Opens the fake save dialog for one entry and returns the token; fails the smoke if no token was issued. */
+const chooseTarget = async (target: string | null, remote = "/main.py", port = "COM_TEST", name = "main.py") => {
+  const choice = await service.choose(port, remote, name, async () => target);
+  if (choice.status !== "chosen") throw new Error("expected a picker authorization, got " + JSON.stringify(choice));
+  return choice.token;
+};
 
 try {
   // ---- parser: exact mpremote 1.29.0 format, spaces, Chinese, empty directory ----
@@ -58,6 +68,8 @@ try {
   assert.equal(micropythonChildPath("/", "lib"), "/lib");
   for (const value of ["", "a/b", "a\\b", "..", ".", "x\ny"]) assert.throws(() => micropythonEntryName(value), /条目/);
   assert.throws(() => micropythonListArgs("auto", "/"), /不能使用 auto 或 list/);
+  assert.equal(micropythonSuggestedName("a/b.txt"), "device-file.bin", "a suggested name may not carry a path");
+  assert.equal(micropythonSuggestedName("x".repeat(300)).length, 120, "the suggested name is bounded");
   console.log("PASS micropython files: absolute POSIX path and single-segment name validation, fixed argv");
 
   // ---- tool status through the shared ToolService, including --version ----
@@ -85,10 +97,15 @@ try {
   assert.equal(listCalls.filter((entry) => !entry.version).every((entry) => entry.fs === "ls"), true);
   console.log("PASS micropython files: root/subdirectory/empty-directory listings use plain resume fs ls argv");
 
-  // ---- download succeeds into a host-issued target and leaves no temp directory ----
+  // ---- the picker returns only an opaque token, never a local path; the host stages the target ----
+  let suggested = "";
   const target = path.join(root, "记录 copy.txt");
-  service.issueTarget(target);
-  const downloaded = await service.download("COM_TEST", "/数据 记录.txt", target);
+  const chosen = await service.choose("COM_TEST", "/数据 记录.txt", "数据 记录.txt", async (name) => { suggested = name; return target; });
+  assert.deepEqual(Object.keys(chosen).sort(), ["status", "token"], "the renderer must not receive a local path");
+  if (chosen.status !== "chosen") throw new Error("expected a chosen authorization: " + JSON.stringify(chosen));
+  assert.match(chosen.token, /^[0-9a-f]{64}$/, "the authorization is an opaque random token");
+  assert.equal(suggested, "数据 记录.txt", "the entry name is only a dialog suggestion");
+  const downloaded = await service.download(chosen.token);
   assert.equal(downloaded.target, path.resolve(target));
   assert.equal(downloaded.size, 35);
   assert.equal(await fs.readFile(target, "utf8"), "temperature,pressure\r\n21.5,1013.2\r\n", "the downloaded bytes match the fake device file");
@@ -97,22 +114,37 @@ try {
   assert.ok(downloadCall.argv[5] === ":/数据 记录.txt", "the remote side is a single argv entry");
   assert.ok(!downloadCall.argv[6].includes("记录 copy"), "the device process writes into the private temp file, not the user target");
   assert.deepEqual(await downloads(), startDownloads, "a successful download removes its private temp directory");
-  console.log("PASS micropython files: download delivers the device bytes only after success and cleans its temp file");
+  // Single use: replaying the token cannot start a second mpremote or write again.
+  const cpAfterSuccess = await cpCalls();
+  await assert.rejects(() => service.download(chosen.token), /授权无效或已使用/);
+  assert.equal(await cpCalls(), cpAfterSuccess, "a replayed token starts no mpremote process");
+  console.log("PASS micropython files: a single-use opaque token delivers the device bytes only after success");
 
-  // ---- an existing file is never overwritten, and a forged target is refused ----
+  // ---- arbitrary/forged destinations are impossible: only a host-issued token is accepted ----
+  await assert.rejects(() => service.download("0".repeat(64)), /授权无效/);
+  await assert.rejects(() => service.download(path.join(root, "forged.bin")), /授权无效/, "a renderer-supplied local path is not a token");
+  let dialogs = 0;
+  const invalidPort = await service.choose("auto", "/main.py", "main.py", async () => { dialogs++; return null; });
+  if (invalidPort.status !== "failed") throw new Error("an invalid port must be refused: " + JSON.stringify(invalidPort));
+  assert.match(invalidPort.error, /不能使用 auto 或 list/, "an invalid port is refused before the dialog opens");
+  const invalidPath = await service.choose("COM_TEST", "/lib/../etc", "main.py", async () => { dialogs++; return null; });
+  assert.equal(invalidPath.status, "failed");
+  assert.equal(dialogs, 0, "invalid scope never opens a save dialog");
+  console.log("PASS micropython files: forged tokens and invalid scopes are refused; a local path never selects a target");
+
+  // ---- an existing file is never overwritten ----
   const keep = path.join(root, "keep.txt");
   await fs.writeFile(keep, "KEEP");
-  service.issueTarget(keep);
-  await assert.rejects(() => service.download("COM_TEST", "/main.py", keep), /目标文件已存在，未覆盖/);
+  const keepToken = await chooseTarget(keep);
+  await assert.rejects(() => service.download(keepToken), /目标文件已存在，未覆盖/);
   assert.equal(await fs.readFile(keep, "utf8"), "KEEP");
-  await assert.rejects(() => service.download("COM_TEST", "/main.py", path.join(root, "forged.bin")), /保存对话框/);
-  console.log("PASS micropython files: an existing local file and an unissued path are both refused");
+  console.log("PASS micropython files: an existing local file is refused, not overwritten");
 
   // ---- a device-side failure creates no target and removes the temp directory ----
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "fail";
   const broken = path.join(root, "broken.bin");
-  service.issueTarget(broken);
-  await assert.rejects(() => service.download("COM_TEST", "/main.py", broken), /退出码 5/);
+  const brokenToken = await chooseTarget(broken);
+  await assert.rejects(() => service.download(brokenToken), /退出码 5/);
   assert.equal(await fs.stat(broken).catch(() => null), null, "a failed transfer writes nothing");
   assert.deepEqual(await downloads(), startDownloads, "a failed transfer removes its temp directory");
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
@@ -121,17 +153,17 @@ try {
   // ---- cancellation aborts the process, cleans temp and releases the port ----
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "slow";
   const cancelledTarget = path.join(root, "cancelled.bin");
-  service.issueTarget(cancelledTarget);
-  const cpBefore = (await calls()).filter((entry) => entry.fs === "cp").length;
-  const pending = service.download("COM_TEST", "/main.py", cancelledTarget);
-  for (let n = 0; n < 100 && (await calls()).filter((entry) => entry.fs === "cp").length <= cpBefore; n++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const cancelledToken = await chooseTarget(cancelledTarget);
+  const cpBefore = await cpCalls();
+  const pending = service.download(cancelledToken);
+  for (let n = 0; n < 100 && (await cpCalls()) <= cpBefore; n++) await sleep(100);
   assert.equal(service.cancel(), true, "cancel aborts the in-flight operation");
   await assert.rejects(pending, /操作已取消/);
   assert.equal(await fs.stat(cancelledTarget).catch(() => null), null);
   assert.deepEqual(await downloads(), startDownloads, "cancellation removes its temp directory");
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
   // The process is really gone before the promise settles: nothing is written late and the port is free.
-  await new Promise((resolve) => setTimeout(resolve, 1300));
+  await sleep(1300);
   assert.equal(await fs.stat(cancelledTarget).catch(() => null), null, "a cancelled transfer never writes its target later");
   assert.deepEqual(await downloads(), startDownloads, "a cancelled transfer creates no temp directory later");
   assert.doesNotThrow(() => { acquirePort("COM_TEST", "monitor"); releasePort("COM_TEST"); }, "cancellation releases the shared port lease");
@@ -141,11 +173,76 @@ try {
   // ---- the shared port lease blocks a second reader and is held through the operation ----
   acquirePort("COM_TEST", "task");
   await assert.rejects(() => service.list("COM_TEST", "/"), /占用/);
+  const busyTarget = path.join(root, "busy.bin");
+  const busyToken = await chooseTarget(busyTarget);
+  await assert.rejects(() => service.download(busyToken), /占用/, "a busy port refuses the download before any file is touched");
+  assert.equal(await fs.stat(busyTarget).catch(() => null), null);
   releasePort("COM_TEST");
   const first = service.list("COM_TEST", "/");
   await assert.rejects(() => service.list("COM_TEST", "/lib"), /已有正在读取设备文件的操作/);
   await first;
   console.log("PASS micropython files: the shared port lease and one-operation-at-a-time rule hold");
+
+  // ---- one picker at a time: a duplicate click never opens a second dialog ----
+  let releaseFirst: (value: string | null) => void = () => {};
+  const firstPick = new Promise<string | null>((resolve) => { releaseFirst = resolve; });
+  const firstChoice = service.choose("COM_TEST", "/main.py", "main.py", () => firstPick);
+  let secondDialogs = 0;
+  const secondChoice = await service.choose("COM_TEST", "/main.py", "main.py", async () => { secondDialogs++; return path.join(root, "second.bin"); });
+  assert.equal(secondDialogs, 0, "the duplicate click must not open a second save dialog");
+  if (secondChoice.status !== "failed") throw new Error("the duplicate picker attempt must be refused: " + JSON.stringify(secondChoice));
+  assert.match(secondChoice.error, /保存对话框正在打开/);
+  releaseFirst(null);
+  assert.deepEqual(await firstChoice, { status: "cancelled", reason: "picker" }, "the dialog cancel is reported as such");
+  // cancel then retry: a cancelled picker leaves nothing behind and a new picker works normally.
+  const retryTarget = path.join(root, "retry.txt");
+  const retryToken = await chooseTarget(retryTarget);
+  const retryResult = await service.download(retryToken);
+  assert.equal(await fs.readFile(retryTarget, "utf8"), "print('hello from the fake board')\n", "the retried download writes the fake main.py bytes");
+  assert.equal(retryResult.size, Buffer.byteLength("print('hello from the fake board')\n", "utf8"));
+  assert.equal(await fs.stat(retryTarget).then((stat) => stat.isFile()), true);
+  console.log("PASS micropython files: duplicate picker attempts are refused; cancelling a dialog is distinct from failure and retry works");
+
+  // ---- a picker reply that arrives after invalidation starts no mpremote and writes nothing ----
+  const staleTarget = path.join(root, "stale.bin");
+  let releaseStale: (value: string | null) => void = () => {};
+  const stalePick = new Promise<string | null>((resolve) => { releaseStale = resolve; });
+  const staleChoice = service.choose("COM_TEST", "/main.py", "main.py", () => stalePick);
+  const cpBeforeStale = await cpCalls();
+  await service.invalidate();
+  releaseStale(staleTarget);
+  assert.deepEqual(await staleChoice, { status: "cancelled", reason: "invalidated" }, "an invalidated picker reply must not authorize a download");
+  await sleep(300);
+  assert.equal(await cpCalls(), cpBeforeStale, "an invalidated picker reply never starts mpremote");
+  assert.equal(await fs.stat(staleTarget).catch(() => null), null, "an invalidated picker reply writes no file");
+  console.log("PASS micropython files: a stale picker reply after invalidation starts no process and publishes nothing");
+
+  // ---- a workspace switch retires an authorization issued for the previous workspace ----
+  let workspace: string | null = "C:/work/before";
+  scoped = new MicropythonFilesService(tools, { workspaceRoot: () => workspace });
+  const scopeTarget = path.join(root, "scope.bin");
+  const scopedChoice = await scoped.choose("COM_TEST", "/main.py", "main.py", async () => scopeTarget);
+  if (scopedChoice.status !== "chosen") throw new Error("expected a scoped authorization");
+  workspace = "C:/work/after";
+  await assert.rejects(() => scoped.download(scopedChoice.token), /工程或面板已变化，保存授权已失效/);
+  assert.equal(await fs.stat(scopeTarget).catch(() => null), null);
+  // The picker itself is also checked against the workspace captured before the dialog opened.
+  let releaseScoped: (value: string | null) => void = () => {};
+  const scopedPick = new Promise<string | null>((resolve) => { releaseScoped = resolve; });
+  const scopedPending = scoped.choose("COM_TEST", "/main.py", "main.py", () => scopedPick);
+  workspace = "C:/work/other";
+  releaseScoped(scopeTarget);
+  assert.deepEqual(await scopedPending, { status: "cancelled", reason: "invalidated" }, "a workspace switch during the dialog retires the reply");
+  await scoped.dispose();
+  scoped = undefined;
+  console.log("PASS micropython files: a workspace switch retires picker replies and issued authorizations");
+
+  // ---- outstanding authorizations are bounded; the oldest one is evicted ----
+  const tokens: string[] = [];
+  for (let n = 0; n < 5; n++) tokens.push(await chooseTarget(path.join(root, "bounded-" + n + ".bin")));
+  await assert.rejects(() => service.download(tokens[0]), /授权无效/, "the oldest outstanding authorization is evicted");
+  assert.equal((await service.download(tokens[4])).size, Buffer.byteLength("print('hello from the fake board')\n", "utf8"), "the newest authorization still works");
+  console.log("PASS micropython files: outstanding picker authorizations are bounded to a small fixed number");
 
   // ---- abnormal output is reported, not displayed ----
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "garbage";
@@ -166,9 +263,10 @@ try {
   const shortService = new MicropythonFilesService(tools, { downloadTimeoutMs: 600 });
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "slow";
   const timeoutTarget = path.join(root, "timeout.bin");
-  shortService.issueTarget(timeoutTarget);
-  await assert.rejects(() => shortService.download("COM_TEST", "/main.py", timeoutTarget), /超时/);
-  await new Promise((resolve) => setTimeout(resolve, 1800));
+  const timeoutChoice = await shortService.choose("COM_TEST", "/main.py", "main.py", async () => timeoutTarget);
+  if (timeoutChoice.status !== "chosen") throw new Error("expected a timeout Test authorization");
+  await assert.rejects(() => shortService.download(timeoutChoice.token), /超时/);
+  await sleep(1800);
   assert.equal(await fs.stat(timeoutTarget).catch(() => null), null, "a timed-out transfer never writes its target later");
   assert.deepEqual(await downloads(), startDownloads, "a timed-out transfer creates no temp directory later");
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "ok";
@@ -180,9 +278,9 @@ try {
   // ---- dispose cleans a temp directory left behind by an interrupted transfer ----
   process.env.AETHER_FAKE_MPREMOTE_FS_MODE = "slow";
   const orphanTarget = path.join(root, "orphan.bin");
-  service.issueTarget(orphanTarget);
-  const hanging = service.download("COM_TEST", "/main.py", orphanTarget);
-  for (let n = 0; n < 100 && (await downloads()).length === startDownloads.length; n++) await new Promise((resolve) => setTimeout(resolve, 100));
+  const orphanToken = await chooseTarget(orphanTarget);
+  const hanging = service.download(orphanToken);
+  for (let n = 0; n < 100 && (await downloads()).length === startDownloads.length; n++) await sleep(100);
   assert.ok((await downloads()).length > startDownloads.length, "the slow transfer has a temp directory");
   await service.dispose();
   await assert.rejects(hanging, /操作已取消/);
@@ -211,6 +309,7 @@ try {
   }
 } finally {
   clearEnv();
+  await scoped?.dispose().catch(() => {});
   await service.dispose().catch(() => {});
   await fs.rm(root, { recursive: true, force: true });
 }

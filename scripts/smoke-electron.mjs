@@ -217,6 +217,22 @@ try {
   await page.getByRole('button', { name: '重新读取（放弃未保存修改）', exact: true }).click();
   await page.getByRole('button', { name: 'Build Tasks', exact: true }).click(); await page.getByRole('button', { name: 'Build with PlatformIO', exact: true }).click();
   await page.locator('[data-task-status="failed"]').waitFor({ timeout: 60000 });
+  // beta.8 compiler diagnostics: a finished failed build lists only positions provable to belong to
+  // a loaded project source file, and a click reuses the normal editor jump. Logs are real GCC output.
+  const failedCard = page.locator('[data-task-provider="platformio.build"]').filter({ has: page.locator('[data-task-status="failed"]') }).first();
+  const diagnostics = failedCard.locator('[data-build-diagnostics]');
+  await diagnostics.waitFor({ timeout: 30000 });
+  const rawLog = await failedCard.locator('pre').innerText();
+  assert.match(rawLog, /src[\\/]main\.cpp:\d+/, 'the raw log must keep the compiler line');
+  const firstDiagnostic = diagnostics.locator('[data-diagnostic-target]').first();
+  await firstDiagnostic.waitFor();
+  const diagnosticTarget = await firstDiagnostic.getAttribute('data-diagnostic-target');
+  const located = /^src\/main\.cpp:(\d+):(\d+)$/.exec(diagnosticTarget ?? '');
+  assert.ok(located, 'the failed build must map its compiler error back to loaded src/main.cpp: ' + diagnosticTarget);
+  await firstDiagnostic.click();
+  await page.locator('.monaco-editor').first().waitFor({ timeout: 30000 });
+  await page.getByText(`Ln ${located[1]}, Col ${located[2]}`, { exact: true }).waitFor({ timeout: 30000 });
+  console.log('PASS Electron: a failed real PlatformIO build offers a clickable compiler location and the click jumps the editor');
   await fs.appendFile(path.join(root, 'platformio.ini'), '\nextra_scripts = pre:slow.py\n');
   await fs.writeFile(path.join(root, 'slow.py'), 'import time\nprint("fixture slow build", flush=True)\ntime.sleep(30)\n');
   await page.getByRole('button', { name: '重新读取（放弃未保存修改）', exact: true }).click();

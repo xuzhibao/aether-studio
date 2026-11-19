@@ -94,12 +94,28 @@ export interface MicropythonListing {
 
 export interface MicropythonDownloadResult { target: string; size: number }
 
+/**
+ * One save-dialog outcome. A chosen dialog issues an opaque, single-use token; the host keeps the port,
+ * the remote absolute path and the local destination, so the renderer never selects a local path.
+ */
+export type MicropythonDownloadChoice =
+  | { status: "chosen"; token: string }
+  /** `picker`: the user cancelled the dialog. `invalidated`: the panel/project/window changed meanwhile. */
+  | { status: "cancelled"; reason: "picker" | "invalidated" }
+  | { status: "failed"; error: string };
+
 /** Read-only device file browsing and single-file download. No write, delete, rename or install call exists. */
 export interface MicropythonFilesAPI {
   list: (port: string, path: string) => Promise<MicropythonListing>;
-  /** Opens the host save dialog; only the path it returns can later be written. */
-  chooseDownloadPath: (suggestedName: string) => Promise<string | null>;
-  download: (port: string, path: string, target: string) => Promise<MicropythonDownloadResult>;
+  /**
+   * Opens the host save dialog for one listed entry. The token it returns is tied to that port, that
+   * remote absolute path, the current workspace and picker generation; it is never a local path.
+   */
+  chooseDownloadPath: (port: string, path: string, suggestedName: string) => Promise<MicropythonDownloadChoice>;
+  /** Downloads with a token from chooseDownloadPath; the token can be used once and only in its context. */
+  download: (token: string) => Promise<MicropythonDownloadResult>;
   /** Aborts the one in-flight list/download (no effect when idle). */
   cancel: () => Promise<boolean>;
+  /** Panel unmount or project change: discard a pending picker reply and cancel the running operation. */
+  invalidate: () => Promise<void>;
 }

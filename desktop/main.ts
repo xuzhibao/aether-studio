@@ -76,7 +76,8 @@ tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => pa
 // mpremote runs one saved project script; it shares the same port lease and task log/cancel path.
 tasks.register(createMicropythonRunProvider(tools, workspace));
 // Read-only on-board file listing and single-file download; it shares the same port lease.
-const micropythonFiles = new MicropythonFilesService(tools);
+// Its picker authorizations are scoped to the workspace root the renderer is currently looking at.
+const micropythonFiles = new MicropythonFilesService(tools, { workspaceRoot: () => workspace.root });
 language.register(createClangdProvider(tools));
 // Flash backup/restore shares the single COM port with the monitor and upload tasks.
 const esptool = createEsptoolRunner(tools);
@@ -180,13 +181,13 @@ function routes() {
   handle("tasks:cancel", (id: string) => tasks.cancel(id));
   // Read-only board files: list one directory, or download one file to a host-chosen new local file.
   handle("micropython:files:list", (port: string, path: string) => micropythonFiles.list(port, path));
-  handle("micropython:files:chooseDownloadPath", async (suggestedName: string) => {
-    const name = typeof suggestedName === "string" && suggestedName && !/[\\/\x00-\x1f]/.test(suggestedName) ? suggestedName : "device-file.bin";
+  handle("micropython:files:chooseDownloadPath", (port: string, remote: string, suggestedName: string) => micropythonFiles.choose(port, remote, suggestedName, async (name) => {
     const result = await dialog.showSaveDialog(window, { title: "保存设备文件", defaultPath: path.join(app.getPath("documents"), name), properties: ["showOverwriteConfirmation", "createDirectory"] });
-    return result.canceled || !result.filePath ? null : micropythonFiles.issueTarget(result.filePath);
-  });
-  handle("micropython:files:download", (port: string, path: string, target: string) => micropythonFiles.download(port, path, target));
+    return result.canceled || !result.filePath ? null : result.filePath;
+  }));
+  handle("micropython:files:download", (token: string) => micropythonFiles.download(token));
   handle("micropython:files:cancel", () => micropythonFiles.cancel());
+  handle("micropython:files:invalidate", () => micropythonFiles.invalidate());
   handle("tasks:environments", (provider: string) => tasks.environments(provider));
   handle("tasks:list", () => tasks.list());
   handle("serial:list", () => serial.list());
@@ -248,7 +249,7 @@ void app.whenReady().then(async () => {
     return net.fetch(pathToFileURL(file).href);
   });
   window = new BrowserWindow({ width: 1728, height: 1080, minWidth: 1180, minHeight: 600, frame: false, backgroundColor: "#F5F6F8", webPreferences: { preload: path.join(directory, "preload.cjs"), contextIsolation: true, sandbox: true, nodeIntegration: false } });
-  window.on("close", (event) => { const hadUnsaved = dirty; if (!confirmClose()) event.preventDefault(); else { if (hadUnsaved) abandoned = true; dirty = false; } });
+  window.on("close", (event) => { const hadUnsaved = dirty; if (!confirmClose()) event.preventDefault(); else { if (hadUnsaved) abandoned = true; dirty = false; void micropythonFiles.invalidate(); } });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
   routes();
