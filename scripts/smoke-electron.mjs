@@ -408,6 +408,9 @@ try {
     assert.match(endedText, /\] -- 连接已断开/);
     assert.match(endedText, /\] RX PTY fixture RX: acknowledgement/);
     console.log('PASS Electron serial log: cancel, no overwrite, pending-picker invalidation and ended-session export');
+    // The WebSocket half below continues from the Devices dialog.
+    await page.getByRole('button', { name: 'Manage connection', exact: true }).click();
+    await dialog.getByRole('combobox', { name: '通信插件', exact: true }).waitFor();
   }
   peer = await startWebSocketPeer();
   await dialog.getByRole('combobox', { name: '通信插件', exact: true }).selectOption('websocket'); await dialog.getByRole('textbox', { name: 'WebSocket URL', exact: true }).fill(peer.url); await dialog.getByRole('button', { name: '建立连接', exact: true }).click(); await dialog.getByText(/^已连接 ws:/).waitFor();
