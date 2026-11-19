@@ -1,0 +1,3 @@
+.pio/
+sdkconfig.esp32c3-qemu-uart0
+sdkconfig.old

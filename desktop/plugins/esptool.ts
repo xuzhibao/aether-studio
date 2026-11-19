@@ -44,13 +44,31 @@ export function platformioCoreDir(tool?: ToolService): string {
   return path.join(os.homedir(), ".platformio");
 }
 
-/** The interpreter that should run a .py esptool: PlatformIO's own venv first, then PATH. */
+/** PlatformIO's Python interpreter next to a CLI inside a penv/ directory. */
+function pythonForCli(cli: string) {
+  if (!/[\\/]penv[\\/]/i.test(cli)) return "";
+  const directory = path.dirname(cli);
+  const candidate = process.platform === "win32" ? path.join(directory, "python.exe") : path.join(directory, "python3");
+  return existsSync(candidate) ? candidate : "";
+}
+
 export function findPythonFor(esptoolPath: string) {
   const directory = path.dirname(path.resolve(esptoolPath));
   const bundled = process.platform === "win32"
     ? path.resolve(directory, "..", "..", "penv", "Scripts", "python.exe")
     : path.resolve(directory, "..", "..", "penv", "bin", "python3");
-  if (existsSync(bundled)) return bundled;
+  // A custom PLATFORMIO_CORE_DIR may hold only platforms/packages and no penv. In that order, the
+  // PlatformIO installation the user configured, then the default home core, still give a Python
+  // that has pyserial; a bare system Python usually does not.
+  const candidates = [
+    bundled,
+    process.env.AETHER_ESPTOOL_PYTHON?.trim() ?? "",
+    pythonForCli(process.env.AETHER_PLATFORMIO_CLI?.trim() ?? ""),
+    process.platform === "win32"
+      ? path.join(os.homedir(), ".platformio", "penv", "Scripts", "python.exe")
+      : path.join(os.homedir(), ".platformio", "penv", "bin", "python3"),
+  ];
+  for (const candidate of candidates) if (candidate && existsSync(candidate)) return candidate;
   const configured = process.env.AETHER_ESPTOOL_PYTHON?.trim();
   if (configured) return configured;
   for (const name of pythonNames) { const found = findOnPath(name); if (found) return found; }

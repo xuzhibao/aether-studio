@@ -42,8 +42,8 @@ console.log("PASS registry: lifecycle, cleanup, duplicate IDs, dependency cycle,
 const { useStudio } = await import("../src/store/studio");
 const { plugins } = await import("../src/plugins/runtime");
 const state = () => useStudio.getState();
-assert.equal(plugins.list().length, 16);
-assert.equal(plugins.list().filter((p) => p.enabled).length, 16);
+assert.equal(plugins.list().length, 17);
+assert.equal(plugins.list().filter((p) => p.enabled).length, 17);
 assert.ok(plugins.get("devices", "esp32"), "the ESP device plugin contributes the read-only device capability");
 assert.ok(plugins.get("panels", "esp.device"));
 assert.ok(plugins.all("templates").some((template) => template.id === "ESP32-C3 C++"), "the native USB CDC C3 template is registered");

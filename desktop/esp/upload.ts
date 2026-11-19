@@ -4,6 +4,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { checkUploadAgainstPlan, evaluatePreflight, type EspPlannedSegment, type EspPreflightResult } from "../../shared/esp";
 import { findEsptool, runEsptool, type EsptoolTool } from "./esptool";
+import { bindDeployExpectation, deploymentPlanDigest, enforceSimulationGate, type EspSimulationGate } from "./deployGate";
+import { reverifyAppOnlyTarget, verifyAppOnlyTarget, type EspAppOnlyTarget } from "./appOnly";
 import { readDeviceFacts } from "./inspect";
 import { readEspProject, type EspProjectFacts } from "./project";
 import { applyBuildRecord, buildPreflightInput } from "./preflight";
@@ -129,6 +131,18 @@ export interface EspUploadProviderOptions {
   journalRoot: () => string;
   /** Private input snapshots live here; defaults to the OS temp directory. Tests inject a directory. */
   snapshotRoot?: () => string;
+  /**
+   * Optional host-trusted simulation gate. Only host code can supply it (main.ts), and it is evaluated
+   * after the private snapshot exists and before esptool starts. Without this option the deploy keeps
+   * its previous behaviour exactly; a refused gate throws, so flash receives zero bytes.
+   */
+  simulation?: EspSimulationGate;
+  /**
+   * Host-only write-mode selector. "app-only" is the Firmware Verification path: exactly one app
+   * segment into the proven active OTA slot. Any other value keeps the existing full plan, and the
+   * renderer has no option that can select it.
+   */
+  writeMode?: () => "full" | "app-only" | Promise<"full" | "app-only">;
 }
 
 export function createEspUploadProvider(tools: ToolService, workspace: WorkspaceService, options: EspUploadProviderOptions): TaskProvider {
@@ -169,13 +183,32 @@ export function createEspUploadProvider(tools: ToolService, workspace: Workspace
       const blocks = result.findings.filter((finding) => finding.severity === "block");
       if (blocks.length) throw new Error("部署前核对未通过，未写入任何数据：\n" + blocks.map((finding) => "- " + finding.title + "：" + finding.next).join("\n"));
 
-      // 3. Journal the head sectors the write will erase (a short, verified read); fail closed otherwise.
-      const ranges = writeRanges(result.segments.filter((segment) => segment.name !== "app"));
+      // 2b. Host-selected write mode. app-only writes exactly one app segment into the OTA slot the
+      // on-device bootloader will really boot. The full preflight above already passed without any
+      // bypass; this step adds live identity checks and narrows what is written.
+      const writeMode = options.writeMode ? await options.writeMode() : "full";
+      if (writeMode !== "full" && writeMode !== "app-only") throw new Error("未知写入模式：" + String(writeMode));
+      const appOnly = writeMode === "app-only";
+      let planSegments = result.segments;
+      let appOnlyTarget: EspAppOnlyTarget | null = null;
+
+      // 3. Journal the sectors the write will erase (a short, verified read); fail closed otherwise.
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       const directory = path.join(options.journalRoot(), "write-" + port.replace(/[^A-Za-z0-9]+/g, "") + "-" + stamp);
       // A journal inside the project would change its fingerprint and could be committed by mistake.
       const relative = path.relative(path.resolve(root), path.resolve(directory));
       if (!relative.startsWith("..") && !path.isAbsolute(relative)) throw new Error("写前快照目录不能位于工程目录内：" + directory);
+      if (appOnly) {
+        // The identity reads need the scratch directory before the journal snapshot is taken.
+        await fs.mkdir(directory, { recursive: true });
+        const appSegments = result.segments.filter((segment) => segment.name === "app");
+        if (appSegments.length !== 1) throw new Error("app-only 计划必须恰好包含一个 app 段（" + appSegments.length + "）。未写入任何数据。");
+        appOnlyTarget = await verifyAppOnlyTarget({ tool, port, directory, signal, device, project: facts, appOffset: appSegments[0].offset, appSize: appSegments[0].size, appSha256: appSegments[0].sha256 });
+        planSegments = [appSegments[0]];
+        log("[aether] app-only 计划：槽 " + appOnlyTarget.partition.label + "@" + hex(appOnlyTarget.partition.offset) + "，擦除 " + hex(appOnlyTarget.erase.offset) + "+" + hex(appOnlyTarget.erase.size) + "，OTA seq=" + appOnlyTarget.otadata.activeSeq + "，bootloader IDF " + appOnlyTarget.bootloaderVersion.raw + "，app IDF " + appOnlyTarget.appIdfVersion.raw);
+      }
+      const ranges = appOnly ? writeRanges(planSegments) : writeRanges(result.segments.filter((segment) => segment.name !== "app"));
+      if (appOnlyTarget && (ranges.length !== 1 || ranges[0].offset !== appOnlyTarget.erase.offset || ranges[0].size !== appOnlyTarget.erase.size)) throw new Error("app-only 擦除范围与已核对目标不一致。未写入任何数据。");
       const journal: EspWriteJournal = {
         directory, port, environment, chipName: device.chipName, flashSize: device.flashSize,
         ranges: await snapshot(tool, port, ranges, directory, signal, log),
@@ -190,13 +223,41 @@ export function createEspUploadProvider(tools: ToolService, workspace: Workspace
       try {
         const relativeInputs = path.relative(path.resolve(root), path.resolve(inputDirectory));
         if (!relativeInputs.startsWith("..") && !path.isAbsolute(relativeInputs)) throw new Error("私有写入快照目录不能位于工程目录内：" + inputDirectory);
-        const inputFiles = await materializeInputSnapshot(facts, result.segments, inputDirectory, log);
-        await fs.writeFile(path.join(directory, "journal.json"), JSON.stringify({ ...journal, inputs: inputFiles, preflight: result }, null, 2));
-        plannedSegments = result.segments;
+        const inputFiles = await materializeInputSnapshot(facts, planSegments, inputDirectory, log);
+        // 4. Optional host gate: the exact app bytes esptool will write must be the ones that passed
+        // simulation. It runs while the port lease is held and before any process exists, so a refusal
+        // cancels the task with zero flash writes; the private snapshots are discarded by afterRun().
+        let simulation: { appSha256: string; planSha256: string; source: string; recordedAt: string } | null = null;
+        if (options.simulation) {
+          const accepted = await enforceSimulationGate(options.simulation, async () => {
+            const inputHash = await workspace.fingerprint().catch(() => "");
+            return bindDeployExpectation({ port, environment, inputHash, segments: planSegments, snapshots: inputFiles });
+          }, log);
+          if (accepted) simulation = {
+            appSha256: accepted.appSha256.toLowerCase(),
+            planSha256: deploymentPlanDigest(port, environment, planSegments),
+            source: accepted.source, recordedAt: accepted.recordedAt,
+          };
+        }
+        if (appOnly && !simulation) throw new Error("app-only 模式要求宿主签发的同镜像凭据，当前未提供或未生效。未写入任何数据。");
+        if (appOnly && appOnlyTarget) {
+          const appFile = inputFiles.find((file) => file.name === path.basename(planSegments[0].file));
+          if (!appFile) throw new Error("app-only 私有快照缺失。未写入任何数据。");
+          await reverifyAppOnlyTarget({ tool, port, directory, signal, target: appOnlyTarget, appFile: appFile.file });
+        }
+        const appOnlyRecord = appOnlyTarget ? {
+          mode: "app-only" as const,
+          target: { label: appOnlyTarget.partition.label, offset: appOnlyTarget.appOffset, size: appOnlyTarget.appSize, erase: appOnlyTarget.erase },
+          otadata: { activeIndex: appOnlyTarget.otadata.activeIndex, activeSeq: appOnlyTarget.otadata.activeSeq, activeSlot: appOnlyTarget.otadata.activeSlot, activeState: appOnlyTarget.otadata.activeState },
+          bootloader: appOnlyTarget.bootloaderVersion.raw, appIdf: appOnlyTarget.appIdfVersion.raw,
+          findings: appOnlyTarget.findings,
+        } : null;
+        await fs.writeFile(path.join(directory, "journal.json"), JSON.stringify({ ...journal, inputs: inputFiles, preflight: result, ...(appOnlyRecord ? { appOnly: appOnlyRecord } : {}) }, null, 2));
+        plannedSegments = planSegments;
         return {
           executable: tool.executable,
-          args: [...tool.prefix, ...esptoolUploadArgs(facts, port, result.segments, inputFiles)],
-          metadata: { espPreflight: result, journal, inputSnapshot: { directory: inputDirectory, files: inputFiles } },
+          args: [...tool.prefix, ...esptoolUploadArgs(facts, port, planSegments, inputFiles)],
+          metadata: { espPreflight: result, journal, inputSnapshot: { directory: inputDirectory, files: inputFiles }, ...(simulation ? { simulation } : {}), ...(appOnlyRecord ? { appOnly: appOnlyRecord } : {}) },
         };
       } catch (error) {
         await discardInputs().catch(() => {});

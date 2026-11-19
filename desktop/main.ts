@@ -19,6 +19,8 @@ import { preflightEspUpload } from "./esp/preflight";
 import { createEspUploadProvider } from "./esp/upload";
 import { FlashService } from "./flash";
 import { createEsptoolRunner } from "./plugins/esptool";
+import { qemuEsp32c3Tool } from "./simulator/qemu";
+import { FirmwareVerificationService } from "./simulator/verification";
 import { createMicropythonRunProvider } from "./plugins/micropython";
 import { MicropythonFilesService } from "./plugins/micropythonFiles";
 import { deviceLease, type DeviceLeaseToken } from "./deviceLock";
@@ -70,10 +72,30 @@ const tools = new ToolService(() => path.join(app.getPath("userData"), "tools.js
 });
 // esptool is a shared tool identity: the ESP plugin, the preflight and the backup all use it.
 tools.define(ESPTOOL_TOOL);
+// Espressif QEMU is a host tool identity: the path comes from settings, an environment variable or PATH.
+tools.define(qemuEsp32c3Tool);
 const platformio = createPlatformioPlugins(tools);
 tasks.register(platformio.platformioBuild); tasks.register(platformio.platformioUpload); tasks.register(platformio.platformioCompileDatabase);
+// Firmware verification owns the QEMU session and the host evidence record. The deploy provider
+// reads that record; the renderer cannot supply or relax it.
+const verification = new FirmwareVerificationService({
+  tools, workspace, serial, tasks,
+  directory: () => path.join(app.getPath("userData"), "firmware-verification"),
+  trashItem: (target) => shell.trashItem(target),
+  emit: (status) => emit("firmwareVerification:changed", status),
+});
 // ESP uploads are verified and journaled inside the task, while the port lease is held.
-tasks.register(createEspUploadProvider(tools, workspace, { journalRoot: () => path.join(app.getPath("userData"), "esp-journal") }));
+tasks.register(createEspUploadProvider(tools, workspace, {
+  journalRoot: () => path.join(app.getPath("userData"), "esp-journal"),
+  // The gate is host-owned: `required` is true only after the panel armed a verified target.
+  simulation: {
+    required: () => verification.isArmed(),
+    evidence: async () => verification.gateEvidence(),
+    verify: (evidence, expected) => verification.verifyGate(evidence, expected),
+  },
+  // app-only is selected by host state only; a renderer task option cannot choose it.
+  writeMode: () => (verification.isArmed() ? "app-only" : "full"),
+}));
 // mpremote runs one saved project script; it shares the same port lease and task log/cancel path.
 tasks.register(createMicropythonRunProvider(tools, workspace));
 // Read-only on-board file listing and single-file download; it shares the same port lease.
@@ -101,7 +123,7 @@ const flash = new FlashService(esptool, {
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { serialLogExport.invalidate(); await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
+const beforeSwitch = async () => { serialLogExport.invalidate(); await verification.dispose(); verification.clear(); await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -173,12 +195,27 @@ function routes() {
     if (!root) throw new Error("请先打开工程目录");
     return preflightEspUpload({ root, environment: options.environment, port: options.port, workspace, tools, platformio: tools.executable("platformio") });
   });
+  // Firmware verification: QEMU run, host evidence, arming and the independent device challenge.
+  handle("firmwareVerification:status", () => verification.status());
+  handle("firmwareVerification:startSimulation", (options: { environment: string; boots?: number; timeoutMs?: number }) => enqueue(() => verification.runSimulation(options)));
+  handle("firmwareVerification:cancel", () => verification.cancel());
+  handle("firmwareVerification:armDeploy", (options: { port: string }) => enqueue(() => verification.armDeploy(options)));
+  handle("firmwareVerification:disarm", () => enqueue(async () => verification.disarm()));
+  handle("firmwareVerification:runDevice", (options: { port: string; transport?: "uart0" | "usb-serial-jtag"; timeoutMs?: number }) => enqueue(() => verification.runDevice(options)));
   handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
     // Invalidate first: a failed snapshot emit must not leave a claimed token with no owner to release it.
     flash.invalidatePlan();
     // Claim synchronously at the IPC entry: the task's own await-heavy start cannot slip past a monitor.
     const token = deviceLease.claim("task");
-    try { return await enqueue(() => tasks.start(provider, options, token)); }
+    // Snapshot the authorization before the task enters the serial queue. An arm that arrives while
+    // this upload is preparing must target the NEXT upload, never change this one mid-flight.
+    const armedBeforeStart = provider === "esp.upload" ? verification.armedDeploy() : null;
+    try {
+      const started = await enqueue(() => tasks.start(provider, options, token));
+      // The app-only authorization is one-shot: consume only the arm this task actually used.
+      if (provider === "esp.upload" && armedBeforeStart) verification.consumeArmed();
+      return started;
+    }
     // The task releases this token when its process really exits; a refusal before spawn frees it here.
     catch (error) { deviceLease.release(token); throw error; }
   });
@@ -243,7 +280,7 @@ app.on("before-quit", (event) => {
     // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
     if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
     serialLogExport.invalidate();
-    await Promise.all([tasks.stopAll(), micropythonFiles.dispose(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+    await Promise.all([verification.dispose(), tasks.stopAll(), micropythonFiles.dispose(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
   }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
