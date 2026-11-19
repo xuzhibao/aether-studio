@@ -16,7 +16,6 @@ export const firmwareVerificationPlugin: StudioPlugin = {
     type: "simulator",
     entry: "builtin/firmwareVerification.tsx",
     enabled: true,
-    dependencies: ["aether.toolchain.platformio", "aether.esp.device"],
     description: "真实 PlatformIO 构建、Espressif QEMU 启动与宿主随机挑战，随后只写活动 OTA 槽中的同一 app 镜像，并以新串口会话完成实机挑战。示例为 ESP32-C3（ESP-IDF 5.4.1）。",
     settings: [{
       key: "qemu.path",
