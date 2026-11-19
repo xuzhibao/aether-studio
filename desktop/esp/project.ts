@@ -105,8 +105,11 @@ export async function readEspProject(root: string, requested: string | undefined
   const environment = requested?.trim() || defaultEnv || envNames[0] || "";
   const section = config.find(([name]) => name === "env:" + environment);
   const platform = option(section, "platform");
-  const platformName = platform.split("@")[0].trim();
-  if (!section || platformName !== "espressif32") return SKIP("工程目标平台不是 espressif32（" + (platform || "未声明") + "）", root, environment);
+  const platformRaw = platform.split("@")[0].trim();
+  // pioarduino publishes current ESP-IDF through a platform URL; it is still the espressif32 target.
+  const isEspressif = platformRaw === "espressif32" || /pioarduino\/platform-espressif32/i.test(platformRaw);
+  const platformName = isEspressif ? "espressif32" : platformRaw;
+  if (!section || !isEspressif) return SKIP("工程目标平台不是 espressif32（" + (platform || "未声明") + "）", root, environment);
 
   const board = option(section, "board");
   const core = platformioCoreDir(tools);
@@ -134,7 +137,9 @@ export async function readEspProject(root: string, requested: string | undefined
     imageFacts(path.join(buildDirectory, "bootloader.bin")),
     partitionFacts(path.join(buildDirectory, "partitions.bin")),
   ]);
-  const bootApp0File = await bootApp0Path(core, buildDirectory);
+  // boot_app0 belongs to the Arduino framework only; an ESP-IDF build must never plan it at 0xE000.
+  const framework = option(section, "framework");
+  const bootApp0File = /arduino/i.test(framework) ? await bootApp0Path(core, buildDirectory) : null;
   const bootApp0 = bootApp0File ? { file: bootApp0File, facts: await imageFacts(bootApp0File) } : null;
   const missing = [...(app.exists ? [] : ["firmware.bin"]), ...(bootloader.exists ? [] : ["bootloader.bin"]), ...(partitions.exists ? [] : ["partitions.bin"])];
 
