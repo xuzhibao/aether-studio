@@ -430,8 +430,10 @@ export class FirmwareVerificationService {
   async releaseHardware(): Promise<boolean> {
     const lease = this.hardwareLease;
     if (!lease) return true;
-    const closed = await this.options.serial.dispose().then(() => true, () => !this.options.serial.isOpen());
-    if (!closed) return false;
+    // Judge the real handle, not the absence of a thrown error: only a session that is actually
+    // gone releases the lease.
+    await this.options.serial.dispose().catch(() => {});
+    if (this.options.serial.isOpen()) return false;
     deviceLease.release(lease);
     this.hardwareLease = null;
     return true;

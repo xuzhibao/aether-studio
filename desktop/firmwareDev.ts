@@ -369,8 +369,12 @@ export class FirmwareDevService {
     await this.options.verification.releaseHardware().catch(() => false);
     const running = this.options.tasks.list().filter((task) => task.status === "running");
     await Promise.all(running.map((task) => this.options.tasks.cancel(task.id).catch(() => {})));
+    // Wait for the step that was really running to settle (bounded), so the reported state is the
+    // settled one: a still-running step keeps its own process/lease truthfully.
+    const deadline = Date.now() + 20_000;
+    while (this.busy && Date.now() < deadline) await wait(200);
     const last = this.steps[this.steps.length - 1];
-    if (last?.status === "running") this.endStep("cancelled", "已请求停止；真实进程/租约结算后阶段不再前进");
+    if (last?.status === "running") this.endStep(this.busy ? "failed" : "cancelled", this.busy ? "取消后 " + this.busy + " 仍未结算；请检查真实进程与端口" : "已停止；真实进程/租约已结算");
     session.active = false;
     this.notify();
     return this.view();
