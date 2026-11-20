@@ -6,7 +6,7 @@ import { assertEnvironmentName } from "../buildInputs";
 import { deviceLease, normalizePort, type DeviceLeaseToken } from "../deviceLock";
 import type { TaskSnapshot } from "../../shared/desktop";
 import { evaluatePreflight } from "../../shared/esp";
-import { FwValSession, type FwValRecord, type FwValTransport } from "../../shared/firmwareValidation";
+import { FwValSession, FwValStabilityMonitor, type FwValRecord, type FwValTransport } from "../../shared/firmwareValidation";
 import { verifyAppOnlyTarget } from "../esp/appOnly";
 import {
   verifyMonitorEvidence,
@@ -113,6 +113,34 @@ export interface HardwareEvidence {
   sessionId: number;
   recordedAt: string;
   record: FwValRecord;
+  reason: string;
+}
+
+/**
+ * Post-write runtime evidence for the automatic firmware task. The challenge, the twenty COUNT
+ * replies and the quiet observation all happen in ONE new session opened after this round's write,
+ * under the same port lease, and are bound to that exact upload task and plan digest.
+ */
+export interface StabilityEvidence {
+  version: 1;
+  id: string;
+  passed: boolean;
+  root: string;
+  port: string;
+  transport: FwValTransport;
+  environment: string;
+  taskId: string;
+  appSha256: string;
+  planSha256: string;
+  sessionId: number;
+  challenge: { token: string; passed: boolean; bound: boolean; reason: string };
+  counts: number[];
+  observeMs: number;
+  observedMs: number;
+  strictlyIncreasing: boolean;
+  restartDetected: boolean;
+  restartMarkers: string[];
+  recordedAt: string;
   reason: string;
 }
 
@@ -395,6 +423,20 @@ export class FirmwareVerificationService {
     return this.simulator.cancel();
   }
 
+  /**
+   * Explicit stop path: close the retained hardware session (if any) and release its lease only once
+   * the close is confirmed. Never frees a port on an unverified assumption.
+   */
+  async releaseHardware(): Promise<boolean> {
+    const lease = this.hardwareLease;
+    if (!lease) return true;
+    const closed = await this.options.serial.dispose().then(() => true, () => !this.options.serial.isOpen());
+    if (!closed) return false;
+    deviceLease.release(lease);
+    this.hardwareLease = null;
+    return true;
+  }
+
   dispose() {
     return this.cancel();
   }
@@ -672,6 +714,168 @@ export class FirmwareVerificationService {
     return clone(evidence);
   }
 
+  /**
+   * The automatic task's post-write step. `runDevice` issues one challenge and closes the session;
+   * this keeps ONE new session open instead: identity, a fresh challenge, twenty counter requests
+   * and then the required quiet window all happen on that same transport under this lease. It is
+   * bound to the exact upload task this round started, so a reused or earlier write cannot satisfy
+   * it, and the port is only described as free when the close was verified.
+   */
+  async runStability(options: {
+    port: string; taskId: string; transport?: FwValTransport; counts?: number; observeMs?: number;
+    signal?: AbortSignal; onProgress?: (message: string) => void;
+  }): Promise<StabilityEvidence> {
+    const root = this.options.workspace.root;
+    if (!root) throw new Error("请先打开工程目录");
+    const port = options.port?.trim();
+    if (!port) throw new Error("请先明确选择实机串口");
+    const taskId = options.taskId?.trim();
+    if (!taskId) throw new Error("缺少本轮上传任务 ID；自动任务不接受按端口猜测的写入记录");
+    const transport: FwValTransport = options.transport ?? "usb-serial-jtag";
+    if (!["uart0", "usb-serial-jtag"].includes(transport)) throw new Error("实机挑战只支持 uart0 或 usb-serial-jtag");
+    const counts = options.counts ?? 20;
+    if (!Number.isInteger(counts) || counts < 20 || counts > 100) throw new Error("COUNT 次数必须是 20–100 的整数");
+    const observeMs = options.observeMs ?? 60_000;
+    if (!Number.isInteger(observeMs) || observeMs < 60_000 || observeMs > MAX_TIMEOUT) throw new Error("稳定观察必须至少 60000 毫秒");
+    const qemu = this.evidence;
+    if (!qemu || !qemu.passed) throw new Error("没有通过的 QEMU 验证记录；实机验证必须与同一镜像的仿真结果对比");
+    if (path.resolve(root) !== path.resolve(qemu.root)) throw new Error("仿真记录属于另一个工程目录");
+    if (this.running) throw new Error("固件验证已在运行，请先取消");
+
+    // The deploy record must be THIS round's upload task, not the newest one on the port.
+    const deploy = this.deployForTask(taskId, port);
+    if (!deploy) throw new Error("本轮上传任务 " + taskId + " 不是该端口的成功 app-only 写入记录；不能绑定实机证据");
+    if (deploy.appSha256.toLowerCase() !== qemu.appSha256.toLowerCase()) throw new Error("本轮写入的 app SHA 与当前 QEMU 证据不一致（写入 " + deploy.appSha256 + "，仿真 " + qemu.appSha256 + "）");
+    if (deploy.environment !== qemu.environment) throw new Error("本轮写入的环境与当前 QEMU 证据不一致（写入 " + deploy.environment + "，仿真 " + qemu.environment + "）");
+    const expectedFwid = qemu.identity.fwid;
+
+    this.running = true;
+    this.cancelled = false;
+    this.error = "";
+    this.notify();
+    const token = freshToken();
+    const runId = "device-" + randomUUID().slice(0, 8);
+    const session = new FwValSession({ runId, transport, expectedFwid });
+    const monitor = new FwValStabilityMonitor({ runId, expectedCounts: counts });
+    let sessionId = 0;
+    let issued = false;
+    let helloSentAt = 0;
+    let helloCount = 0;
+    let lease: DeviceLeaseToken | null = null;
+    let closeVerified = true;
+    const closeSession = async () => {
+      if (!sessionId) return true;
+      // A close that throws is not evidence that the OS handle is gone; retry once, then keep the
+      // lease so the port cannot be described as reusable.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { await this.options.serial.close(sessionId); return true; }
+        catch { await wait(200); }
+      }
+      return false;
+    };
+    const startedAt = Date.now();
+    const progress = (message: string) => { try { options.onProgress?.(message); } catch { /* progress must not break a run */ } };
+    const aborted = () => this.cancelled || options.signal?.aborted === true;
+    try {
+      lease = deviceLease.claim("verification", port);
+      this.hardwareLease = lease;
+      sessionId = await this.options.serial.open(port, DEVICE_BAUD);
+      this.priorSessions.push(sessionId);
+      const send = async (text: string) => { await this.options.serial.write(sessionId, Array.from(Buffer.from(text, "utf8"))); };
+      const sendHello = async () => { await send("HELLO\n"); helloSentAt = Date.now(); helloCount += 1; };
+      await sendHello();
+      const deadline = Date.now() + 30_000;
+      // Phase 1: identity and one fresh challenge in this session.
+      while (true) {
+        if (aborted()) { session.disconnect("宿主已取消"); break; }
+        const bytes = await this.options.serial.read(sessionId).catch((error) => { session.disconnect(String(error)); return [] as number[]; });
+        if (bytes.length) session.feed(Uint8Array.from(bytes));
+        if (session.currentPhase === "awaiting-ready" && helloCount < 2 && helloSentAt && Date.now() - helloSentAt > 1500) await sendHello();
+        if (session.currentPhase === "ready" && !issued) {
+          try { session.issueChallenge(token); await send("CHALLENGE token=" + token + "\n"); issued = true; } catch (error) { session.disconnect(String(error)); }
+        }
+        session.tick();
+        if (session.currentPhase === "passed" || session.currentPhase === "failed") break;
+        if (Date.now() > deadline) { session.disconnect("宿主硬超时"); break; }
+        await wait(POLL_MS);
+      }
+      // Phase 2: twenty counter requests, then the quiet window, all in this same session.
+      if (session.currentPhase === "passed") {
+        progress("挑战已通过，开始 " + counts + " 次 COUNT");
+        const countDeadline = Date.now() + counts * 6_000;
+        let requested = 0;
+        for (;;) {
+          if (aborted()) break;
+          const read = await this.options.serial.read(sessionId).catch(() => null);
+          if (read === null) break;
+          if (read.length) monitor.feed(Uint8Array.from(read));
+          if (requested === counts && monitor.observed >= counts) break;
+          if (monitor.observed === requested && requested < counts) { await send("COUNT\n"); monitor.request(); requested += 1; }
+          monitor.tick();
+          if (monitor.failure) break;
+          if (Date.now() > countDeadline) break;
+          await wait(POLL_MS);
+        }
+        if (monitor.observed < counts) progress("COUNT 未完成：" + monitor.observed + "/" + counts);
+      }
+      const observeStart = Date.now();
+      while (observeStart + observeMs > Date.now()) {
+        if (aborted()) break;
+        const read = await this.options.serial.read(sessionId).catch(() => null);
+        if (read === null) break;
+        if (read.length) monitor.feed(Uint8Array.from(read));
+        monitor.tick(observeMs);
+        await wait(POLL_MS * 2);
+      }
+      const observedMs = Date.now() - observeStart;
+      // The session must really close before the port can be described as reusable.
+      closeVerified = await closeSession();
+      const stability = monitor.finish();
+      const challengePassed = session.currentPhase === "passed";
+      const record = session.finish();
+      const monitorEvidence: EspMonitorEvidence = {
+        sessionId: String(sessionId), port, challenge: token, startedAt: new Date(startedAt).toISOString(),
+        challengeObserved: issued && record.challenge?.token === token,
+        outputObserved: stability.counts.length > 0,
+      };
+      const checked = verifyMonitorEvidence(deploy, monitorEvidence, { priorSessionIds: this.priorSessions.filter((item) => item !== sessionId).map(String) });
+      const strictlyIncreasing = stability.strictlyIncreasing && stability.counts.length === counts && stability.failure === "";
+      const passed = challengePassed && checked.ok && strictlyIncreasing && !stability.restartDetected && observedMs >= observeMs && closeVerified;
+      const reason = !challengePassed ? (record.failure?.code ?? "挑战未通过")
+        : !checked.ok ? checked.reason
+        : !closeVerified ? "串口关闭未得到确认；端口不视为可重新使用"
+        : stability.failure ? "COUNT 采样：" + stability.failure
+        : stability.restartDetected ? "观察窗口内出现复位/看门狗：" + stability.restartMarkers.join(", ")
+        : !strictlyIncreasing ? "COUNT 未连续递增（" + stability.counts.join(",") + "）"
+        : observedMs < observeMs ? "观察窗口不足 " + observeMs + " 毫秒"
+        : "";
+      const evidence: StabilityEvidence = {
+        version: 1, id: randomUUID(), passed,
+        root, port, transport, environment: deploy.environment,
+        taskId, appSha256: deploy.appSha256, planSha256: deploy.planSha256, sessionId,
+        challenge: { token, passed: challengePassed, bound: checked.ok, reason: challengePassed ? "" : (record.failure?.code ?? "挑战未通过") },
+        counts: stability.counts, observeMs, observedMs,
+        strictlyIncreasing: stability.strictlyIncreasing,
+        restartDetected: stability.restartDetected, restartMarkers: stability.restartMarkers,
+        recordedAt: new Date().toISOString(), reason,
+      };
+      if (!passed) this.error = reason;
+      this.notify();
+      return clone(evidence);
+    } finally {
+      if (sessionId && closeVerified) closeVerified = await closeSession();
+      if (closeVerified) {
+        deviceLease.release(lease);
+        this.hardwareLease = null;
+      } else {
+        // Keep the lease: without a confirmed close the port must not look free to the next entry.
+        this.hardwareLease = lease;
+        this.error = "串口关闭未得到确认；端口仍被视为占用。";
+      }
+      this.running = false;
+    }
+  }
+
   /** Latest successful esp.upload for this project and port, with the plan digest it actually ran. */
   private latestDeploy(port: string): EspDeployRecord | null {
     const root = this.options.workspace.root;
@@ -695,6 +899,21 @@ export class FirmwareVerificationService {
       planSha256: String(simulation.planSha256),
       recordedAt: task.endedAt ?? task.startedAt,
     };
+  }
+
+  /** The exact upload task this round started; an older or guessed record can never satisfy it. */
+  private deployForTask(taskId: string, port: string): EspDeployRecord | null {
+    const root = this.options.workspace.root;
+    const task = this.options.tasks.list().find((item) => item.id === taskId);
+    if (!task) return null;
+    if (task.provider !== "esp.upload" || task.status !== "succeeded") return null;
+    if (!root || task.root !== root) return null;
+    if (normalizePort(String(task.options?.port ?? "")) !== normalizePort(port)) return null;
+    const metadata = task.metadata as { simulation?: { appSha256?: string; planSha256?: string }; appOnly?: { mode?: string } } | undefined;
+    if (!metadata?.appOnly || metadata.appOnly.mode !== "app-only") return null;
+    const simulation = metadata.simulation;
+    if (!simulation || !SHA256.test(String(simulation.appSha256 ?? "")) || !SHA256.test(String(simulation.planSha256 ?? ""))) return null;
+    return { port, environment: task.environment ?? "", appSha256: String(simulation.appSha256), planSha256: String(simulation.planSha256), recordedAt: task.endedAt ?? task.startedAt };
   }
 
   private directory() {

@@ -370,3 +370,148 @@ export class FwValSession {
     this.finishedAtMs = this.now();
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Development-task stability sampling.
+//
+// The automatic firmware task keeps ONE hardware session open after the challenge and asks the
+// device for COUNT twenty times, then observes the same transport for a bounded window. Nothing
+// here trusts a timestamp, a log file or a closed session: the caller feeds the bytes it reads
+// from that live session and this pure monitor decides whether the counter really advanced and
+// whether the boot was interrupted.
+
+/** Exact COUNT reply: `AETHER-VAL/1 COUNT value=<decimal>`. */
+export const FWVAL_COUNT_PATTERN = /^AETHER-VAL\/1 COUNT value=(\d{1,10})$/;
+/** Markers that only appear when the SoC booted again or the firmware faulted. */
+const RESTART_MARKERS: { code: string; pattern: RegExp }[] = [
+  { code: "task_wdt", pattern: /\btask_wdt\b/ },
+  { code: "interrupt_wdt", pattern: /\binterrupt_wdt\b/ },
+  { code: "guru-meditation", pattern: /Guru Meditation Error/ },
+  { code: "panic", pattern: /panic'ed|Panic was triggered/ },
+  { code: "core-reset", pattern: /Core\s+\d+ was reset/ },
+  { code: "cpu-halted", pattern: /CPU halted/ },
+  { code: "stack-watchpoint", pattern: /Stack canary watchpoint|Backtrace:/ },
+  { code: "reset-reason", pattern: /\brst:0x/ },
+  { code: "bootrom-banner", pattern: /ESP-ROM:esp32c3/ },
+];
+
+export interface FwValStabilityResult {
+  /** Every COUNT value observed, in arrival order. */
+  counts: number[];
+  requests: number;
+  strictlyIncreasing: boolean;
+  restartDetected: boolean;
+  /** Code names from RESTART_MARKERS, de-duplicated, in first-seen order. */
+  restartMarkers: string[];
+  /** READY identity strings seen during the window (an identical repeat is not a reboot). */
+  readyIdentities: string[];
+  failure: string;
+}
+
+/**
+ * Consumes raw bytes from the live session that already passed the challenge. It counts only
+ * complete COUNT lines, rejects regressions (a counter that went backwards means a new boot,
+ * even when the host missed the boot banner) and records restart/watchdog markers verbatim.
+ */
+export class FwValStabilityMonitor {
+  private readonly expected: number;
+  private readonly observeStartMs: number;
+  private readonly now: () => number;
+  private lineBytes: number[] = [];
+  private overflow = false;
+  private readonly counts: number[] = [];
+  private requests = 0;
+  private failureText = "";
+  private readonly restartMarkers: string[] = [];
+  private readonly readyIdentities: string[] = [];
+  private pendingSince = 0;
+
+  constructor(options: { runId: string; expectedCounts: number; now?: () => number }) {
+    this.expected = options.expectedCounts;
+    this.now = options.now ?? (() => Date.now());
+    this.observeStartMs = this.now();
+    void options.runId;
+  }
+
+  get observed(): number { return this.counts.length; }
+  get startedAtMs(): number { return this.observeStartMs; }
+  get failure(): string { return this.failureText; }
+
+  /** Records that the host just asked for a COUNT; a missing reply is a failure, not a pause. */
+  request(): void {
+    if (this.requests < this.expected) this.requests += 1;
+    this.pendingSince = this.now();
+  }
+
+  /** Called periodically: a COUNT reply that never arrives fails the sampling. */
+  tick(timeoutMs = FWVAL_CHALLENGE_TIMEOUT_MS): void {
+    if (!this.pendingSince || this.failureText) return;
+    if (this.now() - this.pendingSince >= timeoutMs) {
+      this.fail("count-timeout");
+      this.pendingSince = 0;
+    }
+  }
+
+  feed(chunk: Uint8Array): void {
+    for (const byte of chunk) {
+      if (byte === 0x0a) {
+        if (this.lineBytes.length > 0 && this.lineBytes[this.lineBytes.length - 1] === 0x0d) this.lineBytes.pop();
+        const text = String.fromCharCode(...this.lineBytes);
+        this.lineBytes = [];
+        this.consume(text);
+        continue;
+      }
+      if (this.lineBytes.length >= FWVAL_MAX_LINE) {
+        this.overflow = true;
+        this.lineBytes = [];
+        continue;
+      }
+      this.lineBytes.push(byte);
+    }
+    if (this.overflow) {
+      this.overflow = false;
+      this.fail("line-too-long");
+    }
+  }
+
+  finish(): FwValStabilityResult {
+    const previous: number[] = [];
+    let strictlyIncreasing = true;
+    for (const value of this.counts) {
+      const last = previous[previous.length - 1];
+      if (last !== undefined && value <= last) strictlyIncreasing = false;
+      previous.push(value);
+    }
+    const failure = this.failureText || (this.counts.length < this.expected ? "count-incomplete" : "");
+    return {
+      counts: [...this.counts],
+      requests: this.requests,
+      strictlyIncreasing: strictlyIncreasing && this.counts.length > 0,
+      restartDetected: this.restartMarkers.length > 0,
+      restartMarkers: [...this.restartMarkers],
+      readyIdentities: [...this.readyIdentities],
+      failure,
+    };
+  }
+
+  private consume(raw: string): void {
+    const text = raw.trimEnd();
+    if (!text) return;
+    for (const marker of RESTART_MARKERS) {
+      if (marker.pattern.test(text) && !this.restartMarkers.includes(marker.code)) this.restartMarkers.push(marker.code);
+    }
+    const ready = /^AETHER-VAL\/1 READY\b.*$/.exec(text);
+    if (ready) {
+      if (!this.readyIdentities.includes(ready[0])) this.readyIdentities.push(ready[0]);
+      return;
+    }
+    const count = FWVAL_COUNT_PATTERN.exec(text);
+    if (!count) return;
+    this.pendingSince = 0;
+    this.counts.push(Number(count[1]));
+  }
+
+  private fail(code: string) {
+    if (!this.failureText) this.failureText = code;
+  }
+}

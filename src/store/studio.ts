@@ -189,6 +189,8 @@ const reportError = (error: unknown) => useStudio.getState().addToast({ title: "
 function withCapability(action: () => void) { try { action(); } catch (error) { reportError(error); } }
 
 let currentAgentRun: { controller: AbortController; messageId: string } | null = null;
+/** Agents that drive a bounded hardware workflow instead of a single conversational request. */
+const agentIdForWorkflow = (id: string) => id === "firmware-dev";
 const welcomeMessage: AgentMessage = { id: "welcome", role: "agent", time: "now", text: "在 Plugins 配置 AI API 后可进行工程问答。Project Tools 模式可以读取工程并提出文件修改，修改需预览后手动应用。发送时会将当前工程上下文传给配置的 API。" };
 
 export const useStudio = create<StudioState>((set, get) => ({
@@ -458,7 +460,10 @@ export const useStudio = create<StudioState>((set, get) => ({
     const id = uid("msg");
     const run = { controller: new AbortController(), messageId: id };
     currentAgentRun = run;
-    const timeout = window.setTimeout(() => run.controller.abort(new Error("AI 请求超时")), 60000);
+    // A hardware workflow is not bounded by one conversational request timeout. The automatic
+    // firmware agent carries its own per-request budget and the host bounds every real step, so only
+    // the ordinary Q&A agent keeps the 60-second cap; cancellation still aborts immediately.
+    const timeout = agentIdForWorkflow(s.activeAgentId) ? null : window.setTimeout(() => run.controller.abort(new Error("AI 请求超时")), 60000);
     set({ agentRunning: true, agentDraft: "", agentMessages: [...s.agentMessages, { id: uid("msg"), role: "user", time: "now", text }, { id, role: "agent", time: "now", text: "正在请求配置的 AI API…" }] });
     try {
       const agent = plugins.get("agents", s.activeAgentId);
@@ -475,7 +480,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({ agentMessages: state.agentMessages.map((m) => m.id === id ? { ...m, error: true, text: `请求未完成：${message}` } : m) }));
     } finally {
-      window.clearTimeout(timeout);
+      if (timeout !== null) window.clearTimeout(timeout);
       if (currentAgentRun === run) { currentAgentRun = null; set({ agentRunning: false }); }
     }
   },

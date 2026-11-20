@@ -24,7 +24,9 @@ import { FirmwareVerificationService, VERIFIED_WRITE_OPTION } from "./simulator/
 import { createMicropythonRunProvider } from "./plugins/micropython";
 import { MicropythonFilesService } from "./plugins/micropythonFiles";
 import { deviceLease, type DeviceLeaseToken } from "./deviceLock";
+import { FirmwareDevService } from "./firmwareDev";
 import type { ProjectContext } from "../src/plugins/api";
+import type { FirmwareDevStartOptions as FirmwareDevStartOptionsInput } from "../shared/firmwareDev";
 
 protocol.registerSchemesAsPrivileged([{ scheme: "aether", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 if (process.env.AETHER_USER_DATA_DIR) { mkdirSync(process.env.AETHER_USER_DATA_DIR, { recursive: true }); app.setPath("userData", path.resolve(process.env.AETHER_USER_DATA_DIR)); }
@@ -122,10 +124,18 @@ const flash = new FlashService(esptool, {
   claim: (port) => { flashLease = deviceLease.claim("flash", port); },
   release: () => { deviceLease.release(flashLease); flashLease = null; },
 });
+// The automatic firmware-development task: a trusted session over the SAME services above.
+// It is explicit-start only and each step is a real host action; the renderer drives nothing itself.
+const firmwareDev = new FirmwareDevService({
+  workspace, tasks, tools, serial, verification,
+  invalidateFlashPlan: () => flash.invalidatePlan(),
+  unsaved: () => dirty,
+  emit: (view) => emit("firmwareDev:changed", view),
+});
 const stateFile = () => path.join(app.getPath("userData"), "workspace.json");
 const remember = async () => { await fs.mkdir(app.getPath("userData"), { recursive: true }); await fs.writeFile(stateFile(), JSON.stringify({ root: workspace.root })); };
 const chooseFolder = async () => { const result = await dialog.showOpenDialog(window, { title: "Open Aether Project Folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; };
-const beforeSwitch = async () => { serialLogExport.invalidate(); await verification.dispose(); verification.clear(); await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
+const beforeSwitch = async () => { serialLogExport.invalidate(); await firmwareDev.dispose(); await verification.dispose(); verification.clear(); await tasks.stopAll(); await micropythonFiles.dispose(); await flash.dispose(); await serial.dispose(); await language.stop(); await terminal.stop(); };
 function routes() {
   const handle = (name: string, fn: (...args: any[]) => unknown) => ipcMain.handle(name, (event, ...args) => {
     if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error("不接受此窗口的请求");
@@ -224,6 +234,17 @@ function routes() {
     } catch (error) { deviceLease.release(token); throw error; }
   });
   handle("firmwareVerification:disarm", () => enqueue(async () => verification.disarm()));
+  // Automatic firmware development: start/stop are not queued behind a long step, so a stop can
+  // actually interrupt the process or lease it names.
+  handle("firmwareDev:status", () => firmwareDev.view());
+  handle("firmwareDev:start", (options: FirmwareDevStartOptionsInput) => firmwareDev.start(options));
+  handle("firmwareDev:stop", () => firmwareDev.stop());
+  handle("firmwareDev:build", () => firmwareDev.build());
+  handle("firmwareDev:simulate", () => firmwareDev.simulate());
+  handle("firmwareDev:preview", () => firmwareDev.preview());
+  handle("firmwareDev:write", () => firmwareDev.write());
+  handle("firmwareDev:challenge", () => firmwareDev.challenge());
+  handle("firmwareDev:authorizeEdit", (options: { path: string; expected: string; content: string }) => firmwareDev.authorizeEdit(options));
   handle("firmwareVerification:runDevice", (options: { port: string; transport?: "uart0" | "usb-serial-jtag"; timeoutMs?: number }) => enqueue(() => verification.runDevice(options)));
   handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
     // Invalidate first: a failed snapshot emit must not leave a claimed token with no owner to release it.
@@ -301,7 +322,7 @@ app.on("before-quit", (event) => {
     // The user explicitly discarded these buffers; remove only this project's draft so restart cannot resurrect it.
     if (abandoned && workspace.root) await recovery.discard(workspace.root).catch((error) => console.error("Recovery draft discard failed", error));
     serialLogExport.invalidate();
-    await Promise.all([verification.dispose(), tasks.stopAll(), micropythonFiles.dispose(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
+    await Promise.all([firmwareDev.dispose(), verification.dispose(), tasks.stopAll(), micropythonFiles.dispose(), flash.dispose(), serial.dispose(), language.stop(), terminal.stop(), workspace.close()]);
   }).finally(() => app.quit());
 });
 app.on("window-all-closed", () => app.quit());
