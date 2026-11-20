@@ -865,7 +865,10 @@ export class FirmwareVerificationService {
       this.notify();
       return clone(evidence);
     } finally {
-      if (sessionId && closeVerified) closeVerified = await closeSession();
+      // Judge the real handle: a still-open session gets one more close attempt, and the lease is
+      // released only when the session is actually gone.
+      if (sessionId && this.options.serial.isOpen()) await closeSession();
+      if (sessionId) closeVerified = !this.options.serial.isOpen();
       if (closeVerified) {
         deviceLease.release(lease);
         this.hardwareLease = null;
