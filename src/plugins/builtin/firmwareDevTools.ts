@@ -155,6 +155,10 @@ export async function runFirmwareDevAgent(api: PluginAPI, project: Parameters<Ca
     appOnlyWrite: session.appOnlyWriteAuthorized, sourceEdit: session.sourceEditAuthorized,
   });
   const messages: AIMessage[] = [{ role: "system", content: DEV_SYSTEM(context) }, ...history];
+  // An abort must reach the host, not only stop waiting: the real process and lease are settled by
+  // the host stop path instead of being left running behind a cancelled request.
+  const notifyHostStop = () => { void client().stop().catch(() => {}); };
+  options.signal?.addEventListener("abort", notifyHostStop, { once: true });
   const runs: ToolRun[] = [];
   const maxTurns = options.maxTurns ?? 12;
   const requestTimeoutMs = options.requestTimeoutMs ?? 90_000;
@@ -163,8 +167,8 @@ export async function runFirmwareDevAgent(api: PluginAPI, project: Parameters<Ca
     const round = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; round.abort(); }, requestTimeoutMs);
-    const onAbort = () => round.abort();
-    options.signal?.addEventListener("abort", onAbort, { once: true });
+    const abortRound = () => round.abort();
+    options.signal?.addEventListener("abort", abortRound, { once: true });
     let reply: AIMessage;
     try {
       reply = await provider.chat(messages, tools, round.signal);
@@ -174,7 +178,7 @@ export async function runFirmwareDevAgent(api: PluginAPI, project: Parameters<Ca
       throw new Error("模型请求失败：" + (error instanceof Error ? error.message : String(error)));
     } finally {
       clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
+      options.signal?.removeEventListener("abort", abortRound);
     }
     options.signal?.throwIfAborted();
     if (!reply.tool_calls?.length) return { text: reply.content ?? "API 返回了空回复。", toolRuns: runs, proposals: [] };
@@ -206,5 +210,6 @@ export async function runFirmwareDevAgent(api: PluginAPI, project: Parameters<Ca
       }
     }
   }
+  options.signal?.removeEventListener("abort", notifyHostStop);
   return { text: "已达到本轮工具调用上限；后续步骤未自动继续，请查看面板中的真实阶段与结果。", toolRuns: runs, proposals: [] };
 }
