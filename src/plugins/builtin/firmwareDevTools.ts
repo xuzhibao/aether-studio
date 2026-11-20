@@ -1,5 +1,5 @@
 import { isDesktop } from "../../lib/desktop";
-import type { AIMessage, AgentResult, CapabilityMap, PluginAPI, StudioPlugin } from "../api";
+import type { AIMessage, AgentResult, CapabilityMap, PluginAPI } from "../api";
 import type { EditProposal, ToolRun } from "../../types";
 import { uid } from "../../lib/utils";
 import { isEditableFirmwareSource, type FirmwareDevSessionView } from "../../../shared/firmwareDev";
@@ -33,96 +33,89 @@ const summarize = (value: FirmwareDevSessionView) => ({
   error: value.error,
 });
 
-export const firmwareDevToolsPlugin: StudioPlugin = {
-  manifest: {
-    id: "aether.firmware.dev-tools", name: "自动固件任务工具", version: "0.1.0", type: "tool",
-    entry: "builtin/firmwareDevTools.ts", enabled: true,
-    description: "在用户显式开始的 ESP32-C3 验证工程会话内执行真实构建、QEMU 验证、只读核对、app-only 写入与实机 COUNT 观察；不提供任意命令、路径或串口。",
-  },
-  activate(api: PluginAPI) {
-    const runStep = async (name: HostStep) => {
-      const step = await client()[name]();
-      return { output: summarize(step) };
-    };
+export function registerFirmwareDevTools(api: PluginAPI): void {
+  const runStep = async (name: HostStep) => {
+    const step = await client()[name]();
+    return { output: summarize(step) };
+  };
 
-    api.register("tools", {
-      id: "firmware_dev_read_source", name: "读取固件源码",
-      description: "Read one existing firmware source file inside the authorized scope (src/ or main/, .c/.h/.cpp/.hpp).",
-      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
-      execute: (args, project) => {
-        const path = (args as { path?: unknown })?.path;
-        if (typeof path !== "string") throw new Error("path 必须是文件名");
-        if (!isEditableFirmwareSource(path)) throw new Error("超出本次授权的文件：" + path);
-        if (!Object.hasOwn(project.files, path)) throw new Error("工程中没有该固件源码：" + path);
-        return { output: { path, content: project.files[path] } };
-      },
-    });
+  api.register("tools", {
+    id: "firmware_dev_read_source", name: "读取固件源码",
+    description: "Read one existing firmware source file inside the authorized scope (src/ or main/, .c/.h/.cpp/.hpp).",
+    parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false },
+    execute: (args, project) => {
+      const path = (args as { path?: unknown })?.path;
+      if (typeof path !== "string") throw new Error("path 必须是文件名");
+      if (!isEditableFirmwareSource(path)) throw new Error("超出本次授权的文件：" + path);
+      if (!Object.hasOwn(project.files, path)) throw new Error("工程中没有该固件源码：" + path);
+      return { output: { path, content: project.files[path] } };
+    },
+  });
 
-    api.register("tools", {
-      id: "firmware_dev_propose_edit", name: "提出固件源码修改",
-      description: "Propose the complete new contents of ONE existing in-scope firmware source. The host checks the scope and the exact disk text; the result is a pending review proposal, and the file changes only when the user applies it.",
-      parameters: {
-        type: "object",
-        properties: { path: { type: "string" }, content: { type: "string" }, summary: { type: "string" } },
-        required: ["path", "content", "summary"], additionalProperties: false,
-      },
-      execute: async (args, project) => {
-        const input = args as { path?: unknown; content?: unknown; summary?: unknown };
-        if (typeof input.summary !== "string" || !input.summary.trim()) throw new Error("修改需要一句 summary");
-        if (typeof input.content !== "string" || input.content.length === 0) throw new Error("content 不能为空");
-        const path = typeof input.path === "string" ? input.path.trim() : "";
-        if (!isEditableFirmwareSource(path)) throw new Error("超出本次授权的文件：" + (path || "空路径") + "（只允许既有固件源码 src/ 或 main/ 下的 .c/.h/.cpp/.hpp）");
-        const before = Object.hasOwn(project.files, path) ? project.files[path] : null;
-        if (before === null) throw new Error("不是既有固件源码，不能新建：" + path);
-        if (before === input.content) throw new Error("修改内容与当前内容一致，无需提出");
-        // The host re-checks scope, the real disk text and that no build/upload is running.
-        const approved = await client().authorizeEdit({ path, expected: before, content: input.content });
-        const proposal: EditProposal = {
-          id: uid("proposal"), projectId: project.project.id, summary: input.summary,
-          changes: [{ path: approved.path, before: approved.before, after: input.content }], status: "pending",
-        };
-        return { output: { status: "pending_review", path: approved.path, message: "仅生成修改建议；用户预览并应用前文件不会改变。" }, proposal };
-      },
-    });
+  api.register("tools", {
+    id: "firmware_dev_propose_edit", name: "提出固件源码修改",
+    description: "Propose the complete new contents of ONE existing in-scope firmware source. The host checks the scope and the exact disk text; the result is a pending review proposal, and the file changes only when the user applies it.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" }, content: { type: "string" }, summary: { type: "string" } },
+      required: ["path", "content", "summary"], additionalProperties: false,
+    },
+    execute: async (args, project) => {
+      const input = args as { path?: unknown; content?: unknown; summary?: unknown };
+      if (typeof input.summary !== "string" || !input.summary.trim()) throw new Error("修改需要一句 summary");
+      if (typeof input.content !== "string" || input.content.length === 0) throw new Error("content 不能为空");
+      const path = typeof input.path === "string" ? input.path.trim() : "";
+      if (!isEditableFirmwareSource(path)) throw new Error("超出本次授权的文件：" + (path || "空路径") + "（只允许既有固件源码 src/ 或 main/ 下的 .c/.h/.cpp/.hpp）");
+      const before = Object.hasOwn(project.files, path) ? project.files[path] : null;
+      if (before === null) throw new Error("不是既有固件源码，不能新建：" + path);
+      if (before === input.content) throw new Error("修改内容与当前内容一致，无需提出");
+      // The host re-checks scope, the real disk text and that no build/upload is running.
+      const approved = await client().authorizeEdit({ path, expected: before, content: input.content });
+      const proposal: EditProposal = {
+        id: uid("proposal"), projectId: project.project.id, summary: input.summary,
+        changes: [{ path: approved.path, before: approved.before, after: input.content }], status: "pending",
+      };
+      return { output: { status: "pending_review", path: approved.path, message: "仅生成修改建议；用户预览并应用前文件不会改变。" }, proposal };
+    },
+  });
 
-    api.register("tools", {
-      id: "firmware_dev_build", name: "真实构建",
-      description: "Run the real PlatformIO build for the session's fixed environment. Only valid as the first step of this run.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      execute: () => runStep("build"),
-    });
-    api.register("tools", {
-      id: "firmware_dev_simulate", name: "QEMU 两次启动验证",
-      description: "Boot the built image twice in the real Espressif QEMU, each with a fresh host challenge. Requires a successful build.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      execute: () => runStep("simulate"),
-    });
-    api.register("tools", {
-      id: "firmware_dev_preview", name: "只读核对写入范围",
-      description: "Read-only preflight that re-proves device, active OTA slot, build record and app bytes, then issues a one-time write preview.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      execute: () => runStep("preview"),
-    });
-    api.register("tools", {
-      id: "firmware_dev_write", name: "app-only 写入",
-      description: "Write the single verified app image into the active OTA app slot. Exactly one write per run; never rebuilds and never retries.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      execute: () => runStep("write"),
-    });
-    api.register("tools", {
-      id: "firmware_dev_verify_device", name: "实机挑战与 COUNT 观察",
-      description: "Open a NEW serial session on the written port, pass a fresh challenge, read COUNT 20 times and observe at least 60 seconds without a restart.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      execute: () => runStep("challenge"),
-    });
-    api.register("tools", {
-      id: "firmware_dev_status", name: "查看自动任务状态",
-      description: "Read the current trusted-session stage and the real results of each completed step.",
-      parameters: { type: "object", properties: {}, additionalProperties: false },
-      execute: async () => ({ output: summarize(await client().status()) }),
-    });
-  },
-};
+  api.register("tools", {
+    id: "firmware_dev_build", name: "真实构建",
+    description: "Run the real PlatformIO build for the session's fixed environment. Only valid as the first step of this run.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: () => runStep("build"),
+  });
+  api.register("tools", {
+    id: "firmware_dev_simulate", name: "QEMU 两次启动验证",
+    description: "Boot the built image twice in the real Espressif QEMU, each with a fresh host challenge. Requires a successful build.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: () => runStep("simulate"),
+  });
+  api.register("tools", {
+    id: "firmware_dev_preview", name: "只读核对写入范围",
+    description: "Read-only preflight that re-proves device, active OTA slot, build record and app bytes, then issues a one-time write preview.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: () => runStep("preview"),
+  });
+  api.register("tools", {
+    id: "firmware_dev_write", name: "app-only 写入",
+    description: "Write the single verified app image into the active OTA app slot. Exactly one write per run; never rebuilds and never retries.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: () => runStep("write"),
+  });
+  api.register("tools", {
+    id: "firmware_dev_verify_device", name: "实机挑战与 COUNT 观察",
+    description: "Open a NEW serial session on the written port, pass a fresh challenge, read COUNT 20 times and observe at least 60 seconds without a restart.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: () => runStep("challenge"),
+  });
+  api.register("tools", {
+    id: "firmware_dev_status", name: "查看自动任务状态",
+    description: "Read the current trusted-session stage and the real results of each completed step.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    execute: async () => ({ output: summarize(await client().status()) }),
+  });
+}
 
 const DEV_SYSTEM = (context: string) => [
   "你是 Aether Studio 的自动固件开发助手。用户已显式开始一个受控的 ESP32-C3 验证工程任务，并确认只写活动 app 槽、只编辑既有固件源码。",

@@ -19,7 +19,6 @@ import { flashBackupPlugin } from "./flashBackup";
 import { providerPlugin } from "./provider";
 import { firmwareVerificationPlugin } from "./firmwareVerification";
 import { firmwareDevPlugin } from "./firmwareDev";
-import { firmwareDevToolsPlugin } from "./firmwareDevTools";
 const boardPlugin: StudioPlugin = {
   manifest: { id: "aether.esp32-s3", name: "ESP32-S3 DevKitC-1", type: "board", version: "0.1.0", entry: "builtin/index.tsx#boardPlugin", enabled: true, description: "ESP32-S3 开发板定义、引脚和电路外观。" },
   activate(api) {
@@ -51,4 +50,4 @@ const templatePlugin: StudioPlugin = {
     api.register("commands", { id: "esp32.example", name: "ESP32-S3: 创建环境监测示例", run: () => api.host.createProject("esp32-s3", "Environment monitor") });
   },
 };
-export const builtinPlugins = [firmwareDevToolsPlugin, firmwareDevPlugin, boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin, nativeSerialPlugin, websocketPlugin, platformioPlugin, espDevicePlugin, clangdPlugin, terminalPlugin, flashBackupPlugin, firmwareVerificationPlugin];
+export const builtinPlugins = [firmwareDevPlugin, boardPlugin, componentPlugin, micropythonPlugin, editorPlugin, demoPlugin, providerPlugin, templatePlugin, projectFilesPlugin, projectToolsPlugin, nativeSerialPlugin, websocketPlugin, platformioPlugin, espDevicePlugin, clangdPlugin, terminalPlugin, flashBackupPlugin, firmwareVerificationPlugin];
