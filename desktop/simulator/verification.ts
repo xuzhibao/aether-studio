@@ -818,8 +818,10 @@ export class FirmwareVerificationService {
         }
         if (monitor.observed < counts) progress("COUNT 未完成：" + monitor.observed + "/" + counts);
       }
+      // No quiet window after a failed challenge: nothing more is proven by waiting, and the
+      // session is closed instead of being kept open for a result that cannot change.
       const observeStart = Date.now();
-      while (observeStart + observeMs > Date.now()) {
+      while (session.currentPhase === "passed" && observeStart + observeMs > Date.now()) {
         if (aborted()) break;
         const read = await this.options.serial.read(sessionId).catch(() => null);
         if (read === null) break;

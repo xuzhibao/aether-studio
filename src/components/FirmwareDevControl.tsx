@@ -115,7 +115,7 @@ export function FirmwareDevControl() {
           {ports.map((item) => <option key={item.path} value={item.path}>{item.path}</option>)}
         </select>
         <button className="btn btn-primary ml-auto px-2 py-1 text-[9.5px]" disabled={blocked || !root || !environment || !port} onClick={() => void start()}>
-          <Play size={9} /> 开始（只写活动 app 槽）
+          <Play size={9} /> 开始（只写活动 app 槽 · 仅既有源码）
         </button>
       </div>
     )}
