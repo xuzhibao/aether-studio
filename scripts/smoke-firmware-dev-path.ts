@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { FwValStabilityMonitor } from "../shared/firmwareValidation";
+import { FwValSession, FwValStabilityMonitor } from "../shared/firmwareValidation";
 import { firmwareDevStageOrder, normalizeFirmwareDevPort } from "../desktop/firmwareDev";
 import { isEditableFirmwareSource } from "../shared/firmwareDev";
 import { deviceIdentityFrom } from "../desktop/esp/inspect";
@@ -28,6 +28,31 @@ const feed = (monitor: FwValStabilityMonitor, text: string) => monitor.feed(Buff
   assert.equal(result.restartDetected, false);
   assert.equal(result.failure, "");
   check("20 increasing COUNT replies are accepted");
+}
+
+// --- Both transports of ONE boot announce the same identity; `console` is not identity.
+{
+  const session = new FwValSession({ runId: "test", transport: "usb-serial-jtag", expectedFwid: "aether-c3-fwval-1" });
+  const uart = "AETHER-VAL/1 READY fw=aether-c3-fwval-1 proto=1 soc=esp32c3 console=uart0";
+  const usb = "AETHER-VAL/1 READY fw=aether-c3-fwval-1 proto=1 soc=esp32c3 console=usb-serial-jtag";
+  session.feed(Buffer.from(uart + String.fromCharCode(10) + usb + String.fromCharCode(10), "utf8"));
+  assert.equal(session.currentPhase, "ready", "a second channel's READY is the same boot, not a reboot");
+  session.issueChallenge("0123456789abcdef");
+  session.feed(Buffer.from(usb + String.fromCharCode(10), "utf8"));
+  assert.equal(session.currentPhase, "challenge-issued", "a repeat during the challenge is ignored too");
+  const record = session.finish();
+  assert.deepEqual(record.consoles, ["uart0", "usb-serial-jtag"], "both announcing channels are recorded");
+  check("one boot announced on two consoles is not a reboot");
+}
+
+// --- A READY for a DIFFERENT firmware identity still fails closed.
+{
+  const session = new FwValSession({ runId: "test", transport: "usb-serial-jtag" });
+  session.feed(Buffer.from("AETHER-VAL/1 READY fw=aether-c3-fwval-1 proto=1 soc=esp32c3 console=usb-serial-jtag" + String.fromCharCode(10), "utf8"));
+  session.feed(Buffer.from("AETHER-VAL/1 READY fw=other-firmware proto=1 soc=esp32c3 console=usb-serial-jtag" + String.fromCharCode(10), "utf8"));
+  assert.equal(session.currentPhase, "failed");
+  assert.equal(session.finish().failure?.code, "reboot-detected");
+  check("a changed firmware identity after READY still fails closed");
 }
 
 // --- A reply can arrive split across chunks; only complete lines count.

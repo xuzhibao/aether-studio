@@ -67,6 +67,8 @@ export interface FwValRecord {
   device: FwValDeviceIdentity | null;
   response: FwValResponse | null;
   expectedValue: string | null;
+  /** Console channels that announced the same firmware identity in this run. */
+  consoles: string[];
   failure: FwValFailure | null;
   bytesIn: number;
   linesSeen: number;
@@ -150,6 +152,7 @@ export class FwValSession {
   private bytesIn = 0;
   private linesSeen = 0;
   private ignoredLines = 0;
+  private consoles: string[] = [];
 
   private lineBytes: number[] = [];
   private lineOverflow = false;
@@ -253,6 +256,7 @@ export class FwValSession {
       device: this.device,
       response: this.response,
       expectedValue: this.expectedValue,
+      consoles: [...this.consoles],
       failure: this.failure,
       bytesIn: this.bytesIn,
       linesSeen: this.linesSeen,
@@ -305,10 +309,16 @@ export class FwValSession {
     };
     if ((this.phase === "ready" || this.phase === "challenge-issued") && this.device !== null) {
       // The host may ask for the identity again (HELLO) and the answer can cross the challenge in
-      // flight. An identical READY is not a second boot; a changed identity still fails closed.
-      // A real reboot loses the fresh token, so it cannot produce a matching RESPONSE anyway.
-      if (identity.fwid === this.device.fwid && identity.proto === this.device.proto && identity.soc === this.device.soc && identity.console === this.device.console) {
+      // flight. A second READY that repeats the SAME firmware identity is the same boot: the image
+      // announces itself once per attached channel, so `console` legitimately differs between the
+      // UART0 line and the USB-Serial/JTAG line of one boot. Console is a transport label, not
+      // identity. A different fwid/proto/soc still fails closed.
+      // A real reboot is proven by the boot banner, a reset reason or a counter regression — the
+      // stability monitor records those — and it also loses the fresh token, so it cannot produce a
+      // matching RESPONSE.
+      if (identity.fwid === this.device.fwid && identity.proto === this.device.proto && identity.soc === this.device.soc) {
         this.ignoredLines += 1;
+        if (identity.console && !this.consoles.includes(identity.console)) this.consoles.push(identity.console);
         return;
       }
       this.fail("reboot-detected", `READY identity changed after ${this.phase}: ${raw}`);
@@ -327,6 +337,7 @@ export class FwValSession {
       return;
     }
     this.device = identity;
+    if (identity.console && !this.consoles.includes(identity.console)) this.consoles.push(identity.console);
     this.phase = "ready";
   }
 
