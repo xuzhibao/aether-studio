@@ -64,10 +64,16 @@ export function FirmwareDevControl() {
     let current = true;
     void api.status().then((value) => { if (current) setSession(value); }, () => {});
     const off = api.onChanged((value) => { if (current) setSession(value); });
-    void loadEnvironments("platformio.build").catch(() => {});
     void refreshPorts();
     return () => { current = false; off(); };
-  }, [api, loadEnvironments, refreshPorts]);
+  }, [api, refreshPorts]);
+
+  // The environment list belongs to the OPENED project. Opening one clears the list, so the panel
+  // re-asks whenever the root changes instead of showing "no environment" for a real project.
+  useEffect(() => {
+    if (!isDesktop() || !root) return;
+    void loadEnvironments("platformio.build").catch(() => {});
+  }, [root, loadEnvironments]);
 
   const run = async (action: () => Promise<void>) => {
     setBusy(true); setError("");
