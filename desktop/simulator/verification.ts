@@ -135,6 +135,8 @@ export interface StabilityEvidence {
   sessionId: number;
   challenge: { token: string; passed: boolean; bound: boolean; reason: string };
   counts: number[];
+  /** One COUNT sent AFTER the quiet window, for continuity diagnosis only (never a substitute). */
+  postWindowCount: number | null;
   observeMs: number;
   observedMs: number;
   strictlyIncreasing: boolean;
@@ -854,6 +856,33 @@ export class FirmwareVerificationService {
       }
       if (session.currentPhase === "failed" && !interrupted) stopFor("观察窗口内会话不再通过");
       const observedMs = Date.now() - observeStart;
+      // Diagnostic only: the twenty counts are already done. One more COUNT after the quiet window
+      // shows the same boot is still counting (a reset would restart at 1). It never replaces the
+      // required twenty, and a regression here is a real restart.
+      let postWindowCount: number | null = null;
+      if (session.currentPhase === "passed" && !interrupted && observedMs >= observeMs) {
+        const before = monitor.finish().counts;
+        const highest = before.length ? before[before.length - 1] : 0;
+        try {
+          await this.options.serial.write(sessionId, Array.from(Buffer.from("COUNT" + String.fromCharCode(10), "utf8")));
+          monitor.request();
+          const postDeadline = Date.now() + 8_000;
+          while (Date.now() < postDeadline) {
+            const read = await readOrStop();
+            if (read === null) break;
+            if (read.length) monitor.feed(Uint8Array.from(read));
+            const after = monitor.finish().counts;
+            if (after.length > before.length) { postWindowCount = after[after.length - 1]; break; }
+            if (monitor.failure) break;
+            await wait(POLL_MS * 2);
+          }
+          if (postWindowCount === null) progress("窗口后诊断 COUNT 未回包（不计入通过判据）");
+          else if (postWindowCount <= highest) stopFor("窗口后诊断 COUNT 回退：" + postWindowCount + " ≤ " + highest + "，同一次启动被打破");
+        } catch (error) {
+          // A write failure here is reported as the interrupted reason, like any other session loss.
+          stopFor("窗口后诊断 COUNT 发送失败：" + (error instanceof Error ? error.message : String(error)));
+        }
+      }
       // The session must really close before the port can be described as reusable.
       closeVerified = await closeSession();
       const stability = monitor.finish();
@@ -865,7 +894,10 @@ export class FirmwareVerificationService {
         outputObserved: stability.counts.length > 0,
       };
       const checked = verifyMonitorEvidence(deploy, monitorEvidence, { priorSessionIds: this.priorSessions.filter((item) => item !== sessionId).map(String) });
-      const strictlyIncreasing = stability.strictlyIncreasing && stability.counts.length === counts && stability.failure === "";
+      // The required twenty are the first `counts` values; the diagnostic probe is the (at most one) extra.
+      const required = stability.counts.slice(0, counts);
+      const strictRequired = required.length === counts && required.every((value, index) => index === 0 || value > required[index - 1]);
+      const strictlyIncreasing = strictRequired && stability.failure === "";
       // A stop, a lost connection or a read error is a failure even when the wall clock had already
       // covered the whole window: an interrupted sample proves nothing about 60 s of quiet running.
       const passed = challengePassed && checked.ok && strictlyIncreasing && !stability.restartDetected
@@ -884,7 +916,7 @@ export class FirmwareVerificationService {
         root, port, transport, environment: deploy.environment,
         taskId, appSha256: deploy.appSha256, planSha256: deploy.planSha256, sessionId,
         challenge: { token, passed: challengePassed, bound: checked.ok, reason: challengePassed ? "" : (record.failure?.code ?? "挑战未通过") },
-        counts: stability.counts, observeMs, observedMs,
+        counts: stability.counts, postWindowCount, observeMs, observedMs,
         strictlyIncreasing: stability.strictlyIncreasing,
         restartDetected: stability.restartDetected, restartMarkers: stability.restartMarkers,
         recordedAt: new Date().toISOString(), reason,

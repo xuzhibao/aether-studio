@@ -36,7 +36,7 @@ export interface FirmwareDevSessionView {
   preview: { appSha256: string; slot: { label: string; offset: number; size: number }; erase: { offset: number; size: number }; expiresAt: string } | null;
   write: { taskId: string; status: string; appSha256: string; planSha256: string; started: boolean } | null;
   challenge: { evidenceId: string; passed: boolean; bound: boolean; sessionId: number } | null;
-  stability: { counts: number[]; observeMs: number; observedMs: number; strictlyIncreasing: boolean; restartDetected: boolean; watchdogLines: string[]; failures: string[] } | null;
+  stability: { counts: number[]; postWindowCount: number | null; observeMs: number; observedMs: number; strictlyIncreasing: boolean; restartDetected: boolean; watchdogLines: string[]; failures: string[] } | null;
   cancelled: boolean;
   error: string;
   startedAt: string;

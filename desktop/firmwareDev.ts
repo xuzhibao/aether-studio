@@ -354,13 +354,13 @@ export class FirmwareDevService {
       });
       this.challengeInfo = { evidenceId: evidence.id, passed: evidence.challenge.passed && evidence.challenge.bound, bound: evidence.challenge.bound, sessionId: evidence.sessionId };
       this.stabilityInfo = {
-        counts: evidence.counts, observeMs: evidence.observeMs, observedMs: evidence.observedMs,
+        counts: evidence.counts, postWindowCount: evidence.postWindowCount, observeMs: evidence.observeMs, observedMs: evidence.observedMs,
         strictlyIncreasing: evidence.strictlyIncreasing, restartDetected: evidence.restartDetected,
         watchdogLines: evidence.restartMarkers, failures: evidence.reason ? [evidence.reason] : [],
       };
       if (!evidence.passed) throw new Error("实机验证未通过：" + (evidence.reason || "见会话记录"));
       this.stage = "verified";
-      this.endStep("succeeded", evidence.counts.length + " 次 COUNT · 观察 " + Math.round(evidence.observedMs / 1000) + " 秒");
+      this.endStep("succeeded", evidence.counts.length + " 次 COUNT 严格递增 · 观察 " + Math.round(evidence.observedMs / 1000) + " 秒无看门狗/重启");
       return this.view();
     } catch (error) {
       this.endStep("failed", String(error instanceof Error ? error.message : error));
