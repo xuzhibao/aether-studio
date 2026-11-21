@@ -132,8 +132,10 @@ const prepare = async (item, file, workRoot) => {
   const directory = path.join(workRoot, label(item));
   if (item.extension === 'exe') {
     // NSIS assisted installer: /S is silent; /D= picks the target directory and must come last,
-    // unquoted. The installer is launched from the runner's copy, never from release/.
+    // unquoted. Node quotes arguments containing spaces, which NSIS cannot parse, so the target
+    // directory is required to be space-free (RUNNER_TEMP and the label are).
     await fs.mkdir(directory, { recursive: true });
+    assert.ok(!path.dirname(directory).includes(' '), 'the NSIS target directory must not contain spaces: ' + directory);
     const installer = path.join(workRoot, path.basename(file));
     await fs.copyFile(file, installer);
     log(`installing ${path.basename(file)} into ${directory}`);
