@@ -46,7 +46,7 @@ const api: DesktopAPI = {
     preview: () => ipcRenderer.invoke("firmwareDev:preview"),
     write: () => ipcRenderer.invoke("firmwareDev:write"),
     challenge: () => ipcRenderer.invoke("firmwareDev:challenge"),
-    authorizeEdit: (options) => ipcRenderer.invoke("firmwareDev:authorizeEdit", options),
+    applyEdit: (options) => ipcRenderer.invoke("firmwareDev:applyEdit", options),
     onChanged: (callback) => event("firmwareDev:changed", callback),
   },
   runtime: "electron", window: (action) => ipcRenderer.invoke("window:action", action),

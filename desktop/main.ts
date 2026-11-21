@@ -244,7 +244,7 @@ function routes() {
   handle("firmwareDev:preview", () => firmwareDev.preview());
   handle("firmwareDev:write", () => firmwareDev.write());
   handle("firmwareDev:challenge", () => firmwareDev.challenge());
-  handle("firmwareDev:authorizeEdit", (options: { path: string; expected: string; content: string }) => firmwareDev.authorizeEdit(options));
+  handle("firmwareDev:applyEdit", (options: { path: string; expected: string; content: string }) => firmwareDev.applyEdit(options));
   handle("firmwareVerification:runDevice", (options: { port: string; transport?: "uart0" | "usb-serial-jtag"; timeoutMs?: number }) => enqueue(() => verification.runDevice(options)));
   handle("tasks:start", async (provider: string, options: Record<string, string> = {}) => {
     // Invalidate first: a failed snapshot emit must not leave a claimed token with no owner to release it.

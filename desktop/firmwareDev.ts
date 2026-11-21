@@ -55,6 +55,8 @@ interface Session {
   root: string;
   environment: string;
   port: string;
+  /** Opaque handle of the board the user picked; every later device step must re-prove it. */
+  deviceIdentity: string;
   appOnlyWriteAuthorized: boolean;
   sourceEditAuthorized: boolean;
   startedAt: string;
@@ -84,6 +86,8 @@ export class FirmwareDevService {
   private steps: FirmwareDevStepView[] = [];
   private busy = "";
   private signal = new AbortController();
+  /** Cancels exactly this run's own device-re-proving task; never another task. */
+  private writeAbort: AbortController | null = null;
 
   constructor(private options: FirmwareDevOptions) {}
 
@@ -146,6 +150,7 @@ export class FirmwareDevService {
     if (!port) throw new Error("请先选择专用测试板串口");
 
     this.steps = [];
+    let identity = "";
     this.enter("检查工程与设备");
     try {
       // The dedicated board is the long-term authorized one: native USB-Serial/JTAG 303A:1001.
@@ -163,10 +168,14 @@ export class FirmwareDevService {
         const device = await readDeviceFacts(found.tool, port);
         if (!device.ok) throw new Error("无法读取端口 " + port + " 上的设备：" + device.error);
         if (!ESP32C3_CHIP.test(device.chipName)) throw new Error("端口 " + port + " 上的芯片是 " + (device.chipName || "未知") + "，不是 ESP32-C3");
+        // A COM name and a USB VID/PID do not name a board. The chip's own factory identity does, and
+        // every later preview, write and physical challenge must re-prove this same handle.
+        if (!device.identity) throw new Error("无法从芯片读到稳定的设备身份；不能确认用户选定的同一块板，未开始任何步骤");
         this.device = { chipName: device.chipName, revision: device.revision, flashSize: device.flashSize };
+        identity = device.identity;
       } finally { deviceLease.release(lease); }
       this.session = {
-        active: true, root, environment, port, appOnlyWriteAuthorized: true, sourceEditAuthorized: true,
+        active: true, root, environment, port, deviceIdentity: identity, appOnlyWriteAuthorized: true, sourceEditAuthorized: true,
         startedAt: now(), cancelled: false, error: "",
       };
       this.stage = "ready";
@@ -245,6 +254,8 @@ export class FirmwareDevService {
     try {
       const preview = await this.options.verification.previewDeploy({ environment: session.environment, port: session.port });
       if (preview.appSha256.toLowerCase() !== this.qemuInfo?.appSha256.toLowerCase()) throw new Error("预览的 app 与 QEMU 记录不一致");
+      // The board that will be written must be the one the user picked when this task started.
+      if (!session.deviceIdentity || preview.device.identity !== session.deviceIdentity) throw new Error("端口 " + session.port + " 上现在不是用户选定的那块测试板；已拒绝；未写入任何数据");
       this.previewToken = preview.token;
       this.previewInfo = { appSha256: preview.appSha256, slot: preview.slot, erase: preview.erase, expiresAt: preview.expiresAt };
       this.stage = "previewed";
@@ -265,15 +276,26 @@ export class FirmwareDevService {
     this.options.invalidateFlashPlan();
     // Claim before any await so a monitor opening the port cannot slip between the checks.
     const token = deviceLease.claim("task");
-    let intentIssued = false;
+    // This run's own cancellation: it reaches the task's device re-proof, not just this handler.
+    const writeAbort = new AbortController();
+    this.writeAbort = writeAbort;
+    const cancelled = () => session.cancelled || this.session !== session || this.signal.signal.aborted;
+    // True only while THIS handler still owns the lease; the task takes it over once it starts.
+    let leaseOwned = true;
     try {
       const tokenValue = this.previewToken;
       this.previewToken = "";
       const intent = await this.options.verification.commitDeploy({ token: tokenValue, environment: session.environment, port: session.port });
-      intentIssued = true;
+      // commitDeploy awaited (workspace fingerprint): the session may have stopped meanwhile. Re-check
+      // before the task exists, and withdraw the one-shot intent that has not reached the uploader yet.
+      if (cancelled()) {
+        this.options.verification.abortWrite(intent.id);
+        throw new Error("自动任务已停止，已撤销尚未开始的写入意图；未写入任何数据");
+      }
       let task: TaskSnapshot;
       try {
-        task = await this.options.tasks.start("esp.upload", { port: intent.port, environment: intent.environment, [VERIFIED_WRITE_OPTION]: intent.id }, token);
+        task = await this.options.tasks.start("esp.upload", { port: intent.port, environment: intent.environment, [VERIFIED_WRITE_OPTION]: intent.id }, token, writeAbort.signal);
+        leaseOwned = false;
       } catch (error) {
         // A refusal before a process exists has no write to settle; the one-shot intent is dropped.
         this.options.verification.abortWrite(intent.id);
@@ -283,9 +305,16 @@ export class FirmwareDevService {
       this.writeInfo = { taskId: task.id, status: task.status, appSha256: intent.appSha256, planSha256: "", started: true };
       this.notify();
       const settled = await this.waitTask(task.id, UPLOAD_TIMEOUT);
-      const metadata = settled.metadata as { simulation?: { appSha256?: string; planSha256?: string } } | undefined;
+      const metadata = settled.metadata as {
+        simulation?: { appSha256?: string; planSha256?: string };
+        writeCheck?: { ok?: boolean; problems?: string[] };
+      } | undefined;
       const appSha256 = String(metadata?.simulation?.appSha256 ?? "");
       const planSha256 = String(metadata?.simulation?.planSha256 ?? "");
+      // Exit code 0 only says esptool finished. This says the command it ran is the single app-only
+      // segment that was planned and each of those hashes was verified — without it nothing downstream counts.
+      const writeCheck = metadata?.writeCheck;
+      const writeProven = writeCheck?.ok === true;
       this.writeInfo = { taskId: settled.id, status: settled.status, appSha256: appSha256 || intent.appSha256, planSha256, started: true };
       if (settled.status !== "succeeded") {
         const detail = settled.status === "cancelled"
@@ -293,17 +322,22 @@ export class FirmwareDevService {
           : "写入任务失败，可能已发生部分写入；不会自动重试或回滚，请核对设备后重新开始";
         throw new Error(detail);
       }
+      if (!writeProven) {
+        const problems = Array.isArray(writeCheck?.problems) ? writeCheck!.problems!.filter(Boolean).join("；") : "上传记录缺少实际写入命令核对结果";
+        throw new Error("进程已退出但实际写入的段/命令未通过核对（" + problems + "）；不能视为 app-only 写入成功，不能进入实机验证");
+      }
       if (!sha256.test(appSha256) || appSha256.toLowerCase() !== this.qemuInfo?.appSha256.toLowerCase()) throw new Error("写入记录的 app 与 QEMU 证据不一致；不能继续实机验证");
       if (!sha256.test(planSha256)) throw new Error("写入记录缺少部署计划摘要；不能绑定实机验证");
       this.stage = "written";
-      this.endStep("succeeded", "任务 " + settled.id.slice(0, 8) + " · app " + short(appSha256));
+      this.endStep("succeeded", "任务 " + settled.id.slice(0, 8) + " · app-only 单段已核对");
       return this.view();
     } catch (error) {
-      // Before an intent exists no process was started; free exactly this token (a stale token is a no-op).
-      if (!intentIssued) deviceLease.release(token);
+      // A refusal or a withdrawn intent never handed the lease to a task; free exactly this token
+      // (a stale token is a no-op, so a later owner can never be released here).
+      if (leaseOwned) deviceLease.release(token);
       this.endStep("failed", String(error instanceof Error ? error.message : error));
       throw error;
-    } finally { this.leave(); }
+    } finally { this.writeAbort = null; this.leave(); }
   }
 
   /** New physical session on the written port: challenge, 20 COUNTs and the quiet window. */
@@ -335,17 +369,26 @@ export class FirmwareDevService {
   }
 
   /**
-   * A proposed edit of an existing in-scope firmware source. The host checks the scope, the exact
-   * disk text the proposal was based on and the size; the renderer then writes that exact content.
+   * The automatic task's real edit of ONE existing in-scope firmware source.
+   *
+   * The host — not the renderer — owns every check and the write itself: this run's session and its
+   * pinned project, the file scope, the exact disk text the change was based on, no unsaved buffer,
+   * no running task, no cancellation/project switch, an ordinary in-tree file (no symlink/junction on
+   * any path segment, not reserved, not a tool cache), and that the target already exists. Only edits
+   * made before this round's build are accepted, so the built image always contains them.
+   * The ordinary review flow for other agents is untouched.
    */
-  async authorizeEdit(options: { path: string; expected: string; content: string }): Promise<{ path: string; before: string }> {
+  async applyEdit(options: { path: string; expected: string; content: string }): Promise<{ path: string; before: string; after: string }> {
     const session = this.requireSession();
     if (!session.sourceEditAuthorized) throw new Error("本次任务没有源码编辑授权");
+    // Fail fast while another host step runs; the authoritative serialization is enter() below.
     if (this.busy) throw new Error("自动任务正在执行 " + this.busy + "，不能同时修改源码");
+    if (this.stage !== "ready") throw new Error("本轮已完成构建；源码修改必须发生在构建之前。请停止并重新开始任务");
     if (this.options.tasks.list().some((task) => task.status === "running")) throw new Error("构建/上传任务运行中，不能修改源码");
+    if (this.options.workspace.root !== session.root) throw new Error("工程目录已切换，自动任务不再授权任何修改");
     const name = typeof options.path === "string" ? options.path.trim() : "";
     if (!isEditableFirmwareSource(name)) throw new Error("超出本次授权的文件：" + (name || "空路径") + "（只允许既有固件源码 src/ 或 main/ 下的 .c/.h/.cpp/.hpp）");
-    if (typeof options.content !== "string" || options.content.length > MAX_EDIT_BYTES) throw new Error("修改内容为空或过大");
+    if (typeof options.content !== "string" || options.content.length === 0 || options.content.length > MAX_EDIT_BYTES) throw new Error("修改内容为空或过大");
     if (this.options.unsaved()) throw new Error("工程有未保存的编辑；请先保存，避免覆盖未落盘的内容");
     const target = path.join(session.root, ...name.split("/"));
     const stat = await fs.lstat(target).catch(() => null);
@@ -354,7 +397,25 @@ export class FirmwareDevService {
     if (current === null) throw new Error("不是既有固件源码，不能新建：" + name);
     if (current !== options.expected) throw new Error(name + " 在生成修改后已被修改（磁盘内容与预览前提不一致），拒绝覆盖");
     if (current === options.content) throw new Error("修改内容与磁盘一致，无需写入");
-    return { path: name, before: current };
+    // Serialize with every other host step: a build or a second edit cannot start while this write
+    // runs, and this write cannot start while one of them is running.
+    this.enter("修改固件源码");
+    try {
+      // The last check, re-run by the workspace immediately before the rename commits the new text
+      // (including Windows rename retries): stop, project switch or a newly unsaved buffer refuses.
+      const guard = () => {
+        if (session.cancelled || this.session !== session) throw new Error("自动任务已停止，修改未写入");
+        if (this.stage !== "ready") throw new Error("本轮已进入构建之后阶段，修改未写入");
+        if (this.options.unsaved()) throw new Error("工程有未保存的编辑；修改未写入");
+      };
+      guard();
+      await this.options.workspace.writeExisting(name, options.content, options.expected, guard);
+      this.endStep("succeeded", name + " · " + options.content.length + " 字节");
+      return { path: name, before: current, after: options.content };
+    } catch (error) {
+      this.endStep("failed", String(error instanceof Error ? error.message : error));
+      throw error;
+    } finally { this.leave(); }
   }
 
   /** Stop is reachable from any stage and never queues behind the step it cancels. */
@@ -363,6 +424,8 @@ export class FirmwareDevService {
     if (!session?.active) return this.view();
     session.cancelled = true;
     this.signal.abort(new Error("宿主已取消"));
+    // A write still re-proving the device stops here, before a write_flash process can exist.
+    this.writeAbort?.abort(new Error("宿主已取消"));
     // The bounded wait is on the real process/lease, not on this handler's own queue.
     await this.options.verification.cancel().catch(() => {});
     // A retained hardware session without a confirmed close keeps its lease; retry the close here.

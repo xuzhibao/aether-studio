@@ -19,7 +19,7 @@ import {
   type VerifiedDeployIntent,
 } from "../esp/deployGate";
 import { findEsptool } from "../esp/esptool";
-import { readDeviceFacts } from "../esp/inspect";
+import { readBoardIdentity, readDeviceFacts } from "../esp/inspect";
 import { applyBuildRecord, buildPreflightInput } from "../esp/preflight";
 import { readEspProject } from "../esp/project";
 import { writeRanges } from "../esp/upload";
@@ -91,7 +91,7 @@ export interface VerifiedDeployPreview {
   port: string;
   appSha256: string;
   inputHash: string;
-  device: { chipName: string; revision: string; flashSize: number | null };
+  device: { chipName: string; revision: string; flashSize: number | null; identity: string };
   slot: { label: string; offset: number; size: number };
   erase: { offset: number; size: number };
   app: { offset: number; size: number };
@@ -277,6 +277,7 @@ export class FirmwareVerificationService {
     if (!this.options.workspace.root || path.resolve(this.options.workspace.root) !== path.resolve(intent.root)) return { allowed: false, reason: "写入工程目录与验证时不一致" };
     if (expected.environment !== intent.environment) return { allowed: false, reason: "写入环境 " + expected.environment + " 与已验证环境 " + intent.environment + " 不一致" };
     if (normalizePort(expected.port) !== normalizePort(intent.port)) return { allowed: false, reason: "写入端口 " + expected.port + " 与已核对端口 " + intent.port + " 不一致" };
+    if (!intent.deviceIdentity) return { allowed: false, reason: "已验证写入意图缺少设备身份" };
     if (expected.appSha256.toLowerCase() !== intent.appSha256.toLowerCase()) return { allowed: false, reason: "私有快照中的 app 与已验证 app 不一致" };
     if (expected.inputHash !== intent.inputHash) return { allowed: false, reason: "核对写入之后工程文件又发生了变化" };
     return verifySimulationEvidence(evidence, expected);
@@ -343,6 +344,7 @@ export class FirmwareVerificationService {
       lease = deviceLease.claim("verification", port);
       const device = await readDeviceFacts(tool, port);
       if (!device.ok) throw new Error("无法读取设备：" + device.error);
+      if (!device.identity) throw new Error("无法从芯片读到稳定的设备身份；不能证明预览、写入与实机挑战是同一块板，已拒绝");
       const result = applyBuildRecord(evaluatePreflight(buildPreflightInput(facts, port, device)), facts);
       const blocks = result.findings.filter((finding) => finding.severity === "block");
       if (blocks.length) throw new Error("写入前核对未通过：" + blocks.map((finding) => finding.title + "（" + finding.next + "）").join("；"));
@@ -362,7 +364,7 @@ export class FirmwareVerificationService {
         port,
         appSha256: target.appSha256,
         inputHash: evidence.inputHash,
-        device: { chipName: device.chipName, revision: device.revision, flashSize: device.flashSize },
+        device: { chipName: device.chipName, revision: device.revision, flashSize: device.flashSize, identity: device.identity },
         slot: { label: target.partition.label, offset: target.partition.offset, size: target.partition.size },
         erase: { offset: target.erase.offset, size: target.erase.size },
         app: { offset: target.appOffset, size: target.appSize },
@@ -411,6 +413,7 @@ export class FirmwareVerificationService {
     if (!fingerprint || fingerprint !== preview.inputHash) throw new Error("核对之后工程文件已变化，请重新验证");
     const intent: VerifiedDeployIntent = {
       id: randomUUID(), evidenceId: preview.evidenceId, root, environment, port,
+      deviceIdentity: preview.device.identity,
       appSha256: preview.appSha256, inputHash: preview.inputHash, slot: preview.slot, erase: preview.erase,
     };
     this.writeIntent = intent;
@@ -749,6 +752,7 @@ export class FirmwareVerificationService {
     if (!deploy) throw new Error("本轮上传任务 " + taskId + " 不是该端口的成功 app-only 写入记录；不能绑定实机证据");
     if (deploy.appSha256.toLowerCase() !== qemu.appSha256.toLowerCase()) throw new Error("本轮写入的 app SHA 与当前 QEMU 证据不一致（写入 " + deploy.appSha256 + "，仿真 " + qemu.appSha256 + "）");
     if (deploy.environment !== qemu.environment) throw new Error("本轮写入的环境与当前 QEMU 证据不一致（写入 " + deploy.environment + "，仿真 " + qemu.environment + "）");
+    if (!deploy.deviceIdentity) throw new Error("写入记录没有设备身份；不能证明实机挑战与写入是同一块板");
     const expectedFwid = qemu.identity.fwid;
 
     this.running = true;
@@ -778,9 +782,25 @@ export class FirmwareVerificationService {
     const startedAt = Date.now();
     const progress = (message: string) => { try { options.onProgress?.(message); } catch { /* progress must not break a run */ } };
     const aborted = () => this.cancelled || options.signal?.aborted === true;
+    // Why this session stopped early. A quiet, healthy board produces none of these; a stop, an
+    // unplugged cable or a read error does. The verdict below must not treat "the clock ran out"
+    // as a pass when the session had already ended for one of these reasons.
+    let interrupted = "";
+    const stopFor = (reason: string) => { if (!interrupted) interrupted = reason; };
+    const readOrStop = async () => {
+      try { return await this.options.serial.read(sessionId); }
+      catch (error) { stopFor("串口读取失败：" + (error instanceof Error ? error.message : String(error))); return null; }
+    };
     try {
       lease = deviceLease.claim("verification", port);
       this.hardwareLease = lease;
+      // Under this lease, before a session exists: a different or ambiguous board on the port is
+      // refused instead of being credited with this write.
+      const found = await findEsptool(this.options.tools);
+      if (!found.tool) throw new Error(found.reason || "找不到 esptool");
+      const board = await readBoardIdentity(found.tool, port);
+      if (!board.ok) throw new Error("无法读取实机设备身份：" + board.error);
+      if (board.identity !== deploy.deviceIdentity) throw new Error("端口 " + port + " 上的设备与写入时的不是同一块板；实机验证拒绝");
       sessionId = await this.options.serial.open(port, DEVICE_BAUD);
       this.priorSessions.push(sessionId);
       const send = async (text: string) => { await this.options.serial.write(sessionId, Array.from(Buffer.from(text, "utf8"))); };
@@ -789,8 +809,9 @@ export class FirmwareVerificationService {
       const deadline = Date.now() + 30_000;
       // Phase 1: identity and one fresh challenge in this session.
       while (true) {
-        if (aborted()) { session.disconnect("宿主已取消"); break; }
-        const bytes = await this.options.serial.read(sessionId).catch((error) => { session.disconnect(String(error)); return [] as number[]; });
+        if (aborted()) { stopFor("宿主已取消"); session.disconnect("宿主已取消"); break; }
+        const bytes = await readOrStop();
+        if (bytes === null) { session.disconnect(interrupted); break; }
         if (bytes.length) session.feed(Uint8Array.from(bytes));
         if (session.currentPhase === "awaiting-ready" && helloCount < 2 && helloSentAt && Date.now() - helloSentAt > 1500) await sendHello();
         if (session.currentPhase === "ready" && !issued) {
@@ -807,8 +828,8 @@ export class FirmwareVerificationService {
         const countDeadline = Date.now() + counts * 6_000;
         let requested = 0;
         for (;;) {
-          if (aborted()) break;
-          const read = await this.options.serial.read(sessionId).catch(() => null);
+          if (aborted()) { stopFor("宿主已取消"); break; }
+          const read = await readOrStop();
           if (read === null) break;
           if (read.length) monitor.feed(Uint8Array.from(read));
           if (requested === counts && monitor.observed >= counts) break;
@@ -824,13 +845,14 @@ export class FirmwareVerificationService {
       // session is closed instead of being kept open for a result that cannot change.
       const observeStart = Date.now();
       while (session.currentPhase === "passed" && observeStart + observeMs > Date.now()) {
-        if (aborted()) break;
-        const read = await this.options.serial.read(sessionId).catch(() => null);
+        if (aborted()) { stopFor("宿主已取消"); break; }
+        const read = await readOrStop();
         if (read === null) break;
         if (read.length) monitor.feed(Uint8Array.from(read));
         monitor.tick(observeMs);
         await wait(POLL_MS * 2);
       }
+      if (session.currentPhase === "failed" && !interrupted) stopFor("观察窗口内会话不再通过");
       const observedMs = Date.now() - observeStart;
       // The session must really close before the port can be described as reusable.
       closeVerified = await closeSession();
@@ -844,8 +866,12 @@ export class FirmwareVerificationService {
       };
       const checked = verifyMonitorEvidence(deploy, monitorEvidence, { priorSessionIds: this.priorSessions.filter((item) => item !== sessionId).map(String) });
       const strictlyIncreasing = stability.strictlyIncreasing && stability.counts.length === counts && stability.failure === "";
-      const passed = challengePassed && checked.ok && strictlyIncreasing && !stability.restartDetected && observedMs >= observeMs && closeVerified;
+      // A stop, a lost connection or a read error is a failure even when the wall clock had already
+      // covered the whole window: an interrupted sample proves nothing about 60 s of quiet running.
+      const passed = challengePassed && checked.ok && strictlyIncreasing && !stability.restartDetected
+        && observedMs >= observeMs && closeVerified && !interrupted;
       const reason = !challengePassed ? (record.failure?.code ?? "挑战未通过")
+        : interrupted ? interrupted
         : !checked.ok ? checked.reason
         : !closeVerified ? "串口关闭未得到确认；端口不视为可重新使用"
         : stability.failure ? "COUNT 采样：" + stability.failure
@@ -893,7 +919,7 @@ export class FirmwareVerificationService {
       .sort((a, b) => (a.endedAt ?? a.startedAt).localeCompare(b.endedAt ?? b.startedAt))
       .at(-1);
     if (!task) return null;
-    const metadata = task.metadata as { simulation?: { appSha256?: string; planSha256?: string }; appOnly?: { mode?: string } } | undefined;
+    const metadata = task.metadata as { simulation?: { appSha256?: string; planSha256?: string }; appOnly?: { mode?: string; identity?: string } } | undefined;
     const simulation = metadata?.simulation;
     // Only an app-only write carries the verified single-app binding. A full-plan write may also
     // contain a simulation record, but it must never authorize the hardware challenge.
@@ -904,6 +930,7 @@ export class FirmwareVerificationService {
       environment: task.environment ?? "",
       appSha256: String(simulation.appSha256),
       planSha256: String(simulation.planSha256),
+      deviceIdentity: String(metadata.appOnly.identity ?? ""),
       recordedAt: task.endedAt ?? task.startedAt,
     };
   }
@@ -916,11 +943,11 @@ export class FirmwareVerificationService {
     if (task.provider !== "esp.upload" || task.status !== "succeeded") return null;
     if (!root || task.root !== root) return null;
     if (normalizePort(String(task.options?.port ?? "")) !== normalizePort(port)) return null;
-    const metadata = task.metadata as { simulation?: { appSha256?: string; planSha256?: string }; appOnly?: { mode?: string } } | undefined;
+    const metadata = task.metadata as { simulation?: { appSha256?: string; planSha256?: string }; appOnly?: { mode?: string; identity?: string } } | undefined;
     if (!metadata?.appOnly || metadata.appOnly.mode !== "app-only") return null;
     const simulation = metadata.simulation;
     if (!simulation || !SHA256.test(String(simulation.appSha256 ?? "")) || !SHA256.test(String(simulation.planSha256 ?? ""))) return null;
-    return { port, environment: task.environment ?? "", appSha256: String(simulation.appSha256), planSha256: String(simulation.planSha256), recordedAt: task.endedAt ?? task.startedAt };
+    return { port, environment: task.environment ?? "", appSha256: String(simulation.appSha256), planSha256: String(simulation.planSha256), deviceIdentity: String(metadata.appOnly.identity ?? ""), recordedAt: task.endedAt ?? task.startedAt };
   }
 
   private directory() {

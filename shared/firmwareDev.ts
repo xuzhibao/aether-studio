@@ -61,7 +61,7 @@ export interface FirmwareDevAPI {
   preview: () => Promise<FirmwareDevSessionView>;
   write: () => Promise<FirmwareDevSessionView>;
   challenge: () => Promise<FirmwareDevSessionView>;
-  /** Host-side scope and conflict check for one edited source file; the renderer then writes it. */
-  authorizeEdit: (options: { path: string; expected: string; content: string }) => Promise<{ path: string; before: string }>;
+  /** Host-checked, host-written edit of one existing in-scope firmware source (automatic task only). */
+  applyEdit: (options: { path: string; expected: string; content: string }) => Promise<{ path: string; before: string; after: string }>;
   onChanged: (listener: (view: FirmwareDevSessionView) => void) => () => void;
 }

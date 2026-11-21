@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { SerialPort } from "serialport";
@@ -24,8 +25,21 @@ export async function usbDescriptorFor(port: string): Promise<EspUsbDescriptor |
   };
 }
 
+/**
+ * Opaque, stable handle for one physical board, derived from the factory MAC the chip itself reports.
+ * The raw MAC never leaves this host-side module: callers can compare handles across ports and steps,
+ * which is what proves "the same board" — a COM name and a USB VID/PID cannot.
+ */
+export function deviceIdentityFrom(esptoolOutput: string): string {
+  const mac = /^MAC:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s*$/im.exec(esptoolOutput)?.[1]?.toLowerCase();
+  if (!mac) return "";
+  return createHash("sha256").update("aether-board:" + mac).digest("hex").slice(0, 16);
+}
+
 export interface EspDeviceFacts {
   ok: boolean; error: string;
+  /** Empty when the chip reported no MAC; an unknown board can never be re-identified. */
+  identity: string;
   chip: EspToolChipFacts | null; flash: EspToolFlashFacts | null;
   chipId: number | null; chipName: string; revision: string; flashSize: number | null;
   partitions: EspPartitionTable;
@@ -39,7 +53,7 @@ export interface EspDeviceFacts {
  * The caller owns the port lease.
  */
 export async function readDeviceFacts(tool: EsptoolTool, port: string, signal?: AbortSignal): Promise<EspDeviceFacts> {
-  const fail = (error: string): EspDeviceFacts => ({ ok: false, error, chip: null, flash: null, chipId: null, chipName: "", revision: "", flashSize: null, partitions: { entries: [], valid: false, error: "未读取" }, security: null, notes: [] });
+  const fail = (error: string): EspDeviceFacts => ({ ok: false, error, identity: "", chip: null, flash: null, chipId: null, chipName: "", revision: "", flashSize: null, partitions: { entries: [], valid: false, error: "未读取" }, security: null, notes: [] });
   const id = await runEsptool(tool, ["--port", port, "flash_id"], { signal, timeoutMs: 90000 });
   if (id.cancelled) return fail("已取消");
   if (id.code !== 0) return fail(describeEsptoolFailure(id.output));
@@ -70,7 +84,21 @@ export async function readDeviceFacts(tool: EsptoolTool, port: string, signal?: 
   else if (info.code !== 0) notes.push("安全信息读取失败：" + describeEsptoolFailure(info.output));
   else security = parseSecurityInfo(info.output);
 
-  return { ok: true, error: "", chip: parsed.chip, flash: parsed.flash, chipId: chip?.id ?? null, chipName: parsed.chip.name, revision: parsed.chip.revision, flashSize: parsed.flash?.size ?? null, partitions, security, notes: [...parsed.errors, ...notes] };
+  const identity = deviceIdentityFrom(id.output);
+  return { ok: true, error: "", identity, chip: parsed.chip, flash: parsed.flash, chipId: chip?.id ?? null, chipName: parsed.chip.name, revision: parsed.chip.revision, flashSize: parsed.flash?.size ?? null, partitions, security, notes: [...parsed.errors, ...notes] };
+}
+
+/**
+ * The lightest possible identity probe: one `flash_id` on the caller's port lease, reduced to the
+ * opaque board handle. Used where a full fact read (partition table, security) would be wasted.
+ */
+export async function readBoardIdentity(tool: EsptoolTool, port: string, signal?: AbortSignal): Promise<{ ok: boolean; identity: string; chipName: string; error: string }> {
+  const run = await runEsptool(tool, ["--port", port, "flash_id"], { signal, timeoutMs: 90000 });
+  if (run.cancelled) return { ok: false, identity: "", chipName: "", error: "已取消" };
+  if (run.code !== 0) return { ok: false, identity: "", chipName: "", error: describeEsptoolFailure(run.output) };
+  const parsed = parseFlashId(run.output);
+  if (!parsed.chip) return { ok: false, identity: "", chipName: "", error: parsed.errors.join("；") || "无法解析 esptool 输出" };
+  return { ok: true, identity: deviceIdentityFrom(run.output), chipName: parsed.chip.name, error: "" };
 }
 
 /**

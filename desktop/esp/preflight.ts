@@ -16,7 +16,7 @@ export interface EspPreflightOptions {
   signal?: AbortSignal;
 }
 
-const NONE: EspDeviceFacts = { ok: false, error: "未读取设备", chip: null, flash: null, chipId: null, chipName: "", revision: "", flashSize: null, partitions: { entries: [], valid: false, error: "未读取" }, security: null, notes: [] };
+const NONE: EspDeviceFacts = { ok: false, error: "未读取设备", identity: "", chip: null, flash: null, chipId: null, chipName: "", revision: "", flashSize: null, partitions: { entries: [], valid: false, error: "未读取" }, security: null, notes: [] };
 
 /** The single mapping from raw facts to the preflight input; the provider and the UI share it. */
 export function buildPreflightInput(facts: EspProjectFacts, port: string, device: EspDeviceFacts): EspPreflightInput {

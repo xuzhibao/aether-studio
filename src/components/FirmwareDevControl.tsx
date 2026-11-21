@@ -21,8 +21,14 @@ const STAGE_LABEL: Record<FirmwareDevSessionView["stage"], string> = {
   verified: "实机验证通过",
 };
 
-const short = (value: string | undefined, size = 12) => (!value ? "" : value.length > size ? value.slice(0, size) + "…" : value);
 const oneLine = (value: string, size = 180) => value.replace(/\s+/g, " ").trim().slice(0, size);
+const writeLabel = (write: FirmwareDevSessionView["write"]) => {
+  if (!write) return "";
+  if (write.status === "succeeded") return "已完成：app-only 单段已核对";
+  if (write.status === "running") return "进行中";
+  if (write.status === "cancelled") return "已取消（可能已部分写入，不会自动回滚）";
+  return "失败（不会自动重试或回滚）";
+};
 
 export function FirmwareDevControl() {
   const root = useDisk((state) => state.root);
@@ -36,6 +42,7 @@ export function FirmwareDevControl() {
   const [session, setSession] = useState<FirmwareDevSessionView | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [started, setStarted] = useState(false);
 
   const api = typeof window === "undefined" ? undefined : window.aether?.firmwareDev;
   const appOnly = session?.appOnlyWriteAuthorized ?? false;
@@ -77,9 +84,11 @@ export function FirmwareDevControl() {
     // The user's confirmation of this run's two write scopes is what the host records.
     const started = await api.start({ environment, port: port.trim(), appOnlyWrite: true, sourceEdit: true });
     setSession(started);
-    // The built-in Agent owns every later action; nothing is done by this panel or by the user.
+    // Only the trusted session is opened here. The round's real task description is whatever the user
+    // types in the ordinary chat input; the built-in Agent runs it and owns every later action.
     useStudio.getState().setAgent("firmware-dev");
-    await useStudio.getState().runAgent("执行当前工程的自动固件开发任务。按真实步骤依次调用工具，不要跳过任何一步；失败或取消时如实说明首个错误与阶段。");
+    useStudio.getState().setAgentDraft("");
+    setStarted(true);
   });
 
   const stop = () => run(async () => {
@@ -131,12 +140,15 @@ export function FirmwareDevControl() {
             <span className="truncate text-[#90969E]">{step.detail}</span>
           </div>
         ))}
-        {session!.build && <div className="mt-1 font-mono text-[8px] text-[#8A9098]">app {short(session!.build.appSha256)} · {session!.build.firmwareBytes} B</div>}
-        {session!.qemu && <div className="font-mono text-[8px] text-[#8A9098]">QEMU {session!.qemu.boots} 次 · fw {session!.qemu.fwid}</div>}
-        {session!.preview && <div className="font-mono text-[8px] text-[#8A9098]">槽 {session!.preview.slot.label} · 擦除 {session!.preview.erase.size} B</div>}
-        {session!.write && <div className="font-mono text-[8px] text-[#8A9098]">写入 {session!.write.status} · {short(session!.write.taskId, 8)}</div>}
-        {session!.challenge && <div className="font-mono text-[8px] text-[#8A9098]">实机挑战 {session!.challenge.passed && session!.challenge.bound ? "通过" : "未通过"} · 会话 {session!.challenge.sessionId}</div>}
-        {progress && <div className="font-mono text-[8px] text-[#8A9098]">{progress}{session!.stability?.restartDetected ? " · 检测到复位/看门狗" : ""}</div>}
+        {session!.build && <div className="text-[8.5px] text-[#8A9098]">构建产物 {session!.build.firmwareBytes} 字节</div>}
+        {session!.qemu && <div className="text-[8.5px] text-[#8A9098]">QEMU {session!.qemu.boots} 次真实启动均通过</div>}
+        {session!.preview && <div className="text-[8.5px] text-[#8A9098]">目标槽 {session!.preview.slot.label} · 擦除 {session!.preview.erase.size} 字节</div>}
+        {session!.write && <div className="text-[8.5px] text-[#8A9098]">写入{writeLabel(session!.write)}</div>}
+        {session!.challenge && <div className="text-[8.5px] text-[#8A9098]">实机挑战 {session!.challenge.passed && session!.challenge.bound ? "通过（本会话）" : "未通过"}</div>}
+        {progress && <div className="text-[8.5px] text-[#8A9098]">{progress}{session!.stability?.restartDetected ? " · 检测到复位/看门狗" : ""}</div>}
+        {started && !agentRunning && session!.stage === "ready" && (
+          <div className="mt-1 text-[8.5px] text-[#2F6BAE]">已在下方输入框描述本轮要做的固件改动，然后发送即可；工具调用由内置 Agent 自己完成。</div>
+        )}
         <div className="mt-1.5 flex gap-1.5">
           <button className="btn px-2 py-1 text-[9.5px]" disabled={busy && !agentRunning} onClick={() => void stop()}>
             <Square size={9} /> 停止

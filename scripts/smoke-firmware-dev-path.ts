@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { FwValStabilityMonitor } from "../shared/firmwareValidation";
 import { firmwareDevStageOrder, normalizeFirmwareDevPort } from "../desktop/firmwareDev";
 import { isEditableFirmwareSource } from "../shared/firmwareDev";
+import { deviceIdentityFrom } from "../desktop/esp/inspect";
 
 // Path checks for the automatic firmware task that do not need a board.
 //
@@ -107,6 +108,19 @@ const feed = (monitor: FwValStabilityMonitor, text: string) => monitor.feed(Buff
   assert.deepEqual(firmwareDevStageOrder, ["ready", "built", "simulated", "previewed", "written", "verified"]);
   assert.equal(normalizeFirmwareDevPort(" com4 "), "COM4");
   check("stage order and port normalization are fixed");
+}
+
+// --- The board handle is opaque, stable per chip and different for another board.
+{
+  const a = "MAC: 34:cd:b0:97:63:f0" + String.fromCharCode(10);
+  const b = "MAC: 34:cd:b0:97:63:f1" + String.fromCharCode(10);
+  const first = deviceIdentityFrom(a);
+  assert.equal(first, deviceIdentityFrom(a), "the same chip always yields the same handle");
+  assert.equal(/^[0-9a-f]{16}$/.test(first), true, "the handle is an opaque 16-hex token");
+  assert.equal(first.includes("34cdb0"), false, "the raw MAC never leaks into the handle");
+  assert.notEqual(first, deviceIdentityFrom(b), "another chip yields another handle");
+  assert.equal(deviceIdentityFrom("no mac here"), "", "a chip that reported no MAC has no handle");
+  check("device identity is opaque, stable per chip and absent when unknown");
 }
 
 console.log("PASS firmware-dev-path: " + passed + " checks");

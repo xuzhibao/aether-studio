@@ -48,6 +48,8 @@ export interface VerifiedDeployIntent {
   root: string;
   environment: string;
   port: string;
+  /** Opaque handle of the one physical board this preview proved; re-checked before any write. */
+  deviceIdentity: string;
   appSha256: string;
   inputHash: string;
   slot: { label: string; offset: number; size: number };
@@ -143,6 +145,8 @@ export interface EspDeployRecord {
   environment: string;
   appSha256: string;
   planSha256: string;
+  /** Opaque handle of the board the write ran on; empty for a record that predates it. */
+  deviceIdentity: string;
   recordedAt: string;
 }
 

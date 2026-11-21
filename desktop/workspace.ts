@@ -138,14 +138,14 @@ export class WorkspaceService {
   private dropBaseline(name: string) {
     for (const key of [...this.baseline.keys()]) if (key === name || key.startsWith(name + "/")) this.baseline.delete(key);
   }
-  private async writeAtomic(target: string, text: string) {
+  private async writeAtomic(target: string, text: string, beforeRename: () => void = () => {}) {
     const temporary = target + ".aether-saving";
     if (await fs.lstat(temporary).catch(() => null)) throw new Error("临时保存文件已存在：" + temporary);
     await fs.writeFile(temporary, text, { flag: "wx" });
     // Windows briefly returns EPERM/EBUSY when a virus scanner or another handle holds the destination open.
     // Retrying keeps the write atomic instead of failing the whole project save on a transient lock.
     for (let attempt = 0; ; attempt++) {
-      try { await fs.rename(temporary, target); return; }
+      try { beforeRename(); await fs.rename(temporary, target); return; }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (attempt >= 4 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
@@ -222,6 +222,43 @@ export class WorkspaceService {
     await fs.mkdir(path.dirname(target), { recursive: true });
     await this.writeAtomic(target, text);
     this.baseline.set(name, digest(text));
+  }
+  /**
+   * Overwrites one EXISTING project file with text the caller already checked against `expected`.
+   * Used by the authorized automatic firmware task: the host, not the renderer, proves the path is
+   * an ordinary in-tree file (no symlink/junction anywhere on the way, not reserved, not a tool
+   * cache), that the disk still holds exactly the previewed text, and that it is not a new file.
+   *
+   * `guard` is the caller's last check. It is evaluated immediately before the rename that makes the
+   * new text visible — including on every Windows retry of that rename — so a project switch or a
+   * cancellation that lands during the write refuses instead of leaving a half-authorized edit.
+   */
+  async writeExisting(name: string, text: string, expected: string, guard: () => void = () => {}) {
+    this.checkName(name);
+    const root = this.requireRoot();
+    const target = await this.target(name);
+    const stat = await fs.lstat(target).catch(absent);
+    if (!stat) throw new Error("不是既有文件，不能新建：" + name);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("不是工程内的普通文件，不能修改：" + name);
+    const current = await fs.readFile(target, "utf8").catch(absent);
+    if (current === null) throw new Error("不是既有文件，不能新建：" + name);
+    if (current !== expected) throw new Error(name + " 在生成修改后已被修改（磁盘内容与预览前提不一致），拒绝覆盖");
+    // The last await is behind us: bind the commit to this exact project, cancellation and preview.
+    const commit = () => {
+      guard();
+      if (this.root !== root) throw new Error("工程目录已切换，修改未写入");
+    };
+    commit();
+    this.writing = true;
+    try { await this.writeAtomic(target, text, commit); }
+    catch (error) {
+      // Only the temporary file this call created is removed, so a refused edit leaves no residue
+      // that would block the next authorized write.
+      await fs.rm(target + ".aether-saving", { force: true }).catch(() => {});
+      throw error;
+    } finally { this.writing = false; }
+    this.baseline.set(name, digest(text));
+    return { path: name, before: current };
   }
   async reload() { return this.open(this.requireRoot()); }
   async fingerprint(exclude: string[] = []) { const context = (await this.read(this.requireRoot())).context; for (const file of exclude) delete context.files[file]; return digest(encodeProject(context)); }
