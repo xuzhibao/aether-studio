@@ -37,13 +37,32 @@ export interface EspDeployExpectation {
 
 export type EspSimulationVerdict = { allowed: true; evidence: EspSimulationEvidence } | { allowed: false; reason: string };
 
+/**
+ * Host-only binding issued by an explicit verified-deploy preview. It is looked up by the upload
+ * provider through a task option the IPC entry never accepts from the renderer, so a generic deploy
+ * cannot consume it and the preview cannot widen the write beyond the previewed active OTA slot.
+ */
+export interface VerifiedDeployIntent {
+  id: string;
+  evidenceId: string;
+  root: string;
+  environment: string;
+  port: string;
+  /** Opaque handle of the one physical board this preview proved; re-checked before any write. */
+  deviceIdentity: string;
+  appSha256: string;
+  inputHash: string;
+  slot: { label: string; offset: number; size: number };
+  erase: { offset: number; size: number };
+}
+
 export interface EspSimulationGate {
   /** Evaluated on every deploy; the host can require the gate per project and change its mind later. */
-  required: () => boolean | Promise<boolean>;
+  required: (options?: Record<string, string>) => boolean | Promise<boolean>;
   /** Reads the newest host-trusted record. Must never be wired to renderer input. */
-  evidence: () => Promise<EspSimulationEvidence | null>;
+  evidence: (options?: Record<string, string>) => Promise<EspSimulationEvidence | null>;
   /** Optional host verifier (signatures, external store). Defaults to the strict comparison below. */
-  verify?: (evidence: EspSimulationEvidence | null, expected: EspDeployExpectation) => EspSimulationVerdict | Promise<EspSimulationVerdict>;
+  verify?: (evidence: EspSimulationEvidence | null, expected: EspDeployExpectation, options?: Record<string, string>) => EspSimulationVerdict | Promise<EspSimulationVerdict>;
 }
 
 export interface EspSnapshotEntry { name: string; file: string; size: number; sha256: string }
@@ -97,14 +116,14 @@ export function verifySimulationEvidence(evidence: EspSimulationEvidence | null,
  * when it is true. Returns the accepted record, or null when this deploy does not require one.
  * A thrown error cancels the task, so zero bytes reach flash.
  */
-export async function enforceSimulationGate(gate: EspSimulationGate, expectation: () => Promise<EspDeployExpectation>, log: (line: string) => void): Promise<EspSimulationEvidence | null> {
-  if (!(await gate.required())) return null;
+export async function enforceSimulationGate(gate: EspSimulationGate, expectation: () => Promise<EspDeployExpectation>, log: (line: string) => void, options?: Record<string, string>): Promise<EspSimulationEvidence | null> {
+  if (!(await gate.required(options))) return null;
   const expected = await expectation();
   let evidence: EspSimulationEvidence | null;
-  try { evidence = await gate.evidence(); }
+  try { evidence = await gate.evidence(options); }
   catch (error) { throw new Error("无法读取仿真证据：" + (error instanceof Error ? error.message : String(error)) + "。未写入任何数据。"); }
   let verdict: EspSimulationVerdict;
-  try { verdict = gate.verify ? await gate.verify(evidence, expected) : verifySimulationEvidence(evidence, expected); }
+  try { verdict = gate.verify ? await gate.verify(evidence, expected, options) : verifySimulationEvidence(evidence, expected); }
   catch (error) { throw new Error("仿真证据校验失败：" + (error instanceof Error ? error.message : String(error)) + "。未写入任何数据。"); }
   if (!verdict.allowed) throw new Error("该工程要求先通过仿真，但当前证据不足以放行：" + verdict.reason + "。未写入任何数据。");
   log("[aether] 仿真证据已绑定 app " + expected.appSha256 + "（env " + expected.environment + "，来源 " + (verdict.evidence.source || "未记录") + "，记录于 " + verdict.evidence.recordedAt + "）");
@@ -126,6 +145,8 @@ export interface EspDeployRecord {
   environment: string;
   appSha256: string;
   planSha256: string;
+  /** Opaque handle of the board the write ran on; empty for a record that predates it. */
+  deviceIdentity: string;
   recordedAt: string;
 }
 

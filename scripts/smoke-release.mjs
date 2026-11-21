@@ -63,6 +63,7 @@ try {
     'ESP32-S3 DevKitC-1', '基础元器件库', 'MicroPython', 'Monaco 编辑器', 'Demo Simulation', 'OpenAI Compatible API',
     'ESP32 示例工程', '工程文件', '工程 Agent Tools', '桌面串口', 'WebSocket 通信', 'PlatformIO', 'ESP 设备检测',
     'C/C++ · clangd', '交互式终端', 'ESP Flash 备份/恢复', 'Firmware Verification（固件验证）',
+    '自动固件任务（ESP32-C3 验证工程）',
   ];
   const pluginDialog = page.getByRole('dialog');
   const summary = await pluginDialog.getByText(/^本地内置插件 · \d+ \/ \d+ 已启用$/).textContent();

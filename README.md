@@ -16,7 +16,8 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 - PlatformIO 部署插件：明确填写端口后，运行实际构建及上传命令。不会因为打开串口而显示烧录成功。
 - ESP32-S3 与 ESP32-C3（原生 USB CDC）C++ 模板，以及 MicroPython 电路演示模板。
 - ESP 设备插件：按端口显式触发的只读检测（芯片、flash、板上分区表、安全状态）和部署前核对（构建产物、写入地址、擦除对齐、分区覆盖），写入前为被擦除的 4KB 区块生成并校验快照。
-- **Firmware Verification（固件验证）** 面板：真实 PlatformIO 构建 → 真实 Espressif QEMU 启动与宿主随机挑战 → 既有部署流程中的 app-only 单段写入 → 新串口会话实机挑战。四个阶段分别显示“已仿真 / 预检通过 / 上传完成 / 实机行为通过”，证据绑定 app SHA-256、环境与工程输入指纹；不取代 Demo Simulation。
+- **Firmware Verification（固件验证）** 面板：真实 PlatformIO 构建 → 真实 Espressif QEMU 启动与宿主随机挑战 → 面板内核对并显式烧录活动 OTA 槽中的同一 app 镜像 → 新串口会话实机挑战。写入不跳转通用部署对话框、不再次构建、不隐式保存；证据绑定 app SHA-256、环境与工程输入指纹；不取代 Demo Simulation。
+- **自动固件任务**（`aether.firmware.dev`）：用户显式开始后，内置 Agent 通过类型化工具依次完成读取授权源码、受控编辑、真实构建、两次 QEMU 新挑战、只读预检、同一镜像的 app-only 单段写入、新串口会话实机挑战与 COUNT 稳定性观察。终态以宿主阶段为准，模型自称成功不算通过；停止会中断真实进程并撤销剩余读写授权，不自动回滚已开始的写入。它复用固件验证的校验链路，不取代该面板。
 - MicroPython 板载文件面板：手动选择端口后从根目录只读浏览设备文件、逐级进入目录，并把单个文件下载到本机新文件；`resume fs ls|cp` 固定 argv、共用串口租约、真实退出码与取消，不上传、不删除、不改名，也不在板上安装任何内容。
 - MicroPython 设备运行插件：在已安装 MicroPython 的板上，用官方 `mpremote` 运行当前磁盘工程中已保存的 `.py`；固定 argv、手动端口、真实日志/退出码/取消，不安装固件，也不向板上持久上传文件。
 - 交互式 PTY 终端：在磁盘工程目录启动本机 shell，支持输入、中断、尺寸调整和会话清理。
@@ -29,7 +30,7 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 
 ## 下载桌面包
 
-[GitHub Releases](https://github.com/xuzhibao/aether-studio/releases) 提供预发行测试包：
+[GitHub Releases](https://github.com/xuzhibao/aether-studio/releases) 提供正式版与历史预发行包；`v0.1.0` 及其后为非预发行版本：
 
 | 系统 | 架构 | 文件 |
 | --- | --- | --- |
@@ -40,7 +41,15 @@ Aether Studio 是一个开源硬件开发工作区，使用 Electron、React、T
 
 macOS 将 Aether Studio.app 放入应用程序目录。Linux AppImage 需添加执行权限；无 FUSE 时可添加 `--appimage-extract-and-run` 参数，或使用 tar.gz 解压目录中的 `aether-studio`。
 
-macOS 包使用 ad-hoc 临时签名，未经 Apple 公证；Windows 包未做发布者签名。系统可能要求手动允许运行。`SHA256SUMS` 提供所有下载文件的 SHA-256。
+macOS 包使用 ad-hoc 临时签名，未经 Apple 公证；Windows 包未做发布者签名。本版没有新增代码签名，也没有配置公证。系统可能要求手动允许运行。`SHA256SUMS` 提供所有下载文件的 SHA-256。
+
+### 发行文件验收与验收边界
+
+每个发行版由四个原生 GitHub runner 分别构建，并针对**实际公开的下载文件**做安装或解包后启动验收：Windows 跑 NSIS 静默安装与 ZIP 解包，Linux 跑 AppImage 解包与 tar.gz 解包，macOS Apple Silicon 与 Intel 各从 DMG 和 ZIP 取出 .app 启动。每个文件都用当次构建的字节验收，发布前再比对一次摘要，因此公开的包就是被测过的包。这只能说明安装/解包后的应用能启动，不等于功能已在对应系统上跑通。
+
+- **Windows 实板覆盖**：`0.1.0` 在 Windows 10 上用真实打包应用、真实 PlatformIO 6.1.19 / ESP-IDF 5.4.1、真实 Espressif QEMU 9.2.2 与真实 esptool，在一台 ESP32-C3 专用测试板（原生 USB-Serial/JTAG，16 MB）上跑通两轮完整自动固件任务；每轮真实构建、两次 QEMU 新挑战、只读预检、app-only 单段写入、新串口会话实机挑战，以及 20 次严格递增 COUNT 与 60 秒无重启/看门狗观察。拒绝路径（端口被占用、写入前取消、过期预览）均在写入前止步，零写入。
+- **Linux / macOS 边界**：只完成发行包验收，没有实板，也没有真实构建、写入或实机挑战的行为验收。
+- **未覆盖**：OLED 等外设、断点调试、写入中途断电或拔线后的设备状态、其他芯片/板型/固件、完整镜像与分区表写入、ESP32-S3 实板。QEMU 只模拟 ESP32-C3 SoC 与 UART0，不是电路电气仿真，也不模拟 USB-Serial/JTAG。
 
 下载包不捆绑 PlatformIO、clangd、芯片 SDK 或 AI 服务。可以先体验工程编辑、Demo Simulation 和交互终端，再按需安装开发工具。
 
@@ -75,7 +84,13 @@ npm run desktop:package
 npm run desktop:release
 ```
 
-Windows 输出安装包和 ZIP，macOS 输出 DMG 和 ZIP，Linux 输出 AppImage 和 tar.gz。GitHub 的 **Desktop release** 工作流会构建并启动检查四种目标；主分支通过完整冒烟和全部目标检查后才创建 Release，并在全部文件上传后公开。已发布版本不会被自动覆盖，下一次发布需更新版本号。
+Windows 输出安装包和 ZIP，macOS 输出 DMG 和 ZIP，Linux 输出 AppImage 和 tar.gz。本地可再跑一次发行文件验收：
+
+```bash
+AETHER_RELEASE_TARGET=windows-x64 npm run smoke:release-assets
+```
+
+`AETHER_RELEASE_TARGET` 取 `windows-x64`、`linux-x64`、`macos-arm64` 或 `macos-x64`，脚本会用 `release/` 里该目标的两个公开文件做真实安装或解包，再启动解出来的程序；它只接受与这两个文件完全一致的内容。GitHub 的 **Desktop release** 工作流在四个原生 runner 上做同一件事，并把通过验收的字节与摘要上传；主分支通过完整冒烟、四个目标的实际发行文件验收后，publish 作业再核对四份摘要与待上传字节一致才创建 Release，全部资产上传后公开。已发布版本不会被自动覆盖，下一次发布需更新版本号。
 
 ## 配置 PlatformIO
 
@@ -245,7 +260,7 @@ ESP 相关能力由 **ESP 设备检测** 插件（`aether.esp.device`）提供�
 - ESP32-C3（COM4，原生 USB-Serial/JTAG，16MB）：真实只读检测成功（芯片、flash、6 个厂商分区、USB 分类）；真实部署前核对在“4MB 默认构建 vs 16MB 厂商分区”下正确阻止写入，全程只执行 `flash_id` / `read_flash` / `summary`，没有任何写入命令。
 - ESP32-C3（COM4，16MB，厂商分区）：beta.3 的实机烧录与原生 USB 日志来自此设备；流程是读取备份、写入验证程序、再恢复备份。
 - ESP32-C3（COM4，原生 USB-Serial/JTAG，16MB，esptool 4.9.0）：beta.9 用真实 Electron、真实 preload API、真实 SerialPort 与真实 esptool 验证了同一端口的仲裁：无人占用时只读检测读到芯片、Flash 和 6 个分区；真实原生监视器会话打开期间发起只读检测被宿主租约拒绝，原会话继续可读，关闭监视器后同一检测成功；反向场景中真实 esptool 检测进行时打开监视器被拒绝（可观测的检测开始/结束，不使用固定延时），检测结束后重试成功；真实检测进行中取消会报告取消，并且只在 esptool 进程退出后释放端口。全程只有 `flash_id`、`read_flash`（0x8000，4 KiB）和 `get_security_info` 只读命令，没有任何写入、擦除或 mpremote 操作。
-- ESP32-C3（COM4，原生 USB-Serial/JTAG，16MB，芯片 rev v0.4）：beta.10 在 Windows 10 上用真实打包 Electron 应用、真实 preload IPC、真实 PlatformIO 6.1.19 + ESP-IDF 5.4.1、真实 Espressif QEMU 9.2.2（`esp_develop_9.2.2_20260417`）与真实 esptool 4.8.9 跑通完整链路。产品内构建得到 `firmware.bin` 200,928 字节、SHA-256 `c3c87da8e89a36a540271309514a0aaebe9f2e93bba40e5fe8e68d2fb25f208d`；同一 app 在 QEMU 中两次独立启动、每次新随机挑战均通过，固件标识 `aether-c3-fwval-1` 一致。随后产品只读预检确认活动槽 `ota_1 @ 0x700000`（OTA seq 2、state 2 = VALID）、bootloader IDF v5.4、app IDF 5.4.1；app-only 写入只擦除并写入 `0x700000`–`0x731FFF`（204,800 字节窗口），esptool 报告写入 200,928 字节并校验哈希；上传任务的实际写入段与预检计划一致，写入的 app SHA 与仿真记录一致。最后新开串口会话（USB-Serial/JTAG）发送新挑战 `b679e28c0e891a64`，设备返回 `b2aa395c`，与宿主重算一致，并绑定本次部署计划摘要 `ba8469e3…`。四个阶段（已仿真 / 预检通过 / 上传完成 / 实机行为通过）均由产品 UI 产生。该结果只覆盖这一台专用测试板、这一个 ESP-IDF 示例和 ESP32-C3 的 UART0/USB-Serial-JTAG 通路，不代表其他板型、其他固件或电路电气行为；QEMU 不模拟 USB-Serial/JTAG。
+- ESP32-C3（COM4，原生 USB-Serial/JTAG，VID:PID 303A:1001，16MB）：beta.10 在 Windows 10 上用真实打包 Electron 应用、真实 preload IPC、真实 PlatformIO 6.1.19 + ESP-IDF 5.4.1 + GCC 14.2.0、真实 Espressif QEMU 9.2.2（`esp_develop_9.2.2_20261109`）与真实 esptool 跑通完整链路。产品内只发生 **1 次构建**，得到 `firmware.bin` 203,232 字节、SHA-256 `3820ee9a757245b30fd95bce13b2e207ad36e686988f27b9818e4a323cce7142`；同一 app 在 QEMU 中两次独立启动、每次新随机挑战均通过，固件标识 `aether-c3-fwval-1` 一致。面板“核对写入”在端口租约内确认活动槽 `ota_1 @ 0x700000`（OTA seq 2、state 2 = VALID）、bootloader IDF v5.4、app IDF 5.4.1 与擦除窗口 `0x700000`–`0x731FFF`（204,800 字节）；点“烧录已验证 app”后不跳通用部署、不再次构建、不隐式保存，写入的 app SHA 与仿真记录一致，部署计划摘要 `fd3b8825…`。写入后新开串口会话（USB-Serial/JTAG，session #2）完成实机挑战并绑定该计划摘要。实际测试的拒绝路径包括：Monaco 未保存编辑、外部输入变化、构建产物变化、端口被占用、取消预览后旧 token、错误端口、通用 `esp.upload` 不消耗专用预览、旧 token 重放。该结果只覆盖这一台专用测试板、这一个 ESP-IDF 示例和 ESP32-C3 的 UART0/USB-Serial-JTAG 通路，不代表其他板型、其他固件或电路电气行为；QEMU 不模拟 USB-Serial/JTAG。
 - ESP32-S3：没有实板验收证据。[docs/esp32-s3-upload-acceptance.md](docs/esp32-s3-upload-acceptance.md) 是按步骤编写的验收流程，不能视为已通过。
 - 安全状态通过 `esptool get_security_info` 读取，不需要 PyYAML；只有工具输出无法解析时才标记为未读取，部署前核对会给出警告并要求自行确认。
 
@@ -259,9 +274,9 @@ ESP 相关能力由 **ESP 设备检测** 插件（`aether.esp.device`）提供�
 **Firmware Verification** 插件（`aether.firmware.verification`）提供一个可复验的真实样例：`examples/esp32c3-firmware-validation`（ESP-IDF 5.4.1，PlatformIO 环境 `esp32c3-qemu-uart0`）。它不是 Demo Simulation，也不替代它。
 
 1. **保存并构建**：真实 `platformio run`，构建记录包含环境、输入指纹和产物 SHA-256。
-2. **真实 QEMU**：用 Espressif `qemu-system-riscv32 -machine esp32c3` 启动真实镜像；宿主每次新生成挑战 token，两次启动的 app SHA 与固件标识必须一致。面板显示真实 QEMU 路径/版本、UART0 回包与验证记录。
-3. **app-only 写入**：走既有部署对话框与 `esp.upload`，只写设备当前活动 OTA 槽中的单一 app 段；写入前核对芯片、eFuse、分区表、OTA 记录、IDF 版本与 4KB 擦除范围。仿真记录必须绑定同一 app SHA、环境、输入指纹和端口，否则拒绝且零写入。
-4. **实机挑战**：上传成功后新开串口会话，发送 `HELLO` 请求当前通道的 READY，再发新挑战；只有同会话的真实匹配回包、且绑定本次部署计划摘要，才显示“实机行为通过”。
+2. **真实 QEMU**：用 Espressif `qemu-system-riscv32 -machine esp32c3` 启动真实镜像；宿主每次新生成挑战 token，两次启动的 app SHA 与固件标识必须一致。面板只显示通过/未通过与简短结果，完整证据在日志和宿主证据文件中。
+3. **面板内显式烧录**：点击“核对写入”时，宿主在端口租约内只读复查构建记录、产物、设备、活动 OTA 槽与擦除范围，签发一次性预览；确认后点“烧录已验证 app”才写入。写入复用 `esp.upload` 的私有快照与 app-only 单段路径，不跳转通用部署、不再次构建、不隐式保存。仿真记录必须绑定同一 app SHA、环境、输入指纹和端口，否则拒绝且零写入。
+4. **实机挑战**：上传成功后新开串口会话，发送 `HELLO` 请求当前通道的 READY，再发新挑战；只有同会话的真实匹配回包、且绑定本次部署计划摘要，才显示“实机挑战通过”。
 
 **边界**：QEMU 只模拟 ESP32-C3 SoC 与 UART0，不是电路电气仿真，也不代表所有固件、所有芯片或所有开发板；原生 USB-Serial/JTAG 只在实体板上验证。Windows 上 ESP-IDF 工程路径必须是纯 ASCII。详见 [docs/firmware-verification.md](docs/firmware-verification.md)。
 

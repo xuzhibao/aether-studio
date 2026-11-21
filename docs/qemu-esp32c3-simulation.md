@@ -111,7 +111,7 @@ const { offset, text } = simulator.readUart(cursor); // cursor 来自 snapshot()
 await simulator.dispose();  // 工程切换与退出时等待进程收束；建议加入 beforeSwitch 与 before-quit
 ```
 
-集成线实际使用的 IPC：`firmwareVerification:startSimulation`、`firmwareVerification:cancel`、`firmwareVerification:status`、`firmwareVerification:armDeploy`、`firmwareVerification:disarm`、`firmwareVerification:runDevice`，事件 `firmwareVerification:changed`。
+集成线实际使用的 IPC：`firmwareVerification:startSimulation`、`firmwareVerification:cancel`、`firmwareVerification:status`、`firmwareVerification:previewDeploy`、`firmwareVerification:commitDeploy`、`firmwareVerification:disarm`、`firmwareVerification:runDevice`，事件 `firmwareVerification:changed`。`previewDeploy` 只读并签发一次性目标；`commitDeploy` 不构建、不保存，直接以宿主内部意图启动 `esp.upload` 的 app-only 路径。
 
 为什么不注册成 `TaskProvider`：`TaskService.start()` 会同步占用宿主唯一的串口令牌，而模拟器不碰 COM 口，也不应与串口监视器互斥；因此模块只消费 `TaskService` 写出的构建记录，把进程、日志、取消和清理留在自己的单槽生命周期里。
 

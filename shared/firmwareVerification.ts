@@ -45,14 +45,24 @@ export interface QemuEvidenceView {
   error?: string;
 }
 
-export interface ArmedDeployView {
+/**
+ * Host-issued preview of one app-only write. The renderer may display it and hand its token back
+ * once; it cannot construct one or widen the write. Every field is bound to a passed QEMU record.
+ */
+export interface VerifiedDeployView {
+  token: string;
   evidenceId: string;
   root: string;
   environment: string;
+  port: string;
   appSha256: string;
   inputHash: string;
-  port: string;
-  armedAt: string;
+  device: { chipName: string; revision: string; flashSize: number | null };
+  slot: { label: string; offset: number; size: number };
+  erase: { offset: number; size: number };
+  app: { offset: number; size: number };
+  previewedAt: string;
+  expiresAt: string;
 }
 
 export interface HardwareEvidenceView {
@@ -76,7 +86,7 @@ export interface VerificationStatusView {
   running: boolean;
   live: SimulatorLiveView | null;
   evidence: QemuEvidenceView | null;
-  armed: ArmedDeployView | null;
+  preview: VerifiedDeployView | null;
   hardware: HardwareEvidenceView | null;
   error: string;
 }
@@ -85,7 +95,11 @@ export interface FirmwareVerificationAPI {
   status: () => Promise<VerificationStatusView>;
   startSimulation: (options: { environment: string; boots?: number; timeoutMs?: number }) => Promise<QemuEvidenceView>;
   cancel: () => Promise<void>;
-  armDeploy: (options: { port: string }) => Promise<ArmedDeployView>;
+  /** Read-only: re-proves the build, device and active OTA slot, then issues a one-time write preview. */
+  previewDeploy: (options: { environment: string; port: string }) => Promise<VerifiedDeployView>;
+  /** Starts the app-only write for exactly that preview; never builds and never saves. */
+  commitDeploy: (options: { token: string; environment: string; port: string }) => Promise<{ taskId: string }>;
+  /** Drops an unused preview (selection change or explicit cancel). */
   disarm: () => Promise<void>;
   runDevice: (options: { port: string; transport?: FwValTransport; timeoutMs?: number }) => Promise<HardwareEvidenceView>;
   onChanged: (listener: (status: VerificationStatusView) => void) => () => void;

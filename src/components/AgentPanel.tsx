@@ -28,6 +28,7 @@ import {
   X,
 } from "lucide-react";
 import { useStudio } from "../store/studio";
+import { FirmwareDevControl } from "./FirmwareDevControl";
 import { cn } from "../lib/utils";
 import type { AgentMessage, AgentRef, Step } from "../types";
 import { ResizeDivider } from "./ResizeDivider";
@@ -334,6 +335,8 @@ export function AgentPanel() {
             </DropdownMenu.Root>
           </div>
 
+          <FirmwareDevControl />
+
           <div className="mt-2 flex items-center gap-1.5 text-[9px] text-[#858C94]">
             <select aria-label="Agent mode" className="rounded border border-[#E4E7EB] bg-white px-2 py-1" value={activeAgentId} onChange={(e) => useStudio.getState().setAgent(e.target.value)}>{!configuredModel && <option value="">未启用 Agent</option>}{registry.all("agents").map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select>
             <button className="btn ml-auto px-2 py-1" onClick={() => useStudio.getState().setDialog("plugins")}>配置 API</button>
@@ -420,7 +423,7 @@ export function AgentPanel() {
             </div>
           </div>
           <div className="mt-1.5 flex items-center justify-center gap-1 text-[8px] text-[#939AA2]">
-            <Sparkles size={7.5} /> 文件修改需预览后应用 · 不执行真实硬件操作
+            <Sparkles size={7.5} /> 文件修改需预览后应用 · 只有在已开始的自动任务中才会执行真实固件步骤
           </div>
         </div>
       </aside>

@@ -3,6 +3,7 @@ import type { ToolsAPI } from "./tools";
 import type { EspInspectResult, EspPreflightResult } from "./esp";
 import type { MicropythonFilesAPI } from "./micropython";
 import type { FirmwareVerificationAPI } from "./firmwareVerification";
+import type { FirmwareDevAPI } from "./firmwareDev";
 export interface DiskWorkspace { root: string; context: ProjectContext; directories: string[] }
 export interface DiskListing { files: Record<string, string>; directories: string[] }
 /** One unsaved editing session, stored outside the project folder while the user keeps working. */
@@ -70,6 +71,8 @@ export interface EspAPI {
 export interface DesktopAPI {
   esp: EspAPI;
   firmwareVerification: FirmwareVerificationAPI;
+  /** Explicit-start automatic firmware task over the same verified write path. */
+  firmwareDev: FirmwareDevAPI;
   terminal: import("./terminal").TerminalAPI;
   tools: ToolsAPI;
   language: import("./language").LanguageAPI;

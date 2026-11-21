@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import type { EspDeviceFacts } from "./inspect";
+import { deviceIdentityFrom, type EspDeviceFacts } from "./inspect";
 import type { EspProjectFacts } from "./project";
 import { runEsptool, type EsptoolTool } from "./esptool";
 import type { EspFinding, EspPartitionEntry } from "../../shared/esp";
@@ -246,12 +246,19 @@ export async function verifyAppOnlyTarget(options: AppOnlyTargetOptions): Promis
 export async function reverifyAppOnlyTarget(options: {
   tool: EsptoolTool; port: string; directory: string; signal?: AbortSignal;
   target: EspAppOnlyTarget; appFile: string;
+  /** Opaque board handle proved by the preview; the same board must still answer on this port. */
+  expectedIdentity?: string;
 }): Promise<void> {
   const { tool, port, directory, target, signal } = options;
   const id = await runEsptool(tool, ["--port", port, "flash_id"], { signal, timeoutMs: 90000 });
   if (id.code !== 0) throw new Error("写前复检：无法读取芯片（" + id.output.trim().split(/\r?\n/).slice(-2).join(" / ") + "）。未写入任何数据。");
   const detected = /Detecting chip type\.\.\.\s*(\S+)/.exec(id.output)?.[1] ?? "";
   if (detected.toUpperCase() !== target.chipType.toUpperCase()) throw new Error("写前复检：检测到芯片 " + (detected || "未知") + "，计划针对 " + target.chipType + "。未写入任何数据。");
+
+  if (options.expectedIdentity !== undefined) {
+    const seen = deviceIdentityFrom(id.output);
+    if (!seen || seen !== options.expectedIdentity) throw new Error("写前复检：" + port + " 上的设备与预览时的不是同一块板。未写入任何数据。");
+  }
 
   const table = await readFlashRange(tool, port, 0x8000, 0x1000, directory, "ptable-recheck.bin", signal);
   const reparsed = parseTableEntries(table);

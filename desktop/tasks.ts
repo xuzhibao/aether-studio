@@ -25,6 +25,10 @@ export interface TaskProvider {
   portOption?: string;
   // Runs after the port lease is taken and before the process exists: it decides the real argv and can refuse.
   prepare?: (root: string, executable: string, options: Record<string, string>, signal: AbortSignal, log: (line: string) => void) => Promise<{ executable?: string; args: string[]; metadata?: unknown }>;
+  // The very last check, synchronous so it runs in the same segment as spawn(): it sees the project
+  // fingerprint taken immediately before, so an edit that landed after the provider's own check
+  // refuses the task instead of leaving a stale write.
+  beforeSpawn?: (root: string, options: Record<string, string>, inputHash: string) => void;
   // Runs once the task can no longer use host-side temporary inputs (success, failure, cancel or a failed start).
   afterRun?: () => Promise<void>;
   // Providers that build one selected environment at a time expose what the project currently declares.
@@ -53,9 +57,15 @@ export class TaskService {
    * is absent (direct use) this call claims the same single slot itself, before its first await.
    * The token is released exactly when the spawned process has really exited, or on every path that
    * refuses before a process exists.
+   *
+   * `signal` is the caller's own cancellation for this one task. It is checked after every await in
+   * the long prepare phase and once more in the synchronous step right before spawn, so a stop that
+   * lands while the device is still being re-proved refuses the task instead of writing flash.
    */
-  async start(id: string, options: Record<string, string> = {}, reserved?: DeviceLeaseToken) {
+  async start(id: string, options: Record<string, string> = {}, reserved?: DeviceLeaseToken, signal?: AbortSignal) {
     let lease: DeviceLeaseToken | null = reserved ?? null;
+    // A refusal between awaits and spawn must leave the same truthful state: no process, no lease.
+    const refuseIfCancelled = () => { if (signal?.aborted) throw new Error("任务已取消，未启动任何进程"); };
     // Set once the process exists: from then on only its close handler releases the token and the inputs.
     let spawned = false;
     try {
@@ -69,7 +79,9 @@ export class TaskService {
       // Resolve once so a settings change cannot swap the executable of a running task.
       const baseExecutable = typeof provider.executable === "function" ? provider.executable() : provider.executable;
       // The environment is fixed before the process starts; a settings change or a later UI selection cannot swap it.
+      refuseIfCancelled();
       const environment = await this.resolveEnvironment(provider, root, baseExecutable, options.environment);
+      refuseIfCancelled();
       const resolved = environment ? { ...options, environment } : options;
       // The port belongs to this task from the verification step through the actual write.
       const leased = provider.portOption ? options[provider.portOption]?.trim() ?? "" : "";
@@ -84,14 +96,25 @@ export class TaskService {
       let inputHash = "";
       // A changed build input may invalidate cached artifacts; this runs before the fingerprint and spawn.
       preparation = await provider.beforeStart?.(root, baseExecutable, resolved);
+      refuseIfCancelled();
       if (provider.prepare) {
-        const prepared = await provider.prepare(root, baseExecutable, resolved, abort.signal, (line) => preparedLog.push(line));
-        executable = prepared.executable ?? baseExecutable;
-        args = prepared.args;
-        metadata = prepared.metadata;
+        // A stop while prepare() re-proves the device must reach the real subprocesses it starts.
+        const onCancel = () => abort.abort();
+        signal?.addEventListener("abort", onCancel, { once: true });
+        try {
+          const prepared = await provider.prepare(root, baseExecutable, resolved, abort.signal, (line) => preparedLog.push(line));
+          executable = prepared.executable ?? baseExecutable;
+          args = prepared.args;
+          metadata = prepared.metadata;
+        } finally { signal?.removeEventListener("abort", onCancel); }
       } else args = typeof provider.args === "function" ? provider.args(resolved) : provider.args;
+      refuseIfCancelled();
       toolVersion = provider.versionArgs ? (await promisify(execFile)(executable, provider.versionArgs, { cwd: root, timeout: 5000 })).stdout.trim() : undefined;
       inputHash = await this.workspace.fingerprint(provider.inputExcludes);
+      // Bind the freshest fingerprint to what the caller authorized (a reviewed write intent, for one).
+      if (provider.beforeSpawn) provider.beforeSpawn(root, resolved, inputHash);
+      // Last gate: the very last await is behind us, and spawn() follows synchronously in this segment.
+      refuseIfCancelled();
       const banner = (preparation ? "[aether] " + preparation + "\n" : "") + (preparedLog.length ? preparedLog.join("\n") + "\n" : "");
       const task: TaskSnapshot = { id: randomUUID(), provider: id, root, environment, kind: provider.kind, status: "running", startedAt: new Date().toISOString(), exitCode: null, log: banner + "$ " + executable + " " + args.map(quoteForLog).join(" ") + "\n", inputHash, toolVersion, options: { ...options }, artifacts: [], ...(metadata !== undefined ? { metadata } : {}) };
       const child = spawn(executable, args, { cwd: root, shell: false, detached: process.platform !== "win32", env: { ...process.env, PLATFORMIO_FORCE_COLOR: "false", PLATFORMIO_SETTING_ENABLE_TELEMETRY: "No" } });

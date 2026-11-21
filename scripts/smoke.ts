@@ -42,8 +42,9 @@ console.log("PASS registry: lifecycle, cleanup, duplicate IDs, dependency cycle,
 const { useStudio } = await import("../src/store/studio");
 const { plugins } = await import("../src/plugins/runtime");
 const state = () => useStudio.getState();
-assert.equal(plugins.list().length, 17);
-assert.equal(plugins.list().filter((p) => p.enabled).length, 17);
+// The automatic firmware task is one additional builtin plugin (agent + its scoped tools).
+assert.equal(plugins.list().length, 18);
+assert.equal(plugins.list().filter((p) => p.enabled).length, 18);
 assert.ok(plugins.get("devices", "esp32"), "the ESP device plugin contributes the read-only device capability");
 assert.ok(plugins.get("panels", "esp.device"));
 assert.ok(plugins.all("templates").some((template) => template.id === "ESP32-C3 C++"), "the native USB CDC C3 template is registered");
@@ -221,7 +222,8 @@ assert.equal(state().agentRunning, false);
 assert.match(state().agentMessages.at(-1)!.text, /已取消/);
 assert.equal(state().files["main.py"], updatedCode);
 plugins.disable("aether.project-tools");
-assert.equal(plugins.all("tools").length, 0);
+// Disabling one tool plugin removes its own tools only; the automatic task's scoped tools stay.
+assert.deepEqual(plugins.all("tools").map((tool) => tool.id).filter((id) => id.startsWith("project_")), []);
 plugins.enable("aether.project-tools");
 globalThis.fetch = originalFetch;
 console.log("PASS Agent tools: real tool-result protocol, read/inspect, pending proposal, conflict refusal, reject/apply, path validation, cancellation and plugin disable (HTTP fixtures only)");

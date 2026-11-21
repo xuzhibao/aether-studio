@@ -1,7 +1,7 @@
 {
   "name": "aether-studio",
   "private": true,
-  "version": "0.1.0-beta.10",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 1420",
@@ -24,6 +24,7 @@
     "smoke:terminal": "node --import tsx scripts/smoke-terminal.ts",
     "desktop:release": "npm run build && npm run build:desktop && npm run licenses && electron-builder --publish never",
     "smoke:release": "node scripts/smoke-release.mjs",
+    "smoke:release-assets": "node scripts/smoke-release-assets.mjs",
     "smoke:platformio": "node --import tsx scripts/smoke-platformio.ts",
     "smoke:esp32": "node --import tsx scripts/smoke-esp32.ts",
     "smoke:esp": "node --import tsx scripts/smoke-esp.ts",

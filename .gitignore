@@ -11,6 +11,9 @@ smoke-results
 
 desktop-dist
 release
+release-verified
+release-verification
+release-accepted
 dist-licenses
 **/.pio
 **/.aether
