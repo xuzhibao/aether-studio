@@ -181,7 +181,7 @@ export async function runFirmwareDevAgent(api: PluginAPI, project: Parameters<Ca
     if (!reply.tool_calls?.length) {
       // The model may stop early. The run is NOT done because it said so: the host's real stage
       // decides, and anything short of it is reported as unfinished with the reason it stopped at.
-      return { text: await unfinishedText(api, reply.content), toolRuns: runs, proposals: [] };
+      return { text: await settleText(api, reply.content), toolRuns: runs, proposals: [] };
     }
     messages.push(reply);
     for (const call of reply.tool_calls) {
@@ -209,26 +209,29 @@ export async function runFirmwareDevAgent(api: PluginAPI, project: Parameters<Ca
     }
   }
   options.signal?.removeEventListener("abort", notifyHostStop);
-  return { text: await unfinishedText(api, "已达到本轮工具调用上限。"), toolRuns: runs, proposals: [] };
+  return { text: await settleText(api, "已达到本轮工具调用上限。"), toolRuns: runs, proposals: [] };
 }
 
 /**
- * The automatic task reports the HOST's stage, never the model's claim. A run that stopped early
- * says so in one line and names where the real host stopped; the panel keeps the only status.
+ * The automatic task reports the HOST's stage, never the model's claim. Only a host-confirmed
+ * terminal state is a result; anything short of it ends the run, withdraws whatever authorization
+ * was still outstanding and says in one line where the real host stopped.
  */
-async function unfinishedText(api: PluginAPI, preface: string | null | undefined): Promise<string> {
+async function settleText(api: PluginAPI, _preface?: string | null): Promise<string> {
   void api;
   const view = await client().status().catch(() => null);
-  const lead = (preface ?? "").replace(/\s+/g, " ").trim().slice(0, 300);
-  if (view?.active && view.stage === "verified") return "自动任务已完成：宿主确认两轮真实仿真与实机验证全部通过。";
+  if (view?.active && view.stage === "verified") {
+    // The host already reached its own terminal stage; the run is done and leaves nothing behind.
+    await client().stop().catch(() => {});
+    return "本次任务完成：宿主确认两次 QEMU 启动与一次实机验证全部通过。";
+  }
   const stageLabel: Record<FirmwareDevSessionView["stage"], string> = {
     ready: "尚未构建", built: "已构建、未仿真", simulated: "QEMU 已通过、未核对写入",
     previewed: "写入已核对、未写入", written: "已写入、未做实机验证", verified: "实机验证通过",
   };
   const stage = view ? stageLabel[view.stage] : "宿主状态不可读";
   const failed = view?.error ? "；首个错误：" + view.error : "";
-  const progress = view?.steps?.length ? "；已结算步骤：" + view.steps.map((step) => step.name + "=" + step.status).join("、") : "";
-  const head = "自动任务未完成：本轮在宿主阶段「" + stage + "」停止，未由宿主确认为通过" + failed + progress + "。";
-  const tail = lead ? String.fromCharCode(10) + "模型最后一条消息（仅供参考，不构成结果）：" + lead : "";
-  return head + tail;
+  // Ending the run here is what revokes the session: no later step can still write or drive the board.
+  await client().stop().catch(() => {});
+  return "本次任务未完成：宿主阶段「" + stage + "」" + failed + "。已结束本轮任务，未执行剩余有副作用的步骤。";
 }
