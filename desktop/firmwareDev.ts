@@ -360,7 +360,9 @@ export class FirmwareDevService {
       };
       if (!evidence.passed) throw new Error("实机验证未通过：" + (evidence.reason || "见会话记录"));
       this.stage = "verified";
-      this.endStep("succeeded", evidence.counts.length + " 次 COUNT 严格递增 · 观察 " + Math.round(evidence.observedMs / 1000) + " 秒无看门狗/重启");
+      const required = evidence.counts.slice(0, 20);
+      this.endStep("succeeded", required.length + " 次 COUNT 严格递增 · 观察 " + Math.round(evidence.observedMs / 1000) + " 秒无看门狗/重启"
+        + (evidence.postWindowCount === null ? "" : " · 窗口后诊断 " + evidence.postWindowCount));
       return this.view();
     } catch (error) {
       this.endStep("failed", String(error instanceof Error ? error.message : error));
