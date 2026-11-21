@@ -29,6 +29,10 @@
 
 static const char *TAG = "fwval";
 
+/* How long the protocol loop sleeps when neither transport has a byte ready. It must map to
+ * at least one FreeRTOS tick (see the idle branch in app_main). */
+#define FWVAL_IDLE_DELAY_MS 10
+
 typedef enum { SRC_UART0 = 0, SRC_USB = 1, SRC_COUNT = 2 } src_id_t;
 
 typedef struct {
@@ -177,7 +181,14 @@ void app_main(void) {
             }
         }
         if (idle) {
-            vTaskDelay(pdMS_TO_TICKS(2));
+            /* FreeRTOS rounds milliseconds down to whole ticks, and this image runs at
+             * CONFIG_FREERTOS_HZ=100 (1 tick = 10 ms): pdMS_TO_TICKS(2) was 0, so the delay
+             * only forced a reschedule back into this same priority-1 task. On the single
+             * core the idle task then never ran, its task-watchdog subscription was never
+             * fed, and the TWDT reported "IDLE (CPU 0)" every 5 s while the loop held the
+             * CPU. Block for at least one real tick so the idle task actually runs. */
+            TickType_t idle_ticks = pdMS_TO_TICKS(FWVAL_IDLE_DELAY_MS);
+            vTaskDelay(idle_ticks > 0 ? idle_ticks : 1);
         }
     }
 }
